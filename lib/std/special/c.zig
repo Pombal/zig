@@ -85,7 +85,7 @@ test "strncpy" {
     var s1: [9:0]u8 = undefined;
 
     s1[0] = 0;
-    _ = strncpy(&s1, "foobarbaz", 9);
+    _ = strncpy(&s1, "foobarbaz", @sizeOf(@TypeOf(s1)));
     std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
 }
 
@@ -491,6 +491,71 @@ fn clone() callconv(.Naked) void {
                 \\  syscall
             );
         },
+        .powerpc => {
+            // __clone(func, stack, flags, arg, ptid, tls, ctid)
+            //            3,     4,     5,   6,    7,   8,    9
+
+            // syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+            //                 0      3,     4,    5,   6,    7
+            asm volatile (
+                \\# store non-volatile regs r30, r31 on stack in order to put our
+                \\# start func and its arg there
+                \\stwu 30, -16(1)
+                \\stw 31, 4(1)
+                \\
+                \\# save r3 (func) into r30, and r6(arg) into r31
+                \\mr 30, 3
+                \\mr 31, 6
+                \\
+                \\# create initial stack frame for new thread
+                \\clrrwi 4, 4, 4
+                \\li 0, 0
+                \\stwu 0, -16(4)
+                \\
+                \\#move c into first arg
+                \\mr 3, 5
+                \\#mr 4, 4
+                \\mr 5, 7
+                \\mr 6, 8
+                \\mr 7, 9
+                \\
+                \\# move syscall number into r0
+                \\li 0, 120
+                \\
+                \\sc
+                \\
+                \\# check for syscall error
+                \\bns+ 1f # jump to label 1 if no summary overflow.
+                \\#else
+                \\neg 3, 3 #negate the result (errno)
+                \\1:
+                \\# compare sc result with 0
+                \\cmpwi cr7, 3, 0
+                \\
+                \\# if not 0, jump to end
+                \\bne cr7, 2f
+                \\
+                \\#else: we're the child
+                \\#call funcptr: move arg (d) into r3
+                \\mr 3, 31
+                \\#move r30 (funcptr) into CTR reg
+                \\mtctr 30
+                \\# call CTR reg
+                \\bctrl
+                \\# mov SYS_exit into r0 (the exit param is already in r3)
+                \\li 0, 1
+                \\sc
+                \\
+                \\2:
+                \\
+                \\# restore stack
+                \\lwz 30, 0(1)
+                \\lwz 31, 4(1)
+                \\addi 1, 1, 16
+                \\
+                \\blr
+            );
+        },
         .powerpc64, .powerpc64le => {
             // __clone(func, stack, flags, arg, ptid, tls, ctid)
             //            3,     4,     5,   6,    7,   8,    9
@@ -874,7 +939,7 @@ export fn sqrt(x: f64) f64 {
 
     r = sign;
     while (r != 0) {
-        t = s1 +% r;
+        t1 = s1 +% r;
         t = s0;
         if (t < ix0 or (t == ix0 and t1 <= ix1)) {
             s1 = t1 +% r;
@@ -928,17 +993,24 @@ export fn sqrt(x: f64) f64 {
 }
 
 test "sqrt" {
-    const epsilon = 0.000001;
+    const V = [_]f64{
+        0.0,
+        4.089288054930154,
+        7.538757127071935,
+        8.97780793672623,
+        5.304443821913729,
+        5.682408965311888,
+        0.5846878579110049,
+        3.650338664297043,
+        0.3178091951800732,
+        7.1505232436382835,
+        3.6589165881946464,
+    };
 
-    std.testing.expect(sqrt(0.0) == 0.0);
-    std.testing.expect(std.math.approxEqAbs(f64, sqrt(2.0), 1.414214, epsilon));
-    std.testing.expect(std.math.approxEqAbs(f64, sqrt(3.6), 1.897367, epsilon));
-    std.testing.expect(sqrt(4.0) == 2.0);
-    std.testing.expect(std.math.approxEqAbs(f64, sqrt(7.539840), 2.745877, epsilon));
-    std.testing.expect(std.math.approxEqAbs(f64, sqrt(19.230934), 4.385309, epsilon));
-    std.testing.expect(sqrt(64.0) == 8.0);
-    std.testing.expect(std.math.approxEqAbs(f64, sqrt(64.1), 8.006248, epsilon));
-    std.testing.expect(std.math.approxEqAbs(f64, sqrt(8942.230469), 94.563367, epsilon));
+    // Note that @sqrt will either generate the sqrt opcode (if supported by the
+    // target ISA) or a call to `sqrtf` otherwise.
+    for (V) |val|
+        std.testing.expectEqual(@sqrt(val), sqrt(val));
 }
 
 test "sqrt special" {
@@ -1026,17 +1098,24 @@ export fn sqrtf(x: f32) f32 {
 }
 
 test "sqrtf" {
-    const epsilon = 0.000001;
+    const V = [_]f32{
+        0.0,
+        4.089288054930154,
+        7.538757127071935,
+        8.97780793672623,
+        5.304443821913729,
+        5.682408965311888,
+        0.5846878579110049,
+        3.650338664297043,
+        0.3178091951800732,
+        7.1505232436382835,
+        3.6589165881946464,
+    };
 
-    std.testing.expect(sqrtf(0.0) == 0.0);
-    std.testing.expect(std.math.approxEqAbs(f32, sqrtf(2.0), 1.414214, epsilon));
-    std.testing.expect(std.math.approxEqAbs(f32, sqrtf(3.6), 1.897367, epsilon));
-    std.testing.expect(sqrtf(4.0) == 2.0);
-    std.testing.expect(std.math.approxEqAbs(f32, sqrtf(7.539840), 2.745877, epsilon));
-    std.testing.expect(std.math.approxEqAbs(f32, sqrtf(19.230934), 4.385309, epsilon));
-    std.testing.expect(sqrtf(64.0) == 8.0);
-    std.testing.expect(std.math.approxEqAbs(f32, sqrtf(64.1), 8.006248, epsilon));
-    std.testing.expect(std.math.approxEqAbs(f32, sqrtf(8942.230469), 94.563370, epsilon));
+    // Note that @sqrt will either generate the sqrt opcode (if supported by the
+    // target ISA) or a call to `sqrtf` otherwise.
+    for (V) |val|
+        std.testing.expectEqual(@sqrt(val), sqrtf(val));
 }
 
 test "sqrtf special" {

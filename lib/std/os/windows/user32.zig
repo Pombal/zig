@@ -373,7 +373,7 @@ pub fn createWindowExA(dwExStyle: u32, lpClassName: [*:0]const u8, lpWindowName:
 }
 
 pub extern "user32" fn CreateWindowExW(dwExStyle: DWORD, lpClassName: [*:0]const u16, lpWindowName: [*:0]const u16, dwStyle: DWORD, X: i32, Y: i32, nWidth: i32, nHeight: i32, hWindParent: ?HWND, hMenu: ?HMENU, hInstance: HINSTANCE, lpParam: ?LPVOID) callconv(WINAPI) ?HWND;
-pub var pfnCreateWindowExW: @TypeOf(RegisterClassExW) = undefined;
+pub var pfnCreateWindowExW: @TypeOf(CreateWindowExW) = undefined;
 pub fn createWindowExW(dwExStyle: u32, lpClassName: [*:0]const u16, lpWindowName: [*:0]const u16, dwStyle: u32, X: i32, Y: i32, nWidth: i32, nHeight: i32, hWindParent: ?HWND, hMenu: ?HMENU, hInstance: HINSTANCE, lpParam: ?*c_void) !HWND {
     const function = selectSymbol(CreateWindowExW, pfnCreateWindowExW, .win2k);
     const window = function(dwExStyle, lpClassName, lpWindowName, dwStyle, X, Y, nWidth, nHeight, hWindParent, hMenu, hInstance, lpParam);
@@ -663,7 +663,7 @@ pub fn messageBoxA(hWnd: ?HWND, lpText: [*:0]const u8, lpCaption: [*:0]const u8,
 pub extern "user32" fn MessageBoxW(hWnd: ?HWND, lpText: [*:0]const u16, lpCaption: ?[*:0]const u16, uType: UINT) callconv(WINAPI) i32;
 pub var pfnMessageBoxW: @TypeOf(MessageBoxW) = undefined;
 pub fn messageBoxW(hWnd: ?HWND, lpText: [*:0]const u16, lpCaption: [*:0]const u16, uType: u32) !i32 {
-    const function = selectSymbol(pfnMessageBoxW, MessageBoxW, .win2k);
+    const function = selectSymbol(MessageBoxW, pfnMessageBoxW, .win2k);
     const value = function(hWnd, lpText, lpCaption, uType);
     if (value != 0) return value;
     switch (GetLastError()) {

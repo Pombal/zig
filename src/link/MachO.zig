@@ -658,7 +658,10 @@ fn linkWithLLD(self: *MachO, comp: *Compilation) !void {
 
         if (use_zld) {
             var zld = Zld.init(self.base.allocator);
-            defer zld.deinit();
+            defer {
+                zld.closeFiles();
+                zld.deinit();
+            }
             zld.arch = target.cpu.arch;
 
             var input_files = std.ArrayList([]const u8).init(self.base.allocator);
@@ -1256,7 +1259,7 @@ pub fn updateDecl(self: *MachO, module: *Module, decl: *Module.Decl) !void {
                     const inst = code_buffer.items[fixup.offset..][0..4];
                     var parsed = mem.bytesAsValue(meta.TagPayload(
                         aarch64.Instruction,
-                        aarch64.Instruction.PCRelativeAddress,
+                        aarch64.Instruction.pc_relative_address,
                     ), inst);
                     const this_page = @intCast(i32, this_addr >> 12);
                     const target_page = @intCast(i32, target_addr >> 12);
@@ -1268,7 +1271,7 @@ pub fn updateDecl(self: *MachO, module: *Module, decl: *Module.Decl) !void {
                     const inst = code_buffer.items[fixup.offset + 4 ..][0..4];
                     var parsed = mem.bytesAsValue(meta.TagPayload(
                         aarch64.Instruction,
-                        aarch64.Instruction.LoadStoreRegister,
+                        aarch64.Instruction.load_store_register,
                     ), inst);
                     const narrowed = @truncate(u12, target_addr);
                     const offset = try math.divExact(u12, narrowed, 8);
@@ -1340,7 +1343,7 @@ pub fn updateDeclLineNumber(self: *MachO, module: *Module, decl: *const Module.D
 pub fn updateDeclExports(
     self: *MachO,
     module: *Module,
-    decl: *const Module.Decl,
+    decl: *Module.Decl,
     exports: []const *Module.Export,
 ) !void {
     const tracy = trace(@src());

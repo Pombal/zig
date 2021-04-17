@@ -3,6 +3,28 @@ const std = @import("std");
 const CrossTarget = std.zig.CrossTarget;
 
 pub fn addCases(cases: *tests.TranslateCContext) void {
+    cases.add("unnamed child types of typedef receive typedef's name",
+        \\typedef enum {
+        \\    FooA,
+        \\    FooB,
+        \\} Foo;
+        \\typedef struct {
+        \\    int a, b;
+        \\} Bar;
+    , &[_][]const u8{
+        \\pub const Foo = extern enum(c_int) {
+        \\    A,
+        \\    B,
+        \\    _,
+        \\};
+        \\pub const FooA = @enumToInt(Foo.A);
+        \\pub const FooB = @enumToInt(Foo.B);
+        \\pub const Bar = extern struct {
+        \\    a: c_int,
+        \\    b: c_int,
+        \\};
+    });
+
     cases.add("if as while stmt has semicolon",
         \\void foo() {
         \\    while (1) if (1) {
@@ -89,7 +111,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    const A = @enumToInt(enum_Foo.A);
         \\    const B = @enumToInt(enum_Foo.B);
         \\    const C = @enumToInt(enum_Foo.C);
-        \\    var a: enum_Foo = @intToEnum(enum_Foo, B);
+        \\    var a: enum_Foo = @import("std").meta.cast(enum_Foo, B);
         \\    {
         \\        const enum_Foo = extern enum(c_int) {
         \\            A,
@@ -100,7 +122,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\        const A_2 = @enumToInt(enum_Foo.A);
         \\        const B_3 = @enumToInt(enum_Foo.B);
         \\        const C_4 = @enumToInt(enum_Foo.C);
-        \\        var a_5: enum_Foo = @intToEnum(enum_Foo, B_3);
+        \\        var a_5: enum_Foo = @import("std").meta.cast(enum_Foo, B_3);
         \\    }
         \\}
     });
@@ -218,9 +240,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\} Bar;
     , &[_][]const u8{
         \\source.h:1:9: warning: struct demoted to opaque type - unable to translate type of field foo
-        \\const struct_unnamed_1 = opaque {};
-        \\pub const Foo = struct_unnamed_1;
-        \\const struct_unnamed_2 = extern struct {
+        \\pub const Foo = opaque {};
+        \\pub const Bar = extern struct {
         \\    bar: ?*Foo,
         \\};
     });
@@ -519,17 +540,16 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\} outer;
         \\void foo(outer *x) { x->y = x->x; }
     , &[_][]const u8{
-        \\const struct_unnamed_3 = extern struct {
+        \\const struct_unnamed_2 = extern struct {
         \\    y: c_int,
         \\};
-        \\const union_unnamed_2 = extern union {
+        \\const union_unnamed_1 = extern union {
         \\    x: u8,
-        \\    unnamed_0: struct_unnamed_3,
+        \\    unnamed_0: struct_unnamed_2,
         \\};
-        \\const struct_unnamed_1 = extern struct {
-        \\    unnamed_0: union_unnamed_2,
+        \\pub const outer = extern struct {
+        \\    unnamed_0: union_unnamed_1,
         \\};
-        \\pub const outer = struct_unnamed_1;
         \\pub export fn foo(arg_x: [*c]outer) void {
         \\    var x = arg_x;
         \\    x.*.unnamed_0.unnamed_0.y = @bitCast(c_int, @as(c_uint, x.*.unnamed_0.x));
@@ -565,21 +585,20 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\struct {int x,y;} s2 = {.y = 2, .x=1};
         \\foo s3 = { 123 };
     , &[_][]const u8{
-        \\const struct_unnamed_1 = extern struct {
+        \\pub const foo = extern struct {
         \\    x: c_int,
         \\};
-        \\pub const foo = struct_unnamed_1;
-        \\const struct_unnamed_2 = extern struct {
+        \\const struct_unnamed_1 = extern struct {
         \\    x: f64,
         \\    y: f64,
         \\    z: f64,
         \\};
-        \\pub export var s0: struct_unnamed_2 = struct_unnamed_2{
+        \\pub export var s0: struct_unnamed_1 = struct_unnamed_1{
         \\    .x = 1.2,
         \\    .y = 1.3,
         \\    .z = 0,
         \\};
-        \\const struct_unnamed_3 = extern struct {
+        \\const struct_unnamed_2 = extern struct {
         \\    sec: c_int,
         \\    min: c_int,
         \\    hour: c_int,
@@ -587,7 +606,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    mon: c_int,
         \\    year: c_int,
         \\};
-        \\pub export var s1: struct_unnamed_3 = struct_unnamed_3{
+        \\pub export var s1: struct_unnamed_2 = struct_unnamed_2{
         \\    .sec = @as(c_int, 30),
         \\    .min = @as(c_int, 15),
         \\    .hour = @as(c_int, 17),
@@ -595,11 +614,11 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    .mon = @as(c_int, 12),
         \\    .year = @as(c_int, 2014),
         \\};
-        \\const struct_unnamed_4 = extern struct {
+        \\const struct_unnamed_3 = extern struct {
         \\    x: c_int,
         \\    y: c_int,
         \\};
-        \\pub export var s2: struct_unnamed_4 = struct_unnamed_4{
+        \\pub export var s2: struct_unnamed_3 = struct_unnamed_3{
         \\    .x = @as(c_int, 1),
         \\    .y = @as(c_int, 2),
         \\};
@@ -1639,37 +1658,36 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    p,
         \\};
     , &[_][]const u8{
-        \\const enum_unnamed_1 = extern enum(c_int) {
+        \\pub const d = extern enum(c_int) {
         \\    a,
         \\    b,
         \\    c,
         \\    _,
         \\};
-        \\pub const a = @enumToInt(enum_unnamed_1.a);
-        \\pub const b = @enumToInt(enum_unnamed_1.b);
-        \\pub const c = @enumToInt(enum_unnamed_1.c);
-        \\pub const d = enum_unnamed_1;
-        \\const enum_unnamed_2 = extern enum(c_int) {
+        \\pub const a = @enumToInt(d.a);
+        \\pub const b = @enumToInt(d.b);
+        \\pub const c = @enumToInt(d.c);
+        \\const enum_unnamed_1 = extern enum(c_int) {
         \\    e = 0,
         \\    f = 4,
         \\    g = 5,
         \\    _,
         \\};
-        \\pub const e = @enumToInt(enum_unnamed_2.e);
-        \\pub const f = @enumToInt(enum_unnamed_2.f);
-        \\pub const g = @enumToInt(enum_unnamed_2.g);
-        \\pub export var h: enum_unnamed_2 = @intToEnum(enum_unnamed_2, e);
-        \\const enum_unnamed_3 = extern enum(c_int) {
+        \\pub const e = @enumToInt(enum_unnamed_1.e);
+        \\pub const f = @enumToInt(enum_unnamed_1.f);
+        \\pub const g = @enumToInt(enum_unnamed_1.g);
+        \\pub export var h: enum_unnamed_1 = @import("std").meta.cast(enum_unnamed_1, e);
+        \\const enum_unnamed_2 = extern enum(c_int) {
         \\    i,
         \\    j,
         \\    k,
         \\    _,
         \\};
-        \\pub const i = @enumToInt(enum_unnamed_3.i);
-        \\pub const j = @enumToInt(enum_unnamed_3.j);
-        \\pub const k = @enumToInt(enum_unnamed_3.k);
+        \\pub const i = @enumToInt(enum_unnamed_2.i);
+        \\pub const j = @enumToInt(enum_unnamed_2.j);
+        \\pub const k = @enumToInt(enum_unnamed_2.k);
         \\pub const struct_Baz = extern struct {
-        \\    l: enum_unnamed_3,
+        \\    l: enum_unnamed_2,
         \\    m: d,
         \\};
         \\pub const enum_i = extern enum(c_int) {
@@ -1934,7 +1952,9 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     , &[_][]const u8{
         \\pub export fn foo() c_int {
         \\    var a: c_int = 5;
-        \\    while (true) a = 2;
+        \\    while (true) {
+        \\        a = 2;
+        \\    }
         \\    while (true) {
         \\        var a_1: c_int = 4;
         \\        a_1 = 9;
@@ -1947,7 +1967,9 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\        var a_1: c_int = 2;
         \\        a_1 = 12;
         \\    }
-        \\    while (true) a = 7;
+        \\    while (true) {
+        \\        a = 7;
+        \\    }
         \\    return 0;
         \\}
     });
@@ -2008,7 +2030,9 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     , &[_][]const u8{
         \\pub export fn bar() c_int {
-        \\    if ((if (true) @as(c_int, 5) else if (true) @as(c_int, 4) else @as(c_int, 6)) != 0) _ = @as(c_int, 2);
+        \\    if ((if (true) @as(c_int, 5) else if (true) @as(c_int, 4) else @as(c_int, 6)) != 0) {
+        \\        _ = @as(c_int, 2);
+        \\    }
         \\    return if (true) @as(c_int, 5) else if (true) @as(c_int, 4) else @as(c_int, 6);
         \\}
     });
@@ -2048,40 +2072,49 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub export fn switch_fn(arg_i: c_int) void {
         \\    var i = arg_i;
         \\    var res: c_int = 0;
-        \\    switch (i) {
-        \\        @as(c_int, 0) => {
-        \\            res = 1;
-        \\            res = 2;
-        \\            res = @as(c_int, 3) * i;
-        \\        },
-        \\        @as(c_int, 1)...@as(c_int, 3) => {
-        \\            res = 2;
-        \\            res = @as(c_int, 3) * i;
-        \\        },
-        \\        else => {
-        \\            res = @as(c_int, 3) * i;
-        \\        },
-        \\        @as(c_int, 7) => {
-        \\            {
-        \\                res = 7;
+        \\    while (true) {
+        \\        switch (i) {
+        \\            @as(c_int, 0) => {
+        \\                res = 1;
+        \\                res = 2;
+        \\                res = @as(c_int, 3) * i;
         \\                break;
-        \\            }
-        \\        },
-        \\        @as(c_int, 4), @as(c_int, 5) => {
-        \\            res = 69;
-        \\            {
-        \\                res = 5;
+        \\            },
+        \\            @as(c_int, 1)...@as(c_int, 3) => {
+        \\                res = 2;
+        \\                res = @as(c_int, 3) * i;
+        \\                break;
+        \\            },
+        \\            else => {
+        \\                res = @as(c_int, 3) * i;
+        \\                break;
+        \\            },
+        \\            @as(c_int, 7) => {
+        \\                {
+        \\                    res = 7;
+        \\                    break;
+        \\                }
+        \\            },
+        \\            @as(c_int, 4), @as(c_int, 5) => {
+        \\                res = 69;
+        \\                {
+        \\                    res = 5;
+        \\                    return;
+        \\                }
+        \\            },
+        \\            @as(c_int, 6) => {
+        \\                while (true) {
+        \\                    switch (res) {
+        \\                        @as(c_int, 9) => break,
+        \\                        else => {},
+        \\                    }
+        \\                    break;
+        \\                }
+        \\                res = 1;
         \\                return;
-        \\            }
-        \\        },
-        \\        @as(c_int, 6) => {
-        \\            switch (res) {
-        \\                @as(c_int, 9) => {},
-        \\                else => {},
-        \\            }
-        \\            res = 1;
-        \\            return;
-        \\        },
+        \\            },
+        \\        }
+        \\        break;
         \\    }
         \\}
     });
@@ -2275,7 +2308,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    var a = arg_a;
         \\    var b = arg_b;
         \\    var c = arg_c;
-        \\    var d: enum_Foo = @intToEnum(enum_Foo, FooA);
+        \\    var d: enum_Foo = @import("std").meta.cast(enum_Foo, FooA);
         \\    var e: c_int = @boolToInt((a != 0) and (b != 0));
         \\    var f: c_int = @boolToInt((b != 0) and (c != null));
         \\    var g: c_int = @boolToInt((a != 0) and (c != null));
@@ -2389,7 +2422,9 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub const yes = [*c]u8;
         \\pub export fn foo() void {
         \\    var a: yes = undefined;
-        \\    if (a != null) _ = @as(c_int, 2);
+        \\    if (a != null) {
+        \\        _ = @as(c_int, 2);
+        \\    }
         \\}
     });
 
@@ -2500,6 +2535,14 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     , &[_][]const u8{
         \\pub fn CALL(arg: anytype) callconv(.Inline) @TypeOf(bar(arg)) {
         \\    return bar(arg);
+        \\}
+    });
+
+    cases.add("macro call with no args",
+        \\#define CALL(arg) bar()
+    , &[_][]const u8{
+        \\pub fn CALL(arg: anytype) callconv(.Inline) @TypeOf(bar()) {
+        \\    return bar();
         \\}
     });
 
@@ -2740,7 +2783,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    var a = arg_a;
         \\    var i: c_int = 0;
         \\    while (a > @bitCast(c_uint, @as(c_int, 0))) {
-        \\        a >>= @intCast(@import("std").math.Log2Int(c_int), 1);
+        \\        a >>= @intCast(@import("std").math.Log2Int(c_int), @as(c_int, 1));
         \\    }
         \\    return i;
         \\}
@@ -2760,7 +2803,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    var a = arg_a;
         \\    var i: c_int = 0;
         \\    while (a > @bitCast(c_uint, @as(c_int, 0))) {
-        \\        a >>= @intCast(@import("std").math.Log2Int(c_int), 1);
+        \\        a >>= @intCast(@import("std").math.Log2Int(c_int), @as(c_int, 1));
         \\    }
         \\    return i;
         \\}

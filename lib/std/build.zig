@@ -51,7 +51,7 @@ pub const Builder = struct {
     default_step: *Step,
     env_map: *BufMap,
     top_level_steps: ArrayList(*TopLevelStep),
-    install_prefix: ?[]const u8,
+    install_prefix: []const u8,
     dest_dir: ?[]const u8,
     lib_dir: []const u8,
     exe_dir: []const u8,
@@ -156,7 +156,7 @@ pub const Builder = struct {
             .default_step = undefined,
             .env_map = env_map,
             .search_prefixes = ArrayList([]const u8).init(allocator),
-            .install_prefix = null,
+            .install_prefix = undefined,
             .lib_dir = undefined,
             .exe_dir = undefined,
             .h_dir = undefined,
@@ -190,22 +190,13 @@ pub const Builder = struct {
     }
 
     /// This function is intended to be called by std/special/build_runner.zig, not a build.zig file.
-    pub fn setInstallPrefix(self: *Builder, optional_prefix: ?[]const u8) void {
-        self.install_prefix = optional_prefix;
-    }
-
-    /// This function is intended to be called by std/special/build_runner.zig, not a build.zig file.
-    pub fn resolveInstallPrefix(self: *Builder) void {
+    pub fn resolveInstallPrefix(self: *Builder, install_prefix: ?[]const u8) void {
         if (self.dest_dir) |dest_dir| {
-            const install_prefix = self.install_prefix orelse "/usr";
-            self.install_path = fs.path.join(self.allocator, &[_][]const u8{ dest_dir, install_prefix }) catch unreachable;
+            self.install_prefix = install_prefix orelse "/usr";
+            self.install_path = fs.path.join(self.allocator, &[_][]const u8{ dest_dir, self.install_prefix }) catch unreachable;
         } else {
-            const install_prefix = self.install_prefix orelse blk: {
-                const p = self.cache_root;
-                self.install_prefix = p;
-                break :blk p;
-            };
-            self.install_path = install_prefix;
+            self.install_prefix = install_prefix orelse self.cache_root;
+            self.install_path = self.install_prefix;
         }
         self.lib_dir = fs.path.join(self.allocator, &[_][]const u8{ self.install_path, "lib" }) catch unreachable;
         self.exe_dir = fs.path.join(self.allocator, &[_][]const u8{ self.install_path, "bin" }) catch unreachable;
@@ -684,17 +675,19 @@ pub const Builder = struct {
 
     /// Exposes standard `zig build` options for choosing a target.
     pub fn standardTargetOptions(self: *Builder, args: StandardTargetOptionsArgs) CrossTarget {
-        const triple = self.option(
+        const maybe_triple = self.option(
             []const u8,
             "target",
             "The CPU architecture, OS, and ABI to build for",
-        ) orelse return args.default_target;
+        );
+        const mcpu = self.option([]const u8, "cpu", "Target CPU");
 
-        // TODO add cpu and features as part of the target triple
+        const triple = maybe_triple orelse return args.default_target;
 
         var diags: CrossTarget.ParseOptions.Diagnostics = .{};
         const selected_target = CrossTarget.parse(.{
             .arch_os_abi = triple,
+            .cpu_features = mcpu,
             .diagnostics = &diags,
         }) catch |err| switch (err) {
             error.UnknownCpuModel => {
@@ -1393,6 +1386,8 @@ pub const LibExeObjStep = struct {
     /// safely garbage-collected during the linking phase.
     link_function_sections: bool = false,
 
+    linker_allow_shlib_undefined: ?bool = null,
+
     /// Uses system Wine installation to run cross compiled Windows build artifacts.
     enable_wine: bool = false,
 
@@ -1948,6 +1943,15 @@ pub const LibExeObjStep = struct {
                 out.print("pub const {}: []const u8 = \"{}\";\n", .{ std.zig.fmtId(name), std.zig.fmtEscapes(value) }) catch unreachable;
                 return;
             },
+            ?[:0]const u8 => {
+                out.print("pub const {}: ?[:0]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
+                if (value) |payload| {
+                    out.print("\"{}\";\n", .{std.zig.fmtEscapes(payload)}) catch unreachable;
+                } else {
+                    out.writeAll("null;\n") catch unreachable;
+                }
+                return;
+            },
             ?[]const u8 => {
                 out.print("pub const {}: ?[]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
                 if (value) |payload| {
@@ -2335,6 +2339,9 @@ pub const LibExeObjStep = struct {
         }
         if (self.link_function_sections) {
             try zig_args.append("-ffunction-sections");
+        }
+        if (self.linker_allow_shlib_undefined) |x| {
+            try zig_args.append(if (x) "-fallow-shlib-undefined" else "-fno-allow-shlib-undefined");
         }
         if (self.single_threaded) {
             try zig_args.append("--single-threaded");

@@ -182,6 +182,8 @@ void ZigClang_detect_enum_CK(clang::CastKind x) {
         case clang::CK_IntegralToBoolean:
         case clang::CK_IntegralToFloating:
         case clang::CK_IntegralToPointer:
+        case clang::CK_FloatingToFixedPoint:
+        case clang::CK_FixedPointToFloating:
         case clang::CK_LValueBitCast:
         case clang::CK_LValueToRValueBitCast:
         case clang::CK_LValueToRValue:
@@ -237,6 +239,8 @@ static_assert((clang::CastKind)ZigClangCK_VectorSplat == clang::CK_VectorSplat, 
 static_assert((clang::CastKind)ZigClangCK_IntegralCast == clang::CK_IntegralCast, "");
 static_assert((clang::CastKind)ZigClangCK_IntegralToBoolean == clang::CK_IntegralToBoolean, "");
 static_assert((clang::CastKind)ZigClangCK_IntegralToFloating == clang::CK_IntegralToFloating, "");
+static_assert((clang::CastKind)ZigClangCK_FloatingToFixedPoint == clang::CK_FloatingToFixedPoint, "");
+static_assert((clang::CastKind)ZigClangCK_FixedPointToFloating == clang::CK_FixedPointToFloating, "");
 static_assert((clang::CastKind)ZigClangCK_FixedPointCast == clang::CK_FixedPointCast, "");
 static_assert((clang::CastKind)ZigClangCK_FixedPointToIntegral == clang::CK_FixedPointToIntegral, "");
 static_assert((clang::CastKind)ZigClangCK_IntegralToFixedPoint == clang::CK_IntegralToFixedPoint, "");
@@ -928,6 +932,7 @@ void ZigClang_detect_enum_DeclKind(clang::Decl::Kind x) {
         case clang::Decl::MSGuid:
         case clang::Decl::OMPDeclareMapper:
         case clang::Decl::OMPDeclareReduction:
+        case clang::Decl::TemplateParamObject:
         case clang::Decl::UnresolvedUsingValue:
         case clang::Decl::OMPAllocate:
         case clang::Decl::OMPRequires:
@@ -1013,6 +1018,7 @@ static_assert((clang::Decl::Kind)ZigClangDeclIndirectField == clang::Decl::Indir
 static_assert((clang::Decl::Kind)ZigClangDeclMSGuid == clang::Decl::MSGuid, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPDeclareMapper == clang::Decl::OMPDeclareMapper, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPDeclareReduction == clang::Decl::OMPDeclareReduction, "");
+static_assert((clang::Decl::Kind)ZigClangDeclTemplateParamObject == clang::Decl::TemplateParamObject, "");
 static_assert((clang::Decl::Kind)ZigClangDeclUnresolvedUsingValue == clang::Decl::UnresolvedUsingValue, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPRequires == clang::Decl::OMPRequires, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPThreadPrivate == clang::Decl::OMPThreadPrivate, "");
@@ -1122,6 +1128,8 @@ void ZigClang_detect_enum_BuiltinTypeKind(clang::BuiltinType::Kind x) {
         case clang::BuiltinType::SveFloat64x4:
         case clang::BuiltinType::SveBFloat16x4:
         case clang::BuiltinType::SveBool:
+        case clang::BuiltinType::VectorQuad:
+        case clang::BuiltinType::VectorPair:
         case clang::BuiltinType::Void:
         case clang::BuiltinType::Bool:
         case clang::BuiltinType::Char_U:
@@ -1295,6 +1303,8 @@ static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveFloat32x4 == clang
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveFloat64x4 == clang::BuiltinType::SveFloat64x4, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveBFloat16x4 == clang::BuiltinType::SveBFloat16x4, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveBool == clang::BuiltinType::SveBool, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeVectorQuad == clang::BuiltinType::VectorQuad, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeVectorPair == clang::BuiltinType::VectorPair, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeVoid == clang::BuiltinType::Void, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeBool == clang::BuiltinType::Bool, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeChar_U == clang::BuiltinType::Char_U, "");
@@ -1517,15 +1527,19 @@ static_assert((clang::PreprocessedEntity::EntityKind)ZigClangPreprocessedEntity_
 static_assert((clang::PreprocessedEntity::EntityKind)ZigClangPreprocessedEntity_InclusionDirectiveKind == clang::PreprocessedEntity::InclusionDirectiveKind, "");
 
 
-void ZigClang_detect_enum_ConstExprUsage(clang::Expr::ConstExprUsage x) {
+void ZigClang_detect_enum_ConstantExprKind(clang::Expr::ConstantExprKind x) {
     switch (x) {
-        case clang::Expr::EvaluateForCodeGen:
-        case clang::Expr::EvaluateForMangling:
+        case clang::Expr::ConstantExprKind::Normal:
+        case clang::Expr::ConstantExprKind::NonClassTemplateArgument:
+        case clang::Expr::ConstantExprKind::ClassTemplateArgument:
+        case clang::Expr::ConstantExprKind::ImmediateInvocation:
             break;
     }
 }
-static_assert((clang::Expr::ConstExprUsage)ZigClangExpr_EvaluateForCodeGen == clang::Expr::EvaluateForCodeGen, "");
-static_assert((clang::Expr::ConstExprUsage)ZigClangExpr_EvaluateForMangling == clang::Expr::EvaluateForMangling, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ContantExprKind_Normal == clang::Expr::ConstantExprKind::Normal, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ContantExprKind_NonClassTemplateArgument == clang::Expr::ConstantExprKind::NonClassTemplateArgument, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ContantExprKind_ClassTemplateArgument == clang::Expr::ConstantExprKind::ClassTemplateArgument, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ContantExprKind_ImmediateInvocation == clang::Expr::ConstantExprKind::ImmediateInvocation, "");
 
 
 static_assert(sizeof(ZigClangAPValue) == sizeof(clang::APValue), "");
@@ -2046,6 +2060,11 @@ bool ZigClangType_isRecordType(const ZigClangType *self) {
     return casted->isRecordType();
 }
 
+bool ZigClangType_isVectorType(const ZigClangType *self) {
+    auto casted = reinterpret_cast<const clang::Type *>(self);
+    return casted->isVectorType();
+}
+
 bool ZigClangType_isIncompleteOrZeroLengthArrayType(const ZigClangQualType *self,
         const struct ZigClangASTContext *ctx)
 {
@@ -2143,12 +2162,12 @@ bool ZigClangExpr_EvaluateAsFloat(const ZigClangExpr *self, ZigClangAPFloat **re
 }
 
 bool ZigClangExpr_EvaluateAsConstantExpr(const ZigClangExpr *self, ZigClangExprEvalResult *result,
-        ZigClangExpr_ConstExprUsage usage, const struct ZigClangASTContext *ctx)
+        ZigClangExpr_ConstantExprKind kind, const struct ZigClangASTContext *ctx)
 {
     auto casted_self = reinterpret_cast<const clang::Expr *>(self);
     auto casted_ctx = reinterpret_cast<const clang::ASTContext *>(ctx);
     clang::Expr::EvalResult eval_result;
-    if (!casted_self->EvaluateAsConstantExpr(eval_result, (clang::Expr::ConstExprUsage)usage, *casted_ctx)) {
+    if (!casted_self->EvaluateAsConstantExpr(eval_result, *casted_ctx, (clang::Expr::ConstantExprKind)kind)) {
         return false;
     }
     *result = bitcast(eval_result);
@@ -2738,6 +2757,16 @@ struct ZigClangQualType ZigClangBinaryOperator_getType(const struct ZigClangBina
     return bitcast(casted->getType());
 }
 
+const struct ZigClangExpr *ZigClangConvertVectorExpr_getSrcExpr(const struct ZigClangConvertVectorExpr *self) {
+    auto casted = reinterpret_cast<const clang::ConvertVectorExpr *>(self);
+    return reinterpret_cast<const struct ZigClangExpr *>(casted->getSrcExpr());
+}
+
+struct ZigClangQualType ZigClangConvertVectorExpr_getTypeSourceInfo_getType(const struct ZigClangConvertVectorExpr *self) {
+    auto casted = reinterpret_cast<const clang::ConvertVectorExpr *>(self);
+    return bitcast(casted->getTypeSourceInfo()->getType());
+}
+
 struct ZigClangQualType ZigClangDecayedType_getDecayedType(const struct ZigClangDecayedType *self) {
     auto casted = reinterpret_cast<const clang::DecayedType *>(self);
     return bitcast(casted->getDecayedType());
@@ -2843,6 +2872,16 @@ struct ZigClangQualType ZigClangValueDecl_getType(const struct ZigClangValueDecl
     return bitcast(casted->getType());
 }
 
+struct ZigClangQualType ZigClangVectorType_getElementType(const struct ZigClangVectorType *self) {
+    auto casted = reinterpret_cast<const clang::VectorType *>(self);
+    return bitcast(casted->getElementType());
+}
+
+unsigned ZigClangVectorType_getNumElements(const struct ZigClangVectorType *self) {
+    auto casted = reinterpret_cast<const clang::VectorType *>(self);
+    return casted->getNumElements();
+}
+
 const struct ZigClangExpr *ZigClangWhileStmt_getCond(const struct ZigClangWhileStmt *self) {
     auto casted = reinterpret_cast<const clang::WhileStmt *>(self);
     return reinterpret_cast<const struct ZigClangExpr *>(casted->getCond());
@@ -2922,6 +2961,15 @@ struct ZigClangSourceLocation ZigClangUnaryExprOrTypeTraitExpr_getBeginLoc(
     return bitcast(casted->getBeginLoc());
 }
 
+unsigned ZigClangShuffleVectorExpr_getNumSubExprs(const ZigClangShuffleVectorExpr *self) {
+    auto casted = reinterpret_cast<const clang::ShuffleVectorExpr *>(self);
+    return casted->getNumSubExprs();
+}
+
+const struct ZigClangExpr *ZigClangShuffleVectorExpr_getExpr(const struct ZigClangShuffleVectorExpr *self, unsigned idx) {
+    auto casted = reinterpret_cast<const clang::ShuffleVectorExpr *>(self);
+    return reinterpret_cast<const struct ZigClangExpr *>(casted->getExpr(idx));
+}
 
 enum ZigClangUnaryExprOrTypeTrait_Kind ZigClangUnaryExprOrTypeTraitExpr_getKind(
     const struct ZigClangUnaryExprOrTypeTraitExpr *self)
