@@ -204,6 +204,9 @@ static ZigLLVM_CallingConv get_llvm_cc(CodeGen *g, CallingConvention cc) {
         case CallingConventionSignal:
             assert(g->zig_target->arch == ZigLLVM_avr);
             return ZigLLVM_AVR_SIGNAL;
+        case CallingConventionSysV:
+            assert(g->zig_target->arch == ZigLLVM_x86_64);
+            return ZigLLVM_X86_64_SysV;
     }
     zig_unreachable();
 }
@@ -348,6 +351,7 @@ static bool cc_want_sret_attr(CallingConvention cc) {
         case CallingConventionAPCS:
         case CallingConventionAAPCS:
         case CallingConventionAAPCSVFP:
+        case CallingConventionSysV:
             return true;
         case CallingConventionAsync:
         case CallingConventionUnspecified:
@@ -4876,6 +4880,9 @@ static LLVMValueRef ir_render_asm_gen(CodeGen *g, IrExecutableGen *executable, I
                 type_ref = get_llvm_type(g, wider_type);
                 value_ref = gen_widen_or_shorten(g, false, type, wider_type, value_ref);
             }
+        } else if (handle_is_ptr(g, type)) {
+            ZigType *gen_type = get_pointer_to_type(g, type, true);
+            type_ref = get_llvm_type(g, gen_type);
         }
 
         param_types[param_index] = type_ref;
@@ -5478,8 +5485,8 @@ static enum ZigLLVM_AtomicRMWBinOp to_ZigLLVMAtomicRMWBinOp(AtomicRmwOp op, bool
 }
 
 static LLVMTypeRef get_atomic_abi_type(CodeGen *g, IrInstGen *instruction) {
-    // If the operand type of an atomic operation is not a power of two sized
-    // we need to widen it before using it and then truncate the result.
+    // If the operand type of an atomic operation is not byte sized we need to
+    // widen it before using it and then truncate the result.
 
     ir_assert(instruction->value->type->id == ZigTypeIdPointer, instruction);
     ZigType *operand_type = instruction->value->type->data.pointer.child_type;
@@ -5491,7 +5498,7 @@ static LLVMTypeRef get_atomic_abi_type(CodeGen *g, IrInstGen *instruction) {
         bool is_signed = operand_type->data.integral.is_signed;
 
         ir_assert(bit_count != 0, instruction);
-        if (bit_count == 1 || !is_power_of_2(bit_count)) {
+        if (!is_power_of_2(bit_count) || bit_count % 8) {
             return get_llvm_type(g, get_int_type(g, is_signed, operand_type->abi_size * 8));
         } else {
             return nullptr;
@@ -7436,7 +7443,10 @@ static LLVMValueRef gen_const_val(CodeGen *g, ZigValue *const_val, const char *n
         case ZigTypeIdFloat:
             switch (type_entry->data.floating.bit_count) {
                 case 16:
-                    return LLVMConstReal(get_llvm_type(g, type_entry), zig_f16_to_double(const_val->data.x_f16));
+                    {
+                        LLVMValueRef as_int = LLVMConstInt(LLVMInt16Type(), const_val->data.x_f16.v, false);
+                        return LLVMConstBitCast(as_int, get_llvm_type(g, type_entry));
+                    }
                 case 32:
                     return LLVMConstReal(get_llvm_type(g, type_entry), const_val->data.x_f32);
                 case 64:
@@ -8921,10 +8931,10 @@ static const char *bool_to_str(bool b) {
 
 static const char *build_mode_to_str(BuildMode build_mode) {
     switch (build_mode) {
-        case BuildModeDebug: return "Mode.Debug";
-        case BuildModeSafeRelease: return "Mode.ReleaseSafe";
-        case BuildModeFastRelease: return "Mode.ReleaseFast";
-        case BuildModeSmallRelease: return "Mode.ReleaseSmall";
+        case BuildModeDebug: return "Debug";
+        case BuildModeSafeRelease: return "ReleaseSafe";
+        case BuildModeFastRelease: return "ReleaseFast";
+        case BuildModeSmallRelease: return "ReleaseSmall";
     }
     zig_unreachable();
 }
@@ -8995,7 +9005,9 @@ Buf *codegen_generate_builtin_source(CodeGen *g) {
     g->have_err_ret_tracing = detect_err_ret_tracing(g);
 
     Buf *contents = buf_alloc();
-    buf_appendf(contents, "usingnamespace @import(\"std\").builtin;\n\n");
+    buf_appendf(contents,
+        "const std = @import(\"std\");\n"
+    );
 
     const char *cur_os = nullptr;
     {
@@ -9074,6 +9086,7 @@ Buf *codegen_generate_builtin_source(CodeGen *g) {
     static_assert(CallingConventionAPCS == 11, "");
     static_assert(CallingConventionAAPCS == 12, "");
     static_assert(CallingConventionAAPCSVFP == 13, "");
+    static_assert(CallingConventionSysV == 14, "");
 
     static_assert(BuiltinPtrSizeOne == 0, "");
     static_assert(BuiltinPtrSizeMany == 1, "");
@@ -9089,19 +9102,23 @@ Buf *codegen_generate_builtin_source(CodeGen *g) {
     static_assert(TargetSubsystemEfiRom == 6, "");
     static_assert(TargetSubsystemEfiRuntimeDriver == 7, "");
 
-    buf_append_str(contents, "/// Deprecated: use `std.Target.current.cpu.arch`\n");
-    buf_append_str(contents, "pub const arch = Target.current.cpu.arch;\n");
-    buf_append_str(contents, "/// Deprecated: use `std.Target.current.cpu.arch.endian()`\n");
-    buf_append_str(contents, "pub const endian = Target.current.cpu.arch.endian();\n");
-    buf_appendf(contents, "pub const output_mode = OutputMode.Obj;\n");
-    buf_appendf(contents, "pub const link_mode = LinkMode.%s;\n", ZIG_QUOTE(ZIG_LINK_MODE));
+    buf_appendf(contents, "pub const output_mode = std.builtin.OutputMode.Obj;\n");
+    buf_appendf(contents, "pub const link_mode = std.builtin.LinkMode.%s;\n", ZIG_QUOTE(ZIG_LINK_MODE));
     buf_appendf(contents, "pub const is_test = false;\n");
     buf_appendf(contents, "pub const single_threaded = %s;\n", bool_to_str(g->is_single_threaded));
-    buf_appendf(contents, "pub const abi = Abi.%s;\n", cur_abi);
-    buf_appendf(contents, "pub const cpu: Cpu = Target.Cpu.baseline(.%s);\n", cur_arch);
-    buf_appendf(contents, "pub const os = Target.Os.Tag.defaultVersionRange(.%s);\n", cur_os);
-    buf_appendf(contents, "pub const object_format = ObjectFormat.%s;\n", cur_obj_fmt);
-    buf_appendf(contents, "pub const mode = %s;\n", build_mode_to_str(g->build_mode));
+    buf_appendf(contents, "pub const abi = std.Target.Abi.%s;\n", cur_abi);
+    buf_appendf(contents, "pub const cpu = std.Target.Cpu.baseline(.%s);\n", cur_arch);
+    buf_appendf(contents, "pub const os = std.Target.Os.Tag.defaultVersionRange(.%s);\n", cur_os);
+    buf_appendf(contents,
+        "pub const target = std.Target{\n"
+        "    .cpu = cpu,\n"
+        "    .os = os,\n"
+        "    .abi = abi,\n"
+        "};\n"
+    );
+
+    buf_appendf(contents, "pub const object_format = std.Target.ObjectFormat.%s;\n", cur_obj_fmt);
+    buf_appendf(contents, "pub const mode = std.builtin.Mode.%s;\n", build_mode_to_str(g->build_mode));
     buf_appendf(contents, "pub const link_libc = %s;\n", bool_to_str(g->link_libc));
     buf_appendf(contents, "pub const link_libcpp = %s;\n", bool_to_str(g->link_libcpp));
     buf_appendf(contents, "pub const have_error_return_tracing = %s;\n", bool_to_str(g->have_err_ret_tracing));
@@ -9109,13 +9126,13 @@ Buf *codegen_generate_builtin_source(CodeGen *g) {
     buf_appendf(contents, "pub const position_independent_code = %s;\n", bool_to_str(g->have_pic));
     buf_appendf(contents, "pub const position_independent_executable = %s;\n", bool_to_str(g->have_pie));
     buf_appendf(contents, "pub const strip_debug_info = %s;\n", bool_to_str(g->strip_debug_symbols));
-    buf_appendf(contents, "pub const code_model = CodeModel.default;\n");
+    buf_appendf(contents, "pub const code_model = std.builtin.CodeModel.default;\n");
     buf_appendf(contents, "pub const zig_is_stage2 = false;\n");
 
     {
         TargetSubsystem detected_subsystem = detect_subsystem(g);
         if (detected_subsystem != TargetSubsystemAuto) {
-            buf_appendf(contents, "pub const explicit_subsystem = SubSystem.%s;\n", subsystem_to_str(detected_subsystem));
+            buf_appendf(contents, "pub const explicit_subsystem = std.builtin.SubSystem.%s;\n", subsystem_to_str(detected_subsystem));
         }
     }
 
@@ -9287,7 +9304,6 @@ static void init(CodeGen *g) {
 
     char *layout_str = LLVMCopyStringRepOfTargetData(g->target_data_ref);
     LLVMSetDataLayout(g->module, layout_str);
-
 
     assert(g->pointer_size_bytes == LLVMPointerSize(g->target_data_ref));
     g->is_big_endian = (LLVMByteOrder(g->target_data_ref) == LLVMBigEndian);

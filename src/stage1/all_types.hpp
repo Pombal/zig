@@ -84,6 +84,7 @@ enum CallingConvention {
     CallingConventionAPCS,
     CallingConventionAAPCS,
     CallingConventionAAPCSVFP,
+    CallingConventionSysV
 };
 
 // This one corresponds to the builtin.zig enum.
@@ -717,7 +718,6 @@ struct AstNodeFnProto {
     Buf *name;
     ZigList<AstNode *> params;
     AstNode *return_type;
-    Token *return_anytype_token;
     AstNode *fn_def_node;
     // populated if this is an extern declaration
     Buf *lib_name;

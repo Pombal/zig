@@ -211,8 +211,9 @@ pub const Target = struct {
         /// If neither of these cases apply, a runtime check should be used to determine if the
         /// target supports a given OS feature.
         ///
-        /// Binaries built with a given maximum version will continue to function on newer operating system
-        /// versions. However, such a binary may not take full advantage of the newer operating system APIs.
+        /// Binaries built with a given maximum version will continue to function on newer
+        /// operating system versions. However, such a binary may not take full advantage of the
+        /// newer operating system APIs.
         ///
         /// See `Os.isAtLeast`.
         pub const VersionRange = union {
@@ -260,13 +261,13 @@ pub const Target = struct {
                     .freebsd => return .{
                         .semver = Version.Range{
                             .min = .{ .major = 12, .minor = 0 },
-                            .max = .{ .major = 12, .minor = 1 },
+                            .max = .{ .major = 13, .minor = 0 },
                         },
                     },
                     .macos => return .{
                         .semver = .{
                             .min = .{ .major = 10, .minor = 13 },
-                            .max = .{ .major = 11, .minor = 1 },
+                            .max = .{ .major = 11, .minor = 2 },
                         },
                     },
                     .ios => return .{
@@ -290,19 +291,19 @@ pub const Target = struct {
                     .netbsd => return .{
                         .semver = .{
                             .min = .{ .major = 8, .minor = 0 },
-                            .max = .{ .major = 9, .minor = 0 },
+                            .max = .{ .major = 9, .minor = 1 },
                         },
                     },
                     .openbsd => return .{
                         .semver = .{
                             .min = .{ .major = 6, .minor = 8 },
-                            .max = .{ .major = 6, .minor = 8 },
+                            .max = .{ .major = 6, .minor = 9 },
                         },
                     },
                     .dragonfly => return .{
                         .semver = .{
                             .min = .{ .major = 5, .minor = 8 },
-                            .max = .{ .major = 5, .minor = 8 },
+                            .max = .{ .major = 6, .minor = 0 },
                         },
                     },
 
@@ -430,6 +431,7 @@ pub const Target = struct {
     pub const powerpc = @import("target/powerpc.zig");
     pub const riscv = @import("target/riscv.zig");
     pub const sparc = @import("target/sparc.zig");
+    pub const spirv = @import("target/spirv.zig");
     pub const systemz = @import("target/systemz.zig");
     pub const ve = @import("target/ve.zig");
     pub const wasm = @import("target/wasm.zig");
@@ -593,7 +595,7 @@ pub const Target = struct {
             pub const Set = struct {
                 ints: [usize_count]usize,
 
-                pub const needed_bit_count = 172;
+                pub const needed_bit_count = 288;
                 pub const byte_count = (needed_bit_count + 7) / 8;
                 pub const usize_count = (byte_count + (@sizeOf(usize) - 1)) / @sizeOf(usize);
                 pub const Index = std.math.Log2Int(std.meta.Int(.unsigned, usize_count * @bitSizeOf(usize)));
@@ -800,6 +802,13 @@ pub const Target = struct {
                 };
             }
 
+            pub fn isPPC(arch: Arch) bool {
+                return switch (arch) {
+                    .powerpc, .powerpcle => true,
+                    else => false,
+                };
+            }
+
             pub fn isPPC64(arch: Arch) bool {
                 return switch (arch) {
                     .powerpc64, .powerpc64le => true,
@@ -810,6 +819,13 @@ pub const Target = struct {
             pub fn isSPARC(arch: Arch) bool {
                 return switch (arch) {
                     .sparc, .sparcel, .sparcv9 => true,
+                    else => false,
+                };
+            }
+
+            pub fn isSPIRV(arch: Arch) bool {
+                return switch (arch) {
+                    .spirv32, .spirv64 => true,
                     else => false,
                 };
             }
@@ -1108,6 +1124,7 @@ pub const Target = struct {
                     .amdgcn => &amdgpu.all_features,
                     .riscv32, .riscv64 => &riscv.all_features,
                     .sparc, .sparcv9, .sparcel => &sparc.all_features,
+                    .spirv32, .spirv64 => &spirv.all_features,
                     .s390x => &systemz.all_features,
                     .i386, .x86_64 => &x86.all_features,
                     .nvptx, .nvptx64 => &nvptx.all_features,
@@ -1184,8 +1201,8 @@ pub const Target = struct {
                     .mips, .mipsel => &mips.cpu.mips32,
                     .mips64, .mips64el => &mips.cpu.mips64,
                     .msp430 => &msp430.cpu.generic,
-                    .powerpc => &powerpc.cpu.ppc32,
-                    .powerpcle => &powerpc.cpu.ppc32,
+                    .powerpc => &powerpc.cpu.ppc,
+                    .powerpcle => &powerpc.cpu.ppc,
                     .powerpc64 => &powerpc.cpu.ppc64,
                     .powerpc64le => &powerpc.cpu.ppc64le,
                     .amdgcn => &amdgpu.cpu.generic,
@@ -1225,11 +1242,7 @@ pub const Target = struct {
         }
     };
 
-    pub const current = Target{
-        .cpu = builtin.cpu,
-        .os = builtin.os,
-        .abi = builtin.abi,
-    };
+    pub const current = builtin.target;
 
     pub const stack_align = 16;
 
@@ -1294,9 +1307,6 @@ pub const Target = struct {
     }
 
     pub fn libPrefix_cpu_arch_abi(cpu_arch: Cpu.Arch, abi: Abi) [:0]const u8 {
-        if (cpu_arch.isWasm()) {
-            return "";
-        }
         switch (abi) {
             .msvc => return "",
             else => return "lib",
@@ -1315,6 +1325,9 @@ pub const Target = struct {
         }
         if (cpu_arch.isWasm()) {
             return .wasm;
+        }
+        if (cpu_arch.isSPIRV()) {
+            return .spirv;
         }
         return .elf;
     }

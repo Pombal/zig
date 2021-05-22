@@ -389,6 +389,43 @@ pub fn GetQueuedCompletionStatus(
     return GetQueuedCompletionStatusResult.Normal;
 }
 
+pub const GetQueuedCompletionStatusError = error{
+    Aborted,
+    Cancelled,
+    EOF,
+    Timeout,
+} || std.os.UnexpectedError;
+
+pub fn GetQueuedCompletionStatusEx(
+    completion_port: HANDLE,
+    completion_port_entries: []OVERLAPPED_ENTRY,
+    timeout_ms: ?DWORD,
+    alertable: bool,
+) GetQueuedCompletionStatusError!u32 {
+    var num_entries_removed: u32 = 0;
+
+    const success = kernel32.GetQueuedCompletionStatusEx(
+        completion_port,
+        completion_port_entries.ptr,
+        @intCast(ULONG, completion_port_entries.len),
+        &num_entries_removed,
+        timeout_ms orelse INFINITE,
+        @boolToInt(alertable),
+    );
+
+    if (success == FALSE) {
+        return switch (kernel32.GetLastError()) {
+            .ABANDONED_WAIT_0 => error.Aborted,
+            .OPERATION_ABORTED => error.Cancelled,
+            .HANDLE_EOF => error.EOF,
+            .IMEOUT => error.Timeout,
+            else => |err| unexpectedError(err),
+        };
+    }
+
+    return num_entries_removed;
+}
+
 pub fn CloseHandle(hObject: HANDLE) void {
     assert(ntdll.NtClose(hObject) == .SUCCESS);
 }
@@ -985,7 +1022,7 @@ pub fn QueryObjectName(
     }
 }
 test "QueryObjectName" {
-    if (comptime builtin.os.tag != .windows)
+    if (comptime builtin.target.os.tag != .windows)
         return;
 
     //any file will do; canonicalization works on NTFS junctions and symlinks, hardlinks remain separate paths.
@@ -997,7 +1034,7 @@ test "QueryObjectName" {
     var result_path = try QueryObjectName(handle, &out_buffer);
     const required_len_in_u16 = result_path.len + @divExact(@ptrToInt(result_path.ptr) - @ptrToInt(&out_buffer), 2) + 1;
     //insufficient size
-    std.testing.expectError(error.NameTooLong, QueryObjectName(handle, out_buffer[0 .. required_len_in_u16 - 1]));
+    try std.testing.expectError(error.NameTooLong, QueryObjectName(handle, out_buffer[0 .. required_len_in_u16 - 1]));
     //exactly-sufficient size
     _ = try QueryObjectName(handle, out_buffer[0..required_len_in_u16]);
 }
@@ -1140,7 +1177,7 @@ pub fn GetFinalPathNameByHandle(
 }
 
 test "GetFinalPathNameByHandle" {
-    if (comptime builtin.os.tag != .windows)
+    if (comptime builtin.target.os.tag != .windows)
         return;
 
     //any file will do
@@ -1155,8 +1192,8 @@ test "GetFinalPathNameByHandle" {
 
     const required_len_in_u16 = nt_path.len + @divExact(@ptrToInt(nt_path.ptr) - @ptrToInt(&buffer), 2) + 1;
     //check with insufficient size
-    std.testing.expectError(error.NameTooLong, GetFinalPathNameByHandle(handle, .{ .volume_name = .Nt }, buffer[0 .. required_len_in_u16 - 1]));
-    std.testing.expectError(error.NameTooLong, GetFinalPathNameByHandle(handle, .{ .volume_name = .Dos }, buffer[0 .. required_len_in_u16 - 1]));
+    try std.testing.expectError(error.NameTooLong, GetFinalPathNameByHandle(handle, .{ .volume_name = .Nt }, buffer[0 .. required_len_in_u16 - 1]));
+    try std.testing.expectError(error.NameTooLong, GetFinalPathNameByHandle(handle, .{ .volume_name = .Dos }, buffer[0 .. required_len_in_u16 - 1]));
 
     //check with exactly-sufficient size
     _ = try GetFinalPathNameByHandle(handle, .{ .volume_name = .Nt }, buffer[0..required_len_in_u16]);
@@ -1224,7 +1261,7 @@ pub fn WSAStartup(majorVersion: u8, minorVersion: u8) !ws2_32.WSADATA {
             .WSASYSNOTREADY => return error.SystemNotAvailable,
             .WSAVERNOTSUPPORTED => return error.VersionNotSupported,
             .WSAEINPROGRESS => return error.BlockingOperationInProgress,
-            .WSAEPROCLIM => return error.SystemResources,
+            .WSAEPROCLIM => return error.ProcessFdQuotaExceeded,
             else => |err| return unexpectedWSAError(err),
         },
     };
@@ -1243,6 +1280,30 @@ pub fn WSACleanup() !void {
     };
 }
 
+var wsa_startup_mutex: std.Thread.Mutex = .{};
+
+/// Microsoft requires WSAStartup to be called to initialize, or else
+/// WSASocketW will return WSANOTINITIALISED.
+/// Since this is a standard library, we do not have the luxury of
+/// putting initialization code anywhere, because we would not want
+/// to pay the cost of calling WSAStartup if there ended up being no
+/// networking. Also, if Zig code is used as a library, Zig is not in
+/// charge of the start code, and we couldn't put in any initialization
+/// code even if we wanted to.
+/// The documentation for WSAStartup mentions that there must be a
+/// matching WSACleanup call. It is not possible for the Zig Standard
+/// Library to honor this for the same reason - there is nowhere to put
+/// deinitialization code.
+/// So, API users of the zig std lib have two options:
+///  * (recommended) The simple, cross-platform way: just call `WSASocketW`
+///    and don't worry about it. Zig will call WSAStartup() in a thread-safe
+///    manner and never deinitialize networking. This is ideal for an
+///    application which has the capability to do networking.
+///  * The getting-your-hands-dirty way: call `WSAStartup()` before doing
+///    networking, so that the error handling code for WSANOTINITIALISED never
+///    gets run, which then allows the application or library to call `WSACleanup()`.
+///    This could make sense for a library, which has init and deinit
+///    functions for the whole library's lifetime.
 pub fn WSASocketW(
     af: i32,
     socket_type: i32,
@@ -1251,17 +1312,40 @@ pub fn WSASocketW(
     g: ws2_32.GROUP,
     dwFlags: DWORD,
 ) !ws2_32.SOCKET {
-    const rc = ws2_32.WSASocketW(af, socket_type, protocol, protocolInfo, g, dwFlags);
-    if (rc == ws2_32.INVALID_SOCKET) {
-        switch (ws2_32.WSAGetLastError()) {
-            .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
-            .WSAEMFILE => return error.ProcessFdQuotaExceeded,
-            .WSAENOBUFS => return error.SystemResources,
-            .WSAEPROTONOSUPPORT => return error.ProtocolNotSupported,
-            else => |err| return unexpectedWSAError(err),
+    var first = true;
+    while (true) {
+        const rc = ws2_32.WSASocketW(af, socket_type, protocol, protocolInfo, g, dwFlags);
+        if (rc == ws2_32.INVALID_SOCKET) {
+            switch (ws2_32.WSAGetLastError()) {
+                .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                .WSAEMFILE => return error.ProcessFdQuotaExceeded,
+                .WSAENOBUFS => return error.SystemResources,
+                .WSAEPROTONOSUPPORT => return error.ProtocolNotSupported,
+                .WSANOTINITIALISED => {
+                    if (!first) return error.Unexpected;
+                    first = false;
+
+                    var held = wsa_startup_mutex.acquire();
+                    defer held.release();
+
+                    // Here we could use a flag to prevent multiple threads to prevent
+                    // multiple calls to WSAStartup, but it doesn't matter. We're globally
+                    // leaking the resource intentionally, and the mutex already prevents
+                    // data races within the WSAStartup function.
+                    _ = WSAStartup(2, 2) catch |err| switch (err) {
+                        error.SystemNotAvailable => return error.SystemResources,
+                        error.VersionNotSupported => return error.Unexpected,
+                        error.BlockingOperationInProgress => return error.Unexpected,
+                        error.ProcessFdQuotaExceeded => return error.ProcessFdQuotaExceeded,
+                        error.Unexpected => return error.Unexpected,
+                    };
+                    continue;
+                },
+                else => |err| return unexpectedWSAError(err),
+            }
         }
+        return rc;
     }
-    return rc;
 }
 
 pub fn bind(s: ws2_32.SOCKET, name: *const ws2_32.sockaddr, namelen: ws2_32.socklen_t) i32 {
@@ -1289,6 +1373,10 @@ pub fn accept(s: ws2_32.SOCKET, name: ?*ws2_32.sockaddr, namelen: ?*ws2_32.sockl
 
 pub fn getsockname(s: ws2_32.SOCKET, name: *ws2_32.sockaddr, namelen: *ws2_32.socklen_t) i32 {
     return ws2_32.getsockname(s, name, @ptrCast(*i32, namelen));
+}
+
+pub fn getpeername(s: ws2_32.SOCKET, name: *ws2_32.sockaddr, namelen: *ws2_32.socklen_t) i32 {
+    return ws2_32.getpeername(s, name, @ptrCast(*i32, namelen));
 }
 
 pub fn sendmsg(
@@ -1401,6 +1489,28 @@ pub fn SetConsoleTextAttribute(hConsoleOutput: HANDLE, wAttributes: WORD) SetCon
         switch (kernel32.GetLastError()) {
             else => |err| return unexpectedError(err),
         }
+    }
+}
+
+pub fn SetConsoleCtrlHandler(handler_routine: ?HANDLER_ROUTINE, add: bool) !void {
+    const success = kernel32.SetConsoleCtrlHandler(
+        handler_routine,
+        if (add) TRUE else FALSE,
+    );
+
+    if (success == FALSE) {
+        return switch (kernel32.GetLastError()) {
+            else => |err| unexpectedError(err),
+        };
+    }
+}
+
+pub fn SetFileCompletionNotificationModes(handle: HANDLE, flags: UCHAR) !void {
+    const success = kernel32.SetFileCompletionNotificationModes(handle, flags);
+    if (success == FALSE) {
+        return switch (kernel32.GetLastError()) {
+            else => |err| unexpectedError(err),
+        };
     }
 }
 
@@ -1554,7 +1664,7 @@ pub fn SetFileTime(
 }
 
 pub fn teb() *TEB {
-    return switch (builtin.arch) {
+    return switch (builtin.target.cpu.arch) {
         .i386 => asm volatile (
             \\ movl %%fs:0x18, %[ptr]
             : [ptr] "=r" (-> *TEB)
@@ -1684,6 +1794,38 @@ pub fn wToPrefixedFileW(s: []const u16) !PathSpace {
 
 fn MAKELANGID(p: c_ushort, s: c_ushort) callconv(.Inline) LANGID {
     return (s << 10) | p;
+}
+
+/// Loads a Winsock extension function in runtime specified by a GUID.
+pub fn loadWinsockExtensionFunction(comptime T: type, sock: ws2_32.SOCKET, guid: GUID) !T {
+    var function: T = undefined;
+    var num_bytes: DWORD = undefined;
+
+    const rc = ws2_32.WSAIoctl(
+        sock,
+        ws2_32.SIO_GET_EXTENSION_FUNCTION_POINTER,
+        @ptrCast(*const c_void, &guid),
+        @sizeOf(GUID),
+        &function,
+        @sizeOf(T),
+        &num_bytes,
+        null,
+        null,
+    );
+
+    if (rc == ws2_32.SOCKET_ERROR) {
+        return switch (ws2_32.WSAGetLastError()) {
+            .WSAEOPNOTSUPP => error.OperationNotSupported,
+            .WSAENOTSOCK => error.FileDescriptorNotASocket,
+            else => |err| unexpectedWSAError(err),
+        };
+    }
+
+    if (num_bytes != @sizeOf(T)) {
+        return error.ShortRead;
+    }
+
+    return function;
 }
 
 /// Call this when you made a windows DLL call or something that does SetLastError

@@ -3,6 +3,22 @@ const std = @import("std");
 const CrossTarget = std.zig.CrossTarget;
 
 pub fn addCases(cases: *tests.TranslateCContext) void {
+    cases.add("field access is grouped if necessary",
+        \\unsigned long foo(unsigned long x) {
+        \\    return ((union{unsigned long _x}){x})._x;
+        \\}
+    , &[_][]const u8{
+        \\pub export fn foo(arg_x: c_ulong) c_ulong {
+        \\    var x = arg_x;
+        \\    const union_unnamed_1 = extern union {
+        \\        _x: c_ulong,
+        \\    };
+        \\    return (union_unnamed_1{
+        \\        ._x = x,
+        \\    })._x;
+        \\}
+    });
+
     cases.add("unnamed child types of typedef receive typedef's name",
         \\typedef enum {
         \\    FooA,
@@ -1347,7 +1363,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     , &[_][]const u8{
         \\pub export fn ptrcast() [*c]f32 {
         \\    var a: [*c]c_int = undefined;
-        \\    return @ptrCast([*c]f32, @alignCast(@alignOf(f32), a));
+        \\    return @ptrCast([*c]f32, @alignCast(@import("std").meta.alignment(f32), a));
         \\}
     });
 
@@ -1371,16 +1387,16 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub export fn test_ptr_cast() void {
         \\    var p: ?*c_void = undefined;
         \\    {
-        \\        var to_char: [*c]u8 = @ptrCast([*c]u8, @alignCast(@alignOf(u8), p));
-        \\        var to_short: [*c]c_short = @ptrCast([*c]c_short, @alignCast(@alignOf(c_short), p));
-        \\        var to_int: [*c]c_int = @ptrCast([*c]c_int, @alignCast(@alignOf(c_int), p));
-        \\        var to_longlong: [*c]c_longlong = @ptrCast([*c]c_longlong, @alignCast(@alignOf(c_longlong), p));
+        \\        var to_char: [*c]u8 = @ptrCast([*c]u8, @alignCast(@import("std").meta.alignment(u8), p));
+        \\        var to_short: [*c]c_short = @ptrCast([*c]c_short, @alignCast(@import("std").meta.alignment(c_short), p));
+        \\        var to_int: [*c]c_int = @ptrCast([*c]c_int, @alignCast(@import("std").meta.alignment(c_int), p));
+        \\        var to_longlong: [*c]c_longlong = @ptrCast([*c]c_longlong, @alignCast(@import("std").meta.alignment(c_longlong), p));
         \\    }
         \\    {
-        \\        var to_char: [*c]u8 = @ptrCast([*c]u8, @alignCast(@alignOf(u8), p));
-        \\        var to_short: [*c]c_short = @ptrCast([*c]c_short, @alignCast(@alignOf(c_short), p));
-        \\        var to_int: [*c]c_int = @ptrCast([*c]c_int, @alignCast(@alignOf(c_int), p));
-        \\        var to_longlong: [*c]c_longlong = @ptrCast([*c]c_longlong, @alignCast(@alignOf(c_longlong), p));
+        \\        var to_char: [*c]u8 = @ptrCast([*c]u8, @alignCast(@import("std").meta.alignment(u8), p));
+        \\        var to_short: [*c]c_short = @ptrCast([*c]c_short, @alignCast(@import("std").meta.alignment(c_short), p));
+        \\        var to_int: [*c]c_int = @ptrCast([*c]c_int, @alignCast(@import("std").meta.alignment(c_int), p));
+        \\        var to_longlong: [*c]c_longlong = @ptrCast([*c]c_longlong, @alignCast(@import("std").meta.alignment(c_longlong), p));
         \\    }
         \\}
     });
@@ -3012,7 +3028,6 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\void call() {
         \\    fn_int(3.0f);
         \\    fn_int(3.0);
-        \\    fn_int(3.0L);
         \\    fn_int('ABCD');
         \\    fn_f32(3);
         \\    fn_f64(3);
@@ -3035,7 +3050,6 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub extern fn fn_bool(x: bool) void;
         \\pub extern fn fn_ptr(x: ?*c_void) void;
         \\pub export fn call() void {
-        \\    fn_int(@floatToInt(c_int, 3.0));
         \\    fn_int(@floatToInt(c_int, 3.0));
         \\    fn_int(@floatToInt(c_int, 3.0));
         \\    fn_int(@as(c_int, 1094861636));
@@ -3484,5 +3498,35 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    '\u{1f4af}',
         \\    '\u{1f4af}',
         \\};
+    });
+
+    cases.add("global assembly",
+       \\__asm__(".globl func\n\t"
+       \\        ".type func, @function\n\t"
+       \\        "func:\n\t"
+       \\        ".cfi_startproc\n\t"
+       \\        "movl $42, %eax\n\t"
+       \\        "ret\n\t"
+       \\        ".cfi_endproc");
+    , &[_][]const u8{
+       \\comptime {
+       \\    asm (".globl func\n\t.type func, @function\n\tfunc:\n\t.cfi_startproc\n\tmovl $42, %eax\n\tret\n\t.cfi_endproc");
+       \\}
+    });
+
+    cases.add("Demote function that initializes opaque struct",
+        \\struct my_struct {
+        \\    unsigned a: 15;
+        \\    unsigned: 2;
+        \\    unsigned b: 15;
+        \\};
+        \\void initialize(void) {
+        \\    struct my_struct S = {.a = 1, .b = 2};
+        \\}
+    , &[_][]const u8{
+        \\warning: Cannot initialize opaque type
+        ,
+        \\warning: unable to translate function, demoted to extern
+        \\pub extern fn initialize() void;
     });
 }
