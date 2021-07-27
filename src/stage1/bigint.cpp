@@ -88,8 +88,11 @@ static void to_twos_complement(BigInt *dest, const BigInt *op, size_t bit_count)
     size_t digits_to_copy = bit_count / 64;
     size_t leftover_bits = bit_count % 64;
     dest->digit_count = digits_to_copy + ((leftover_bits == 0) ? 0 : 1);
-    if (dest->digit_count == 1 && leftover_bits == 0) {
+    if (dest->digit_count == 1) {
         dest->data.digit = op_digits[0];
+        if (leftover_bits != 0) {
+            dest->data.digit &= (1ULL << leftover_bits) - 1;
+        }
         if (dest->data.digit == 0) dest->digit_count = 0;
         return;
     }
@@ -444,6 +447,26 @@ bool mul_u64_overflow(uint64_t op1, uint64_t op2, uint64_t *result) {
             (unsigned long long *)result);
 }
 #endif
+
+void bigint_max(BigInt* dest, const BigInt *op1, const BigInt *op2) {
+    switch (bigint_cmp(op1, op2)) {
+        case CmpEQ:
+        case CmpLT:
+            return bigint_init_bigint(dest, op2);
+        case CmpGT:
+            return bigint_init_bigint(dest, op1);
+    }
+}
+
+void bigint_min(BigInt* dest, const BigInt *op1, const BigInt *op2) {
+    switch (bigint_cmp(op1, op2)) {
+        case CmpEQ:
+        case CmpLT:
+            return bigint_init_bigint(dest, op1);
+        case CmpGT:
+            return bigint_init_bigint(dest, op2);
+    }
+}
 
 void bigint_add(BigInt *dest, const BigInt *op1, const BigInt *op2) {
     if (op1->digit_count == 0) {
@@ -1349,7 +1372,7 @@ void bigint_shl(BigInt *dest, const BigInt *op1, const BigInt *op2) {
 
     if (op1->digit_count == 1 && shift_amt < 64) {
         dest->data.digit = op1_digits[0] << shift_amt;
-        if (dest->data.digit > op1_digits[0]) {
+        if (dest->data.digit >> shift_amt == op1_digits[0]) {
             dest->digit_count = 1;
             dest->is_negative = op1->is_negative;
             return;
@@ -1691,6 +1714,13 @@ uint32_t bigint_as_u32(const BigInt *bigint) {
     return value32;
 }
 
+uint8_t bigint_as_u8(const BigInt *bigint) {
+    uint64_t value64 = bigint_as_unsigned(bigint);
+    uint8_t value8 = (uint8_t)value64;
+    assert (value64 == value8);
+    return value8;
+}
+
 size_t bigint_as_usize(const BigInt *bigint) {
     uint64_t value64 = bigint_as_unsigned(bigint);
     size_t valueUsize = (size_t)value64;
@@ -1723,16 +1753,16 @@ Cmp bigint_cmp_zero(const BigInt *op) {
     return op->is_negative ? CmpLT : CmpGT;
 }
 
-uint32_t bigint_hash(BigInt x) {
-    if (x.digit_count == 0) {
+uint32_t bigint_hash(BigInt const *x) {
+    if (x->digit_count == 0) {
         return 0;
     } else {
-        return bigint_ptr(&x)[0];
+        return bigint_ptr(x)[0];
     }
 }
 
-bool bigint_eql(BigInt a, BigInt b) {
-    return bigint_cmp(&a, &b) == CmpEQ;
+bool bigint_eql(BigInt const *a, BigInt const *b) {
+    return bigint_cmp(a, b) == CmpEQ;
 }
 
 void bigint_incr(BigInt *x) {

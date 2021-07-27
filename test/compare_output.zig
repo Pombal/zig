@@ -10,6 +10,8 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    @cInclude("stdio.h");
         \\});
         \\pub export fn main(argc: c_int, argv: [*][*]u8) c_int {
+        \\    _ = argc;
+        \\    _ = argv;
         \\    _ = c.puts("Hello, world!");
         \\    return 0;
         \\}
@@ -143,6 +145,8 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\});
         \\
         \\pub export fn main(argc: c_int, argv: [*][*]u8) c_int {
+        \\    _ = argc;
+        \\    _ = argv;
         \\    if (is_windows) {
         \\        // we want actual \n, not \r\n
         \\        _ = c._setmode(1, c._O_BINARY);
@@ -265,8 +269,10 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\const y : u16 = 5678;
         \\pub fn main() void {
         \\    var x_local : i32 = print_ok(x);
+        \\    _ = x_local;
         \\}
         \\fn print_ok(val: @TypeOf(x)) @TypeOf(foo) {
+        \\    _ = val;
         \\    const stdout = io.getStdOut().writer();
         \\    stdout.print("OK\n", .{}) catch unreachable;
         \\    return 0;
@@ -318,6 +324,8 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\});
         \\
         \\pub export fn main(argc: c_int, argv: [*][*]u8) c_int {
+        \\    _ = argc;
+        \\    _ = argv;
         \\    if (is_windows) {
         \\        // we want actual \n, not \r\n
         \\        _ = c._setmode(1, c._O_BINARY);
@@ -337,13 +345,19 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\const Foo = struct {
         \\    field1: Bar,
         \\
-        \\    fn method(a: *const Foo) bool { return true; }
+        \\    fn method(a: *const Foo) bool {
+        \\        _ = a;
+        \\        return true;
+        \\    }
         \\};
         \\
         \\const Bar = struct {
         \\    field2: i32,
         \\
-        \\    fn method(b: *const Bar) bool { return true; }
+        \\    fn method(b: *const Bar) bool {
+        \\        _ = b;
+        \\        return true;
+        \\    }
         \\};
         \\
         \\pub fn main() void {
@@ -516,4 +530,133 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
 
         break :x tc;
     });
+
+    // It is required to override the log function in order to print to stdout instead of stderr
+    cases.add("std.log per scope log level override",
+        \\const std = @import("std");
+        \\
+        \\pub const log_level: std.log.Level = .debug;
+        \\
+        \\pub const scope_levels = [_]std.log.ScopeLevel{
+        \\    .{ .scope = .a, .level = .alert },
+        \\    .{ .scope = .c, .level = .emerg },
+        \\};
+        \\
+        \\const loga = std.log.scoped(.a);
+        \\const logb = std.log.scoped(.b);
+        \\const logc = std.log.scoped(.c);
+        \\
+        \\pub fn main() !void {
+        \\    loga.debug("", .{});
+        \\    logb.debug("", .{});
+        \\    logc.debug("", .{});
+        \\
+        \\    loga.info("", .{});
+        \\    logb.info("", .{});
+        \\    logc.info("", .{});
+        \\
+        \\    loga.notice("", .{});
+        \\    logb.notice("", .{});
+        \\    logc.notice("", .{});
+        \\
+        \\    loga.warn("", .{});
+        \\    logb.warn("", .{});
+        \\    logc.warn("", .{});
+        \\
+        \\    loga.err("", .{});
+        \\    logb.err("", .{});
+        \\    logc.err("", .{});
+        \\
+        \\    loga.crit("", .{});
+        \\    logb.crit("", .{});
+        \\    logc.crit("", .{});
+        \\
+        \\    loga.alert("", .{});
+        \\    logb.alert("", .{});
+        \\    logc.alert("", .{});
+        \\
+        \\    loga.emerg("", .{});
+        \\    logb.emerg("", .{});
+        \\    logc.emerg("", .{});
+        \\}
+        \\pub fn log(
+        \\    comptime level: std.log.Level,
+        \\    comptime scope: @TypeOf(.EnumLiteral),
+        \\    comptime format: []const u8,
+        \\    args: anytype,
+        \\) void {
+        \\    const level_txt = switch (level) {
+        \\        .emerg => "emergency",
+        \\        .alert => "alert",
+        \\        .crit => "critical",
+        \\        .err => "error",
+        \\        .warn => "warning",
+        \\        .notice => "notice",
+        \\        .info => "info",
+        \\        .debug => "debug",
+        \\    };
+        \\    const prefix2 = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
+        \\    const stdout = std.io.getStdOut().writer();
+        \\    nosuspend stdout.print(level_txt ++ prefix2 ++ format ++ "\n", args) catch return;
+        \\}
+    ,
+        \\debug(b): 
+        \\info(b): 
+        \\notice(b): 
+        \\warning(b): 
+        \\error(b): 
+        \\critical(b): 
+        \\alert(a): 
+        \\alert(b): 
+        \\emergency(a): 
+        \\emergency(b): 
+        \\emergency(c): 
+        \\
+    );
+
+    // It is required to override the log function in order to print to stdout instead of stderr
+    cases.add("std.heap.LoggingAllocator logs to std.log",
+        \\const std = @import("std");
+        \\
+        \\pub const log_level: std.log.Level = .debug;
+        \\
+        \\pub fn main() !void {
+        \\    var allocator_buf: [10]u8 = undefined;
+        \\    var fixedBufferAllocator = std.mem.validationWrap(std.heap.FixedBufferAllocator.init(&allocator_buf));
+        \\    const allocator = &std.heap.loggingAllocator(&fixedBufferAllocator.allocator).allocator;
+        \\
+        \\    var a = try allocator.alloc(u8, 10);
+        \\    a = allocator.shrink(a, 5);
+        \\    try std.testing.expect(a.len == 5);
+        \\    try std.testing.expectError(error.OutOfMemory, allocator.resize(a, 20));
+        \\    allocator.free(a);
+        \\}
+        \\
+        \\pub fn log(
+        \\    comptime level: std.log.Level,
+        \\    comptime scope: @TypeOf(.EnumLiteral),
+        \\    comptime format: []const u8,
+        \\    args: anytype,
+        \\) void {
+        \\    const level_txt = switch (level) {
+        \\        .emerg => "emergency",
+        \\        .alert => "alert",
+        \\        .crit => "critical",
+        \\        .err => "error",
+        \\        .warn => "warning",
+        \\        .notice => "notice",
+        \\        .info => "info",
+        \\        .debug => "debug",
+        \\    };
+        \\    const prefix2 = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
+        \\    const stdout = std.io.getStdOut().writer();
+        \\    nosuspend stdout.print(level_txt ++ prefix2 ++ format ++ "\n", args) catch return;
+        \\}
+    ,
+        \\debug: alloc - success - len: 10, ptr_align: 1, len_align: 0
+        \\debug: shrink - success - 10 to 5, len_align: 0, buf_align: 1
+        \\critical: expand - failure: OutOfMemory - 5 to 20, len_align: 0, buf_align: 1
+        \\debug: free - success - len: 5
+        \\
+    );
 }

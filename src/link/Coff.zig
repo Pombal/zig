@@ -1,6 +1,7 @@
 const Coff = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log.scoped(.link);
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
@@ -16,7 +17,9 @@ const link = @import("../link.zig");
 const build_options = @import("build_options");
 const Cache = @import("../Cache.zig");
 const mingw = @import("../mingw.zig");
-const llvm_backend = @import("../codegen/llvm.zig");
+const Air = @import("../Air.zig");
+const Liveness = @import("../Liveness.zig");
+const LlvmObject = @import("../codegen/llvm.zig").Object;
 
 const allocation_padding = 4 / 3;
 const minimum_text_block_size = 64 * allocation_padding;
@@ -34,7 +37,7 @@ pub const base_tag: link.File.Tag = .coff;
 const msdos_stub = @embedFile("msdos-stub.bin");
 
 /// If this is not null, an object file is created by LLVM and linked with LLD afterwards.
-llvm_object: ?*llvm_backend.Object = null,
+llvm_object: ?*LlvmObject = null,
 
 base: link.File,
 ptr_width: PtrWidth,
@@ -129,7 +132,7 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
         const self = try createEmpty(allocator, options);
         errdefer self.base.destroy();
 
-        self.llvm_object = try llvm_backend.Object.create(allocator, sub_path, options);
+        self.llvm_object = try LlvmObject.create(allocator, options);
         return self;
     }
 
@@ -653,18 +656,59 @@ fn writeOffsetTableEntry(self: *Coff, index: usize) !void {
     }
 }
 
-pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
-    // TODO COFF/PE debug information
-    // TODO Implement exports
+pub fn updateFunc(self: *Coff, module: *Module, func: *Module.Fn, air: Air, liveness: Liveness) !void {
+    if (build_options.skip_non_native and builtin.object_format != .coff) {
+        @panic("Attempted to compile for object format that was disabled by build configuration");
+    }
+    if (build_options.have_llvm) {
+        if (self.llvm_object) |llvm_object| {
+            return llvm_object.updateFunc(module, func, air, liveness);
+        }
+    }
     const tracy = trace(@src());
     defer tracy.end();
 
-    if (build_options.have_llvm)
-        if (self.llvm_object) |llvm_object| return try llvm_object.updateDecl(module, decl);
+    var code_buffer = std.ArrayList(u8).init(self.base.allocator);
+    defer code_buffer.deinit();
+
+    const decl = func.owner_decl;
+    const res = try codegen.generateFunction(
+        &self.base,
+        decl.srcLoc(),
+        func,
+        air,
+        liveness,
+        &code_buffer,
+        .none,
+    );
+    const code = switch (res) {
+        .appended => code_buffer.items,
+        .fail => |em| {
+            decl.analysis = .codegen_failure;
+            try module.failed_decls.put(module.gpa, decl, em);
+            return;
+        },
+    };
+
+    return self.finishUpdateDecl(module, func.owner_decl, code);
+}
+
+pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
+    if (build_options.skip_non_native and builtin.object_format != .coff) {
+        @panic("Attempted to compile for object format that was disabled by build configuration");
+    }
+    if (build_options.have_llvm) {
+        if (self.llvm_object) |llvm_object| return llvm_object.updateDecl(module, decl);
+    }
+    const tracy = trace(@src());
+    defer tracy.end();
 
     if (decl.val.tag() == .extern_fn) {
         return; // TODO Should we do more when front-end analyzed extern decl?
     }
+
+    // TODO COFF/PE debug information
+    // TODO Implement exports
 
     var code_buffer = std.ArrayList(u8).init(self.base.allocator);
     defer code_buffer.deinit();
@@ -683,6 +727,10 @@ pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
         },
     };
 
+    return self.finishUpdateDecl(module, decl, code);
+}
+
+fn finishUpdateDecl(self: *Coff, module: *Module, decl: *Module.Decl, code: []const u8) !void {
     const required_alignment = decl.ty.abiAlignment(self.base.options.target);
     const curr_size = decl.link.coff.size;
     if (curr_size != 0) {
@@ -729,13 +777,23 @@ pub fn freeDecl(self: *Coff, decl: *Module.Decl) void {
     self.offset_table_free_list.append(self.base.allocator, decl.link.coff.offset_table_index) catch {};
 }
 
-pub fn updateDeclExports(self: *Coff, module: *Module, decl: *Module.Decl, exports: []const *Module.Export) !void {
-    if (self.llvm_object) |_| return;
+pub fn updateDeclExports(
+    self: *Coff,
+    module: *Module,
+    decl: *Module.Decl,
+    exports: []const *Module.Export,
+) !void {
+    if (build_options.skip_non_native and builtin.object_format != .coff) {
+        @panic("Attempted to compile for object format that was disabled by build configuration");
+    }
+    if (build_options.have_llvm) {
+        if (self.llvm_object) |llvm_object| return llvm_object.updateDeclExports(module, decl, exports);
+    }
 
     for (exports) |exp| {
         if (exp.options.section) |section_name| {
             if (!mem.eql(u8, section_name, ".text")) {
-                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
+                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.count() + 1);
                 module.failed_exports.putAssumeCapacityNoClobber(
                     exp,
                     try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: ExportOptions.section", .{}),
@@ -746,7 +804,7 @@ pub fn updateDeclExports(self: *Coff, module: *Module, decl: *Module.Decl, expor
         if (mem.eql(u8, exp.options.name, "_start")) {
             self.entry_addr = decl.link.coff.getVAddr(self.*) - default_image_base;
         } else {
-            try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
+            try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.count() + 1);
             module.failed_exports.putAssumeCapacityNoClobber(
                 exp,
                 try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: Exports other than '_start'", .{}),
@@ -772,8 +830,11 @@ pub fn flushModule(self: *Coff, comp: *Compilation) !void {
     const tracy = trace(@src());
     defer tracy.end();
 
-    if (build_options.have_llvm)
-        if (self.llvm_object) |llvm_object| return try llvm_object.flushModule(comp);
+    if (build_options.have_llvm) {
+        if (self.llvm_object) |llvm_object| {
+            return try llvm_object.flushModule(comp);
+        }
+    }
 
     if (self.text_section_size_dirty) {
         // Write the new raw size in the .text header
@@ -831,7 +892,7 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
                 .target = self.base.options.target,
                 .output_mode = .Obj,
             });
-            const o_directory = self.base.options.module.?.zig_cache_artifact_directory;
+            const o_directory = module.zig_cache_artifact_directory;
             const full_obj_path = try o_directory.join(arena, &[_][]const u8{obj_basename});
             break :blk full_obj_path;
         }
@@ -861,8 +922,8 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         self.base.releaseLock();
 
         try man.addListOfFiles(self.base.options.objects);
-        for (comp.c_object_table.items()) |entry| {
-            _ = try man.addFile(entry.key.status.success.object_path, null);
+        for (comp.c_object_table.keys()) |key| {
+            _ = try man.addFile(key.status.success.object_path, null);
         }
         try man.addOptionalFile(module_obj_path);
         man.hash.addOptional(self.base.options.stack_size_override);
@@ -928,7 +989,7 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
                 break :blk self.base.options.objects[0];
 
             if (comp.c_object_table.count() != 0)
-                break :blk comp.c_object_table.items()[0].key.status.success.object_path;
+                break :blk comp.c_object_table.keys()[0].status.success.object_path;
 
             if (module_obj_path) |p|
                 break :blk p;
@@ -1026,8 +1087,8 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
 
         try argv.appendSlice(self.base.options.objects);
 
-        for (comp.c_object_table.items()) |entry| {
-            try argv.append(entry.key.status.success.object_path);
+        for (comp.c_object_table.keys()) |key| {
+            try argv.append(key.status.success.object_path);
         }
 
         if (module_obj_path) |p| {
@@ -1137,14 +1198,14 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
                         }
 
                         if (is_dyn_lib) {
-                            try argv.append(try comp.get_libc_crt_file(arena, "dllcrt2.o"));
+                            try argv.append(try comp.get_libc_crt_file(arena, "dllcrt2.obj"));
                             if (target.cpu.arch == .i386) {
                                 try argv.append("-ALTERNATENAME:__DllMainCRTStartup@12=_DllMainCRTStartup@12");
                             } else {
                                 try argv.append("-ALTERNATENAME:_DllMainCRTStartup=DllMainCRTStartup");
                             }
                         } else {
-                            try argv.append(try comp.get_libc_crt_file(arena, "crt2.o"));
+                            try argv.append(try comp.get_libc_crt_file(arena, "crt2.obj"));
                         }
 
                         try argv.append(try comp.get_libc_crt_file(arena, "mingw32.lib"));
@@ -1221,13 +1282,26 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
             try argv.append(comp.compiler_rt_static_lib.?.full_object_path);
         }
 
-        for (self.base.options.system_libs.items()) |entry| {
-            const lib_basename = try allocPrint(arena, "{s}.lib", .{entry.key});
+        try argv.ensureUnusedCapacity(self.base.options.system_libs.count());
+        for (self.base.options.system_libs.keys()) |key| {
+            const lib_basename = try allocPrint(arena, "{s}.lib", .{key});
             if (comp.crt_files.get(lib_basename)) |crt_file| {
-                try argv.append(crt_file.full_object_path);
-            } else {
-                try argv.append(lib_basename);
+                argv.appendAssumeCapacity(crt_file.full_object_path);
+                continue;
             }
+            if (try self.findLib(arena, lib_basename)) |full_path| {
+                argv.appendAssumeCapacity(full_path);
+                continue;
+            }
+            if (target.abi.isGnu()) {
+                const fallback_name = try allocPrint(arena, "lib{s}.dll.a", .{key});
+                if (try self.findLib(arena, fallback_name)) |full_path| {
+                    argv.appendAssumeCapacity(full_path);
+                    continue;
+                }
+            }
+            log.err("DLL import library for -l{s} not found", .{key});
+            return error.DllImportLibraryNotFound;
         }
 
         if (self.base.options.verbose_link) {
@@ -1309,18 +1383,34 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
     }
 }
 
+fn findLib(self: *Coff, arena: *Allocator, name: []const u8) !?[]const u8 {
+    for (self.base.options.lib_dirs) |lib_dir| {
+        const full_path = try fs.path.join(arena, &.{ lib_dir, name });
+        fs.cwd().access(full_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => |e| return e,
+        };
+        return full_path;
+    }
+    return null;
+}
+
 pub fn getDeclVAddr(self: *Coff, decl: *const Module.Decl) u64 {
     assert(self.llvm_object == null);
     return self.text_section_virtual_address + decl.link.coff.text_offset;
 }
 
 pub fn updateDeclLineNumber(self: *Coff, module: *Module, decl: *Module.Decl) !void {
+    _ = self;
+    _ = module;
+    _ = decl;
     // TODO Implement this
 }
 
 pub fn deinit(self: *Coff) void {
-    if (build_options.have_llvm)
-        if (self.llvm_object) |ir_module| ir_module.deinit(self.base.allocator);
+    if (build_options.have_llvm) {
+        if (self.llvm_object) |llvm_object| llvm_object.destroy(self.base.allocator);
+    }
 
     self.text_block_free_list.deinit(self.base.allocator);
     self.offset_table.deinit(self.base.allocator);

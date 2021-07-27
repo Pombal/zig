@@ -6,7 +6,7 @@
 const std = @import("std.zig");
 const mem = std.mem;
 
-/// Like ComptimeStringHashMap but optimized for small sets of disparate string keys.
+/// Comptime string map optimized for small sets of disparate string keys.
 /// Works by separating the keys by length at comptime and only checking strings of
 /// equal length at runtime.
 ///
@@ -23,6 +23,7 @@ pub fn ComptimeStringMap(comptime V: type, comptime kvs: anytype) type {
         var sorted_kvs: [kvs.len]KV = undefined;
         const lenAsc = (struct {
             fn lenAsc(context: void, a: KV, b: KV) bool {
+                _ = context;
                 return a.key.len < b.key.len;
             }
         }).lenAsc;

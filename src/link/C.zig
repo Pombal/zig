@@ -2,14 +2,17 @@ const std = @import("std");
 const mem = std.mem;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+const fs = std.fs;
+
+const C = @This();
 const Module = @import("../Module.zig");
 const Compilation = @import("../Compilation.zig");
-const fs = std.fs;
 const codegen = @import("../codegen/c.zig");
 const link = @import("../link.zig");
 const trace = @import("../tracy.zig").trace;
-const C = @This();
 const Type = @import("../type.zig").Type;
+const Air = @import("../Air.zig");
+const Liveness = @import("../Liveness.zig");
 
 pub const base_tag: link.File.Tag = .c;
 pub const zig_h = @embedFile("C/zig.h");
@@ -70,29 +73,32 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
 }
 
 pub fn deinit(self: *C) void {
-    for (self.decl_table.items()) |entry| {
-        self.freeDecl(entry.key);
+    for (self.decl_table.keys()) |key| {
+        deinitDecl(self.base.allocator, key);
     }
     self.decl_table.deinit(self.base.allocator);
 }
 
-pub fn allocateDeclIndexes(self: *C, decl: *Module.Decl) !void {}
+pub fn allocateDeclIndexes(self: *C, decl: *Module.Decl) !void {
+    _ = self;
+    _ = decl;
+}
 
 pub fn freeDecl(self: *C, decl: *Module.Decl) void {
     _ = self.decl_table.swapRemove(decl);
-    decl.link.c.code.deinit(self.base.allocator);
-    decl.fn_link.c.fwd_decl.deinit(self.base.allocator);
-    var it = decl.fn_link.c.typedefs.iterator();
-    while (it.next()) |some| {
-        self.base.allocator.free(some.value.rendered);
-    }
-    decl.fn_link.c.typedefs.deinit(self.base.allocator);
+    deinitDecl(self.base.allocator, decl);
 }
 
-pub fn updateDecl(self: *C, module: *Module, decl: *Module.Decl) !void {
-    const tracy = trace(@src());
-    defer tracy.end();
+fn deinitDecl(gpa: *Allocator, decl: *Module.Decl) void {
+    decl.link.c.code.deinit(gpa);
+    decl.fn_link.c.fwd_decl.deinit(gpa);
+    for (decl.fn_link.c.typedefs.values()) |value| {
+        gpa.free(value.rendered);
+    }
+    decl.fn_link.c.typedefs.deinit(gpa);
+}
 
+pub fn finishUpdateDecl(self: *C, module: *Module, decl: *Module.Decl, air: Air, liveness: Liveness) !void {
     // Keep track of all decls so we can iterate over them on flush().
     _ = try self.decl_table.getOrPut(self.base.allocator, decl);
 
@@ -101,9 +107,8 @@ pub fn updateDecl(self: *C, module: *Module, decl: *Module.Decl) !void {
     const code = &decl.link.c.code;
     fwd_decl.shrinkRetainingCapacity(0);
     {
-        var it = typedefs.iterator();
-        while (it.next()) |entry| {
-            module.gpa.free(entry.value.rendered);
+        for (typedefs.values()) |value| {
+            module.gpa.free(value.rendered);
         }
     }
     typedefs.clearRetainingCapacity();
@@ -121,15 +126,17 @@ pub fn updateDecl(self: *C, module: *Module, decl: *Module.Decl) !void {
         .code = code.toManaged(module.gpa),
         .value_map = codegen.CValueMap.init(module.gpa),
         .indent_writer = undefined, // set later so we can get a pointer to object.code
+        .air = air,
+        .liveness = liveness,
     };
     object.indent_writer = .{ .underlying_writer = object.code.writer() };
     defer {
         object.value_map.deinit();
+        object.blocks.deinit(module.gpa);
         object.code.deinit();
         object.dg.fwd_decl.deinit();
-        var it = object.dg.typedefs.iterator();
-        while (it.next()) |some| {
-            module.gpa.free(some.value.rendered);
+        for (object.dg.typedefs.values()) |value| {
+            module.gpa.free(value.rendered);
         }
         object.dg.typedefs.deinit();
     }
@@ -150,6 +157,20 @@ pub fn updateDecl(self: *C, module: *Module, decl: *Module.Decl) !void {
     // Free excess allocated memory for this Decl.
     fwd_decl.shrinkAndFree(module.gpa, fwd_decl.items.len);
     code.shrinkAndFree(module.gpa, code.items.len);
+}
+
+pub fn updateFunc(self: *C, module: *Module, func: *Module.Fn, air: Air, liveness: Liveness) !void {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    return self.finishUpdateDecl(module, func.owner_decl, air, liveness);
+}
+
+pub fn updateDecl(self: *C, module: *Module, decl: *Module.Decl) !void {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    return self.finishUpdateDecl(module, decl, undefined, undefined);
 }
 
 pub fn updateDeclLineNumber(self: *C, module: *Module, decl: *Module.Decl) !void {
@@ -193,31 +214,28 @@ pub fn flushModule(self: *C, comp: *Compilation) !void {
         if (module.global_error_set.size == 0) break :render_errors;
         var it = module.global_error_set.iterator();
         while (it.next()) |entry| {
-            try err_typedef_writer.print("#define zig_error_{s} {d}\n", .{ entry.key, entry.value });
+            try err_typedef_writer.print("#define zig_error_{s} {d}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
         }
         try err_typedef_writer.writeByte('\n');
     }
 
     var fn_count: usize = 0;
-    var typedefs = std.HashMap(Type, []const u8, Type.hash, Type.eql, std.hash_map.default_max_load_percentage).init(comp.gpa);
+    var typedefs = std.HashMap(Type, void, Type.HashContext64, std.hash_map.default_max_load_percentage).init(comp.gpa);
     defer typedefs.deinit();
 
     // Typedefs, forward decls and non-functions first.
     // TODO: performance investigation: would keeping a list of Decls that we should
     // generate, rather than querying here, be faster?
-    for (self.decl_table.items()) |kv| {
-        const decl = kv.key;
+    for (self.decl_table.keys()) |decl| {
         if (!decl.has_tv) continue;
         const buf = buf: {
             if (decl.val.castTag(.function)) |_| {
+                try typedefs.ensureUnusedCapacity(@intCast(u32, decl.fn_link.c.typedefs.count()));
                 var it = decl.fn_link.c.typedefs.iterator();
                 while (it.next()) |new| {
-                    if (typedefs.get(new.key)) |previous| {
-                        try err_typedef_writer.print("typedef {s} {s};\n", .{ previous, new.value.name });
-                    } else {
-                        try typedefs.ensureCapacity(typedefs.capacity() + 1);
-                        try err_typedef_writer.writeAll(new.value.rendered);
-                        typedefs.putAssumeCapacityNoClobber(new.key, new.value.name);
+                    const gop = typedefs.getOrPutAssumeCapacity(new.key_ptr.*);
+                    if (!gop.found_existing) {
+                        try err_typedef_writer.writeAll(new.value_ptr.rendered);
                     }
                 }
                 fn_count += 1;
@@ -241,8 +259,7 @@ pub fn flushModule(self: *C, comp: *Compilation) !void {
 
     // Now the function bodies.
     try all_buffers.ensureCapacity(all_buffers.items.len + fn_count);
-    for (self.decl_table.items()) |kv| {
-        const decl = kv.key;
+    for (self.decl_table.keys()) |decl| {
         if (!decl.has_tv) continue;
         if (decl.val.castTag(.function)) |_| {
             const buf = decl.link.c.code.items;
@@ -277,8 +294,7 @@ pub fn flushEmitH(module: *Module) !void {
         .iov_len = zig_h.len,
     });
 
-    for (emit_h.decl_table.items()) |kv| {
-        const decl = kv.key;
+    for (emit_h.decl_table.keys()) |decl| {
         const decl_emit_h = decl.getEmitH(module);
         const buf = decl_emit_h.fwd_decl.items;
         all_buffers.appendAssumeCapacity(.{
@@ -305,4 +321,9 @@ pub fn updateDeclExports(
     module: *Module,
     decl: *Module.Decl,
     exports: []const *Module.Export,
-) !void {}
+) !void {
+    _ = exports;
+    _ = decl;
+    _ = module;
+    _ = self;
+}

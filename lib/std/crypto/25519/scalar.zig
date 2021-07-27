@@ -48,7 +48,7 @@ pub fn reduce64(s: [64]u8) [32]u8 {
 
 /// Perform the X25519 "clamping" operation.
 /// The scalar is then guaranteed to be a multiple of the cofactor.
-pub fn clamp(s: *[32]u8) callconv(.Inline) void {
+pub inline fn clamp(s: *[32]u8) void {
     s[0] &= 248;
     s[31] = (s[31] & 127) | 64;
 }
@@ -330,13 +330,10 @@ pub const Scalar = struct {
         const carry9 = z02 >> 56;
         const c01 = carry9;
         const carry10 = (z12 + c01) >> 56;
-        const t21 = @truncate(u64, z12 + c01) & 0xffffffffffffff;
         const c11 = carry10;
         const carry11 = (z22 + c11) >> 56;
-        const t22 = @truncate(u64, z22 + c11) & 0xffffffffffffff;
         const c21 = carry11;
         const carry12 = (z32 + c21) >> 56;
-        const t23 = @truncate(u64, z32 + c21) & 0xffffffffffffff;
         const c31 = carry12;
         const carry13 = (z42 + c31) >> 56;
         const t24 = @truncate(u64, z42 + c31) & 0xffffffffffffff;
@@ -605,13 +602,10 @@ const ScalarDouble = struct {
         const carry0 = z01 >> 56;
         const c00 = carry0;
         const carry1 = (z11 + c00) >> 56;
-        const t100 = @as(u64, @truncate(u64, z11 + c00)) & 0xffffffffffffff;
         const c10 = carry1;
         const carry2 = (z21 + c10) >> 56;
-        const t101 = @as(u64, @truncate(u64, z21 + c10)) & 0xffffffffffffff;
         const c20 = carry2;
         const carry3 = (z31 + c20) >> 56;
-        const t102 = @as(u64, @truncate(u64, z31 + c20)) & 0xffffffffffffff;
         const c30 = carry3;
         const carry4 = (z41 + c30) >> 56;
         const t103 = @as(u64, @truncate(u64, z41 + c30)) & 0xffffffffffffff;

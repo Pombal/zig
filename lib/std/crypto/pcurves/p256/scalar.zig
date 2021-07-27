@@ -63,7 +63,7 @@ pub fn add(a: CompressedScalar, b: CompressedScalar, endian: builtin.Endian) Non
 
 /// Return -s (mod L)
 pub fn neg(s: CompressedScalar, endian: builtin.Endian) NonCanonicalError!CompressedScalar {
-    return (try Scalar.fromBytes(a, endian)).neg().toBytes(endian);
+    return (try Scalar.fromBytes(s, endian)).neg().toBytes(endian);
 }
 
 /// Return (a-b) (mod L)
@@ -120,12 +120,12 @@ pub const Scalar = struct {
 
     /// Compute x+y (mod L)
     pub fn add(x: Scalar, y: Scalar) Scalar {
-        return Scalar{ .fe = x.fe().add(y.fe) };
+        return Scalar{ .fe = x.fe.add(y.fe) };
     }
 
     /// Compute x-y (mod L)
     pub fn sub(x: Scalar, y: Scalar) Scalar {
-        return Scalar{ .fe = x.fe().sub(y.fe) };
+        return Scalar{ .fe = x.fe.sub(y.fe) };
     }
 
     /// Compute 2n (mod L)
@@ -135,7 +135,7 @@ pub const Scalar = struct {
 
     /// Compute x*y (mod L)
     pub fn mul(x: Scalar, y: Scalar) Scalar {
-        return Scalar{ .fe = x.fe().mul(y.fe) };
+        return Scalar{ .fe = x.fe.mul(y.fe) };
     }
 
     /// Compute x^2 (mod L)

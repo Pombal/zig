@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Target = std.Target;
 const log = std.log.scoped(.codegen);
+const assert = std.debug.assert;
 
 const spec = @import("spirv/spec.zig");
 const Opcode = spec.Opcode;
@@ -11,73 +12,196 @@ const Decl = Module.Decl;
 const Type = @import("../type.zig").Type;
 const Value = @import("../value.zig").Value;
 const LazySrcLoc = Module.LazySrcLoc;
-const ir = @import("../ir.zig");
-const Inst = ir.Inst;
+const Air = @import("../Air.zig");
+const Liveness = @import("../Liveness.zig");
 
-pub const TypeMap = std.HashMap(Type, u32, Type.hash, Type.eql, std.hash_map.default_max_load_percentage);
-pub const ValueMap = std.AutoHashMap(*Inst, u32);
+pub const Word = u32;
+pub const ResultId = u32;
 
-pub fn writeOpcode(code: *std.ArrayList(u32), opcode: Opcode, arg_count: u32) !void {
-    const word_count = arg_count + 1;
+pub const TypeMap = std.HashMap(Type, u32, Type.HashContext64, std.hash_map.default_max_load_percentage);
+pub const InstMap = std.AutoHashMap(Air.Inst.Index, ResultId);
+
+const IncomingBlock = struct {
+    src_label_id: ResultId,
+    break_value_id: ResultId,
+};
+
+pub const BlockMap = std.AutoHashMap(Air.Inst.Index, struct {
+    label_id: ResultId,
+    incoming_blocks: *std.ArrayListUnmanaged(IncomingBlock),
+});
+
+pub fn writeOpcode(code: *std.ArrayList(Word), opcode: Opcode, arg_count: u16) !void {
+    const word_count: Word = arg_count + 1;
     try code.append((word_count << 16) | @enumToInt(opcode));
 }
 
-pub fn writeInstruction(code: *std.ArrayList(u32), opcode: Opcode, args: []const u32) !void {
-    try writeOpcode(code, opcode, @intCast(u32, args.len));
+pub fn writeInstruction(code: *std.ArrayList(Word), opcode: Opcode, args: []const Word) !void {
+    try writeOpcode(code, opcode, @intCast(u16, args.len));
     try code.appendSlice(args);
 }
 
-/// This structure represents a SPIR-V binary module being compiled, and keeps track of relevant information
-/// such as code for the different logical sections, and the next result-id.
-pub const SPIRVModule = struct {
-    next_result_id: u32,
-    types_globals_constants: std.ArrayList(u32),
-    fn_decls: std.ArrayList(u32),
+pub fn writeInstructionWithString(code: *std.ArrayList(Word), opcode: Opcode, args: []const Word, str: []const u8) !void {
+    // Str needs to be written zero-terminated, so we need to add one to the length.
+    const zero_terminated_len = str.len + 1;
+    const str_words = (zero_terminated_len + @sizeOf(Word) - 1) / @sizeOf(Word);
 
-    pub fn init(allocator: *Allocator) SPIRVModule {
+    try writeOpcode(code, opcode, @intCast(u16, args.len + str_words));
+    try code.ensureUnusedCapacity(args.len + str_words);
+    code.appendSliceAssumeCapacity(args);
+
+    // TODO: Not actually sure whether this is correct for big-endian.
+    // See https://www.khronos.org/registry/spir-v/specs/unified1/SPIRV.html#Literal
+    var i: usize = 0;
+    while (i < zero_terminated_len) : (i += @sizeOf(Word)) {
+        var word: Word = 0;
+
+        var j: usize = 0;
+        while (j < @sizeOf(Word) and i + j < str.len) : (j += 1) {
+            word |= @as(Word, str[i + j]) << @intCast(std.math.Log2Int(Word), j * std.meta.bitCount(u8));
+        }
+
+        code.appendAssumeCapacity(word);
+    }
+}
+
+/// This structure represents a SPIR-V (binary) module being compiled, and keeps track of all relevant information.
+/// That includes the actual instructions, the current result-id bound, and data structures for querying result-id's
+/// of data which needs to be persistent over different calls to Decl code generation.
+pub const SPIRVModule = struct {
+    /// A general-purpose allocator which may be used to allocate temporary resources required for compilation.
+    gpa: *Allocator,
+
+    /// The parent module.
+    module: *Module,
+
+    /// SPIR-V instructions return result-ids. This variable holds the module-wide counter for these.
+    next_result_id: ResultId,
+
+    /// Code of the actual SPIR-V binary, divided into the relevant logical sections.
+    /// Note: To save some bytes, these could also be unmanaged, but since there is only one instance of SPIRVModule
+    /// and this removes some clutter in the rest of the backend, it's fine like this.
+    binary: struct {
+        /// OpCapability and OpExtension instructions (in that order).
+        capabilities_and_extensions: std.ArrayList(Word),
+
+        /// OpString, OpSourceExtension, OpSource, OpSourceContinued.
+        debug_strings: std.ArrayList(Word),
+
+        /// Type declaration instructions, constant instructions, global variable declarations, OpUndef instructions.
+        types_globals_constants: std.ArrayList(Word),
+
+        /// Regular functions.
+        fn_decls: std.ArrayList(Word),
+    },
+
+    /// Global type cache to reduce the amount of generated types.
+    types: TypeMap,
+
+    /// Cache for results of OpString instructions for module file names fed to OpSource.
+    /// Since OpString is pretty much only used for those, we don't need to keep track of all strings,
+    /// just the ones for OpLine. Note that OpLine needs the result of OpString, and not that of OpSource.
+    file_names: std.StringHashMap(ResultId),
+
+    pub fn init(gpa: *Allocator, module: *Module) SPIRVModule {
         return .{
+            .gpa = gpa,
+            .module = module,
             .next_result_id = 1, // 0 is an invalid SPIR-V result ID.
-            .types_globals_constants = std.ArrayList(u32).init(allocator),
-            .fn_decls = std.ArrayList(u32).init(allocator),
+            .binary = .{
+                .capabilities_and_extensions = std.ArrayList(Word).init(gpa),
+                .debug_strings = std.ArrayList(Word).init(gpa),
+                .types_globals_constants = std.ArrayList(Word).init(gpa),
+                .fn_decls = std.ArrayList(Word).init(gpa),
+            },
+            .types = TypeMap.init(gpa),
+            .file_names = std.StringHashMap(ResultId).init(gpa),
         };
     }
 
     pub fn deinit(self: *SPIRVModule) void {
-        self.types_globals_constants.deinit();
-        self.fn_decls.deinit();
+        self.file_names.deinit();
+        self.types.deinit();
+
+        self.binary.fn_decls.deinit();
+        self.binary.types_globals_constants.deinit();
+        self.binary.debug_strings.deinit();
+        self.binary.capabilities_and_extensions.deinit();
     }
 
-    pub fn allocResultId(self: *SPIRVModule) u32 {
+    pub fn allocResultId(self: *SPIRVModule) Word {
         defer self.next_result_id += 1;
         return self.next_result_id;
     }
 
-    pub fn resultIdBound(self: *SPIRVModule) u32 {
+    pub fn resultIdBound(self: *SPIRVModule) Word {
         return self.next_result_id;
+    }
+
+    fn resolveSourceFileName(self: *SPIRVModule, decl: *Decl) !ResultId {
+        const path = decl.namespace.file_scope.sub_file_path;
+        const result = try self.file_names.getOrPut(path);
+        if (!result.found_existing) {
+            result.value_ptr.* = self.allocResultId();
+            try writeInstructionWithString(&self.binary.debug_strings, .OpString, &[_]Word{result.value_ptr.*}, path);
+            try writeInstruction(&self.binary.debug_strings, .OpSource, &[_]Word{
+                @enumToInt(spec.SourceLanguage.Unknown), // TODO: Register Zig source language.
+                0, // TODO: Zig version as u32?
+                result.value_ptr.*,
+            });
+        }
+
+        return result.value_ptr.*;
     }
 };
 
 /// This structure is used to compile a declaration, and contains all relevant meta-information to deal with that.
 pub const DeclGen = struct {
-    module: *Module,
+    /// The SPIR-V module  code should be put in.
     spv: *SPIRVModule,
 
-    args: std.ArrayList(u32),
+    air: Air,
+    liveness: Liveness,
+
+    /// An array of function argument result-ids. Each index corresponds with the
+    /// function argument of the same index.
+    args: std.ArrayList(ResultId),
+
+    /// A counter to keep track of how many `arg` instructions we've seen yet.
     next_arg_index: u32,
 
-    types: TypeMap,
-    values: ValueMap,
+    /// A map keeping track of which instruction generated which result-id.
+    inst_results: InstMap,
 
+    /// We need to keep track of result ids for block labels, as well as the 'incoming'
+    /// blocks for a block.
+    blocks: BlockMap,
+
+    /// The label of the SPIR-V block we are currently generating.
+    current_block_label_id: ResultId,
+
+    /// The actual instructions for this function. We need to declare all locals in
+    /// the first block, and because we don't know which locals there are going to be,
+    /// we're just going to generate everything after the locals-section in this array.
+    /// Note: It will not contain OpFunction, OpFunctionParameter, OpVariable and the
+    /// initial OpLabel. These will be generated into spv.binary.fn_decls directly.
+    code: std.ArrayList(Word),
+
+    /// The decl we are currently generating code for.
     decl: *Decl,
+
+    /// If `gen` returned `Error.AnalysisFail`, this contains an explanatory message.
+    /// Memory is owned by `module.gpa`.
     error_msg: ?*Module.ErrorMsg,
 
+    /// Possible errors the `gen` function may return.
     const Error = error{ AnalysisFail, OutOfMemory };
 
-    /// This structure is used to return information about a type typically used for arithmetic operations.
-    /// These types may either be integers, floats, or a vector of these. Most scalar operations also work on vectors,
-    /// so we can easily represent those as arithmetic types.
-    /// If the type is a scalar, 'inner type' refers to the scalar type. Otherwise, if its a vector, it refers
-    /// to the vector's element type.
+    /// This structure is used to return information about a type typically used for
+    /// arithmetic operations. These types may either be integers, floats, or a vector
+    /// of these. Most scalar operations also work on vectors, so we can easily represent
+    /// those as arithmetic types. If the type is a scalar, 'inner type' refers to the
+    /// scalar type. Otherwise, if its a vector, it refers to the vector's element type.
     const ArithmeticTypeInfo = struct {
         /// A classification of the inner type.
         const Class = enum {
@@ -89,13 +213,14 @@ pub const DeclGen = struct {
             /// the relevant capability is enabled).
             integer,
 
-            /// A regular float. These are all required to be natively supported. Floating points for
-            /// which the relevant capability is not enabled are not emulated.
+            /// A regular float. These are all required to be natively supported. Floating points
+            /// for which the relevant capability is not enabled are not emulated.
             float,
 
-            /// An integer of a 'strange' size (which' bit size is not the same as its backing type. **Note**: this
-            /// may **also** include power-of-2 integers for which the relevant capability is not enabled), but still
-            /// within the limits of the largest natively supported integer type.
+            /// An integer of a 'strange' size (which' bit size is not the same as its backing
+            /// type. **Note**: this may **also** include power-of-2 integers for which the
+            /// relevant capability is not enabled), but still within the limits of the largest
+            /// natively supported integer type.
             strange_integer,
 
             /// An integer with more bits than the largest natively supported integer type.
@@ -103,7 +228,7 @@ pub const DeclGen = struct {
         };
 
         /// The number of bits in the inner type.
-        /// Note: this is the actual number of bits of the type, not the size of the backing integer.
+        /// This is the actual number of bits of the type, not the size of the backing integer.
         bits: u16,
 
         /// Whether the type is a vector.
@@ -117,19 +242,75 @@ pub const DeclGen = struct {
         class: Class,
     };
 
-    fn fail(self: *DeclGen, src: LazySrcLoc, comptime format: []const u8, args: anytype) Error {
+    /// Initialize the common resources of a DeclGen. Some fields are left uninitialized,
+    /// only set when `gen` is called.
+    pub fn init(spv: *SPIRVModule) DeclGen {
+        return .{
+            .spv = spv,
+            .air = undefined,
+            .liveness = undefined,
+            .args = std.ArrayList(ResultId).init(spv.gpa),
+            .next_arg_index = undefined,
+            .inst_results = InstMap.init(spv.gpa),
+            .blocks = BlockMap.init(spv.gpa),
+            .current_block_label_id = undefined,
+            .code = std.ArrayList(Word).init(spv.gpa),
+            .decl = undefined,
+            .error_msg = undefined,
+        };
+    }
+
+    /// Generate the code for `decl`. If a reportable error occured during code generation,
+    /// a message is returned by this function. Callee owns the memory. If this function
+    /// returns such a reportable error, it is valid to be called again for a different decl.
+    pub fn gen(self: *DeclGen, decl: *Decl, air: Air, liveness: Liveness) !?*Module.ErrorMsg {
+        // Reset internal resources, we don't want to re-allocate these.
+        self.air = air;
+        self.liveness = liveness;
+        self.args.items.len = 0;
+        self.next_arg_index = 0;
+        self.inst_results.clearRetainingCapacity();
+        self.blocks.clearRetainingCapacity();
+        self.current_block_label_id = undefined;
+        self.code.items.len = 0;
+        self.decl = decl;
+        self.error_msg = null;
+
+        try self.genDecl();
+        return self.error_msg;
+    }
+
+    /// Free resources owned by the DeclGen.
+    pub fn deinit(self: *DeclGen) void {
+        self.args.deinit();
+        self.inst_results.deinit();
+        self.blocks.deinit();
+        self.code.deinit();
+    }
+
+    fn getTarget(self: *DeclGen) std.Target {
+        return self.spv.module.getTarget();
+    }
+
+    fn fail(self: *DeclGen, comptime format: []const u8, args: anytype) Error {
         @setCold(true);
+        const src: LazySrcLoc = .{ .node_offset = 0 };
         const src_loc = src.toSrcLocWithDecl(self.decl);
-        self.error_msg = try Module.ErrorMsg.create(self.module.gpa, src_loc, format, args);
+        self.error_msg = try Module.ErrorMsg.create(self.spv.module.gpa, src_loc, format, args);
         return error.AnalysisFail;
     }
 
-    fn resolve(self: *DeclGen, inst: *Inst) !u32 {
-        if (inst.value()) |val| {
-            return self.genConstant(inst.ty, val);
+    fn resolve(self: *DeclGen, inst: Air.Inst.Ref) !ResultId {
+        if (self.air.value(inst)) |val| {
+            return self.genConstant(self.air.typeOf(inst), val);
         }
+        const index = Air.refToIndex(inst).?;
+        return self.inst_results.get(index).?; // Assertion means instruction does not dominate usage.
+    }
 
-        return self.values.get(inst).?; // Instruction does not dominate all uses!
+    fn beginSPIRVBlock(self: *DeclGen, label_id: ResultId) !void {
+        try writeInstruction(&self.code, .OpLabel, &[_]Word{label_id});
+        self.current_block_label_id = label_id;
     }
 
     /// SPIR-V requires enabling specific integer sizes through capabilities, and so if they are not enabled, we need
@@ -143,10 +324,10 @@ pub const DeclGen = struct {
     /// TODO: This probably needs an ABI-version as well (especially in combination with SPV_INTEL_arbitrary_precision_integers).
     /// TODO: Should the result of this function be cached?
     fn backingIntBits(self: *DeclGen, bits: u16) ?u16 {
-        const target = self.module.getTarget();
+        const target = self.getTarget();
 
-        // TODO: Figure out what to do with u0/i0.
-        std.debug.assert(bits != 0);
+        // The backend will never be asked to compiler a 0-bit integer, so we won't have to handle those in this function.
+        assert(bits != 0);
 
         // 8, 16 and 64-bit integers require the Int8, Int16 and Inr64 capabilities respectively.
         // 32-bit integers are always supported (see spec, 2.16.1, Data rules).
@@ -178,7 +359,7 @@ pub const DeclGen = struct {
     /// is no way of knowing whether those are actually supported.
     /// TODO: Maybe this should be cached?
     fn largestSupportedIntBits(self: *DeclGen) u16 {
-        const target = self.module.getTarget();
+        const target = self.getTarget();
         return if (Target.spirv.featureSetHas(target.cpu.features, .Int64))
             64
         else
@@ -193,8 +374,7 @@ pub const DeclGen = struct {
     }
 
     fn arithmeticTypeInfo(self: *DeclGen, ty: Type) !ArithmeticTypeInfo {
-        const target = self.module.getTarget();
-
+        const target = self.getTarget();
         return switch (ty.zigTypeTag()) {
             .Bool => ArithmeticTypeInfo{
                 .bits = 1, // Doesn't matter for this class.
@@ -221,80 +401,116 @@ pub const DeclGen = struct {
                     .composite_integer };
             },
             // As of yet, there is no vector support in the self-hosted compiler.
-            .Vector => self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: implement arithmeticTypeInfo for Vector", .{}),
+            .Vector => self.fail("TODO: SPIR-V backend: implement arithmeticTypeInfo for Vector", .{}),
             // TODO: For which types is this the case?
-            else => self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: implement arithmeticTypeInfo for {}", .{ty}),
+            else => self.fail("TODO: SPIR-V backend: implement arithmeticTypeInfo for {}", .{ty}),
         };
     }
 
     /// Generate a constant representing `val`.
     /// TODO: Deduplication?
-    fn genConstant(self: *DeclGen, ty: Type, val: Value) Error!u32 {
-        const code = &self.spv.types_globals_constants;
+    fn genConstant(self: *DeclGen, ty: Type, val: Value) Error!ResultId {
+        const target = self.getTarget();
+        const code = &self.spv.binary.types_globals_constants;
         const result_id = self.spv.allocResultId();
-        const result_type_id = try self.getOrGenType(ty);
+        const result_type_id = try self.genType(ty);
 
         if (val.isUndef()) {
-            try writeInstruction(code, .OpUndef, &[_]u32{ result_type_id, result_id });
+            try writeInstruction(code, .OpUndef, &[_]Word{ result_type_id, result_id });
             return result_id;
         }
 
         switch (ty.zigTypeTag()) {
+            .Int => {
+                const int_info = ty.intInfo(target);
+                const backing_bits = self.backingIntBits(int_info.bits) orelse {
+                    // Integers too big for any native type are represented as "composite integers": An array of largestSupportedIntBits.
+                    return self.fail("TODO: SPIR-V backend: implement composite int constants for {}", .{ty});
+                };
+
+                // We can just use toSignedInt/toUnsignedInt here as it returns u64 - a type large enough to hold any
+                // SPIR-V native type (up to i/u64 with Int64). If SPIR-V ever supports native ints of a larger size, this
+                // might need to be updated.
+                assert(self.largestSupportedIntBits() <= std.meta.bitCount(u64));
+                var int_bits = if (ty.isSignedInt()) @bitCast(u64, val.toSignedInt()) else val.toUnsignedInt();
+
+                // Mask the low bits which make up the actual integer. This is to make sure that negative values
+                // only use the actual bits of the type.
+                // TODO: Should this be the backing type bits or the actual type bits?
+                int_bits &= (@as(u64, 1) << @intCast(u6, backing_bits)) - 1;
+
+                switch (backing_bits) {
+                    0 => unreachable,
+                    1...32 => try writeInstruction(code, .OpConstant, &[_]Word{
+                        result_type_id,
+                        result_id,
+                        @truncate(u32, int_bits),
+                    }),
+                    33...64 => try writeInstruction(code, .OpConstant, &[_]Word{
+                        result_type_id,
+                        result_id,
+                        @truncate(u32, int_bits),
+                        @truncate(u32, int_bits >> @bitSizeOf(u32)),
+                    }),
+                    else => unreachable, // backing_bits is bounded by largestSupportedIntBits.
+                }
+            },
             .Bool => {
                 const opcode: Opcode = if (val.toBool()) .OpConstantTrue else .OpConstantFalse;
-                try writeInstruction(code, opcode, &[_]u32{ result_type_id, result_id });
+                try writeInstruction(code, opcode, &[_]Word{ result_type_id, result_id });
             },
             .Float => {
                 // At this point we are guaranteed that the target floating point type is supported, otherwise the function
-                // would have exited at getOrGenType(ty).
+                // would have exited at genType(ty).
 
                 // f16 and f32 require one word of storage. f64 requires 2, low-order first.
 
-                switch (val.tag()) {
-                    .float_16 => try writeInstruction(code, .OpConstant, &[_]u32{ result_type_id, result_id, @bitCast(u16, val.castTag(.float_16).?.data) }),
-                    .float_32 => try writeInstruction(code, .OpConstant, &[_]u32{ result_type_id, result_id, @bitCast(u32, val.castTag(.float_32).?.data) }),
-                    .float_64 => {
-                        const float_bits = @bitCast(u64, val.castTag(.float_64).?.data);
-                        try writeInstruction(code, .OpConstant, &[_]u32{
+                switch (ty.floatBits(target)) {
+                    16 => try writeInstruction(code, .OpConstant, &[_]Word{ result_type_id, result_id, @bitCast(u16, val.toFloat(f16)) }),
+                    32 => try writeInstruction(code, .OpConstant, &[_]Word{ result_type_id, result_id, @bitCast(u32, val.toFloat(f32)) }),
+                    64 => {
+                        const float_bits = @bitCast(u64, val.toFloat(f64));
+                        try writeInstruction(code, .OpConstant, &[_]Word{
                             result_type_id,
                             result_id,
                             @truncate(u32, float_bits),
-                            @truncate(u32, float_bits >> 32),
+                            @truncate(u32, float_bits >> @bitSizeOf(u32)),
                         });
                     },
-                    .float_128 => unreachable, // Filtered out in the call to getOrGenType.
-                    // TODO: What tags do we need to handle here anyway?
-                    else => return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: float constant generation of value {s}\n", .{val.tag()}),
+                    128 => unreachable, // Filtered out in the call to genType.
+                    // TODO: Insert case for long double when the layout for that is determined.
+                    else => unreachable,
                 }
             },
-            else => return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: constant generation of type {s}\n", .{ty.zigTypeTag()}),
+            .Void => unreachable,
+            else => return self.fail("TODO: SPIR-V backend: constant generation of type {}", .{ty}),
         }
 
         return result_id;
     }
 
-    fn getOrGenType(self: *DeclGen, ty: Type) Error!u32 {
+    fn genType(self: *DeclGen, ty: Type) Error!ResultId {
         // We can't use getOrPut here so we can recursively generate types.
-        if (self.types.get(ty)) |already_generated| {
+        if (self.spv.types.get(ty)) |already_generated| {
             return already_generated;
         }
 
-        const target = self.module.getTarget();
-        const code = &self.spv.types_globals_constants;
+        const target = self.getTarget();
+        const code = &self.spv.binary.types_globals_constants;
         const result_id = self.spv.allocResultId();
 
         switch (ty.zigTypeTag()) {
-            .Void => try writeInstruction(code, .OpTypeVoid, &[_]u32{result_id}),
-            .Bool => try writeInstruction(code, .OpTypeBool, &[_]u32{result_id}),
+            .Void => try writeInstruction(code, .OpTypeVoid, &[_]Word{result_id}),
+            .Bool => try writeInstruction(code, .OpTypeBool, &[_]Word{result_id}),
             .Int => {
                 const int_info = ty.intInfo(target);
                 const backing_bits = self.backingIntBits(int_info.bits) orelse {
                     // Integers too big for any native type are represented as "composite integers": An array of largestSupportedIntBits.
-                    return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: implement composite ints {}", .{ty});
+                    return self.fail("TODO: SPIR-V backend: implement composite int {}", .{ty});
                 };
 
                 // TODO: If backing_bits != int_info.bits, a duplicate type might be generated here.
-                try writeInstruction(code, .OpTypeInt, &[_]u32{
+                try writeInstruction(code, .OpTypeInt, &[_]Word{
                     result_id,
                     backing_bits,
                     switch (int_info.signedness) {
@@ -316,38 +532,40 @@ pub const DeclGen = struct {
                 };
 
                 if (!supported) {
-                    return self.fail(.{ .node_offset = 0 }, "Floating point width of {} bits is not supported for the current SPIR-V feature set", .{bits});
+                    return self.fail("Floating point width of {} bits is not supported for the current SPIR-V feature set", .{bits});
                 }
 
-                try writeInstruction(code, .OpTypeFloat, &[_]u32{ result_id, bits });
+                try writeInstruction(code, .OpTypeFloat, &[_]Word{ result_id, bits });
             },
             .Fn => {
                 // We only support zig-calling-convention functions, no varargs.
                 if (ty.fnCallingConvention() != .Unspecified)
-                    return self.fail(.{ .node_offset = 0 }, "Unsupported calling convention for SPIR-V", .{});
+                    return self.fail("Unsupported calling convention for SPIR-V", .{});
                 if (ty.fnIsVarArgs())
-                    return self.fail(.{ .node_offset = 0 }, "VarArgs unsupported for SPIR-V", .{});
+                    return self.fail("VarArgs unsupported for SPIR-V", .{});
 
                 // In order to avoid a temporary here, first generate all the required types and then simply look them up
                 // when generating the function type.
                 const params = ty.fnParamLen();
                 var i: usize = 0;
                 while (i < params) : (i += 1) {
-                    _ = try self.getOrGenType(ty.fnParamType(i));
+                    _ = try self.genType(ty.fnParamType(i));
                 }
 
-                const return_type_id = try self.getOrGenType(ty.fnReturnType());
+                const return_type_id = try self.genType(ty.fnReturnType());
 
                 // result id + result type id + parameter type ids.
-                try writeOpcode(code, .OpTypeFunction, 2 + @intCast(u32, ty.fnParamLen()));
+                try writeOpcode(code, .OpTypeFunction, 2 + @intCast(u16, ty.fnParamLen()));
                 try code.appendSlice(&.{ result_id, return_type_id });
 
                 i = 0;
                 while (i < params) : (i += 1) {
-                    const param_type_id = self.types.get(ty.fnParamType(i)).?;
+                    const param_type_id = self.spv.types.get(ty.fnParamType(i)).?;
                     try code.append(param_type_id);
                 }
             },
+            // When recursively generating a type, we cannot infer the pointer's storage class. See genPointerType.
+            .Pointer => return self.fail("Cannot create pointer with unkown storage class", .{}),
             .Vector => {
                 // Although not 100% the same, Zig vectors map quite neatly to SPIR-V vectors (including many integer and float operations
                 // which work on them), so simply use those.
@@ -357,7 +575,7 @@ pub const DeclGen = struct {
                 // is adequate at all for this.
 
                 // TODO: Vectors are not yet supported by the self-hosted compiler itself it seems.
-                return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: implement type Vector", .{});
+                return self.fail("TODO: SPIR-V backend: implement type Vector", .{});
             },
             .Null,
             .Undefined,
@@ -369,24 +587,42 @@ pub const DeclGen = struct {
 
             .BoundFn => unreachable, // this type will be deleted from the language.
 
-            else => |tag| return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: implement type {}s", .{tag}),
+            else => |tag| return self.fail("TODO: SPIR-V backend: implement type {}s", .{tag}),
         }
 
-        try self.types.putNoClobber(ty, result_id);
+        try self.spv.types.putNoClobber(ty, result_id);
         return result_id;
     }
 
-    pub fn gen(self: *DeclGen) !void {
+    /// SPIR-V requires pointers to have a storage class (address space), and so we have a special function for that.
+    /// TODO: The result of this needs to be cached.
+    fn genPointerType(self: *DeclGen, ty: Type, storage_class: spec.StorageClass) !ResultId {
+        assert(ty.zigTypeTag() == .Pointer);
+
+        const code = &self.spv.binary.types_globals_constants;
+        const result_id = self.spv.allocResultId();
+
+        // TODO: There are many constraints which are ignored for now: We may only create pointers to certain types, and to other types
+        // if more capabilities are enabled. For example, we may only create pointers to f16 if Float16Buffer is enabled.
+        // These also relates to the pointer's address space.
+        const child_id = try self.genType(ty.elemType());
+
+        try writeInstruction(code, .OpTypePointer, &[_]Word{ result_id, @enumToInt(storage_class), child_id });
+
+        return result_id;
+    }
+
+    fn genDecl(self: *DeclGen) !void {
         const decl = self.decl;
         const result_id = decl.fn_link.spirv.id;
 
-        if (decl.val.castTag(.function)) |func_payload| {
-            std.debug.assert(decl.ty.zigTypeTag() == .Fn);
-            const prototype_id = try self.getOrGenType(decl.ty);
-            try writeInstruction(&self.spv.fn_decls, .OpFunction, &[_]u32{
-                self.types.get(decl.ty.fnReturnType()).?, // This type should be generated along with the prototype.
+        if (decl.val.castTag(.function)) |_| {
+            assert(decl.ty.zigTypeTag() == .Fn);
+            const prototype_id = try self.genType(decl.ty);
+            try writeInstruction(&self.spv.binary.fn_decls, .OpFunction, &[_]Word{
+                self.spv.types.get(decl.ty.fnReturnType()).?, // This type should be generated along with the prototype.
                 result_id,
-                @bitCast(u32, spec.FunctionControl{}), // TODO: We can set inline here if the type requires it.
+                @bitCast(Word, spec.FunctionControl{}), // TODO: We can set inline here if the type requires it.
                 prototype_id,
             });
 
@@ -395,171 +631,357 @@ pub const DeclGen = struct {
 
             try self.args.ensureCapacity(params);
             while (i < params) : (i += 1) {
-                const param_type_id = self.types.get(decl.ty.fnParamType(i)).?;
+                const param_type_id = self.spv.types.get(decl.ty.fnParamType(i)).?;
                 const arg_result_id = self.spv.allocResultId();
-                try writeInstruction(&self.spv.fn_decls, .OpFunctionParameter, &[_]u32{ param_type_id, arg_result_id });
+                try writeInstruction(&self.spv.binary.fn_decls, .OpFunctionParameter, &[_]Word{ param_type_id, arg_result_id });
                 self.args.appendAssumeCapacity(arg_result_id);
             }
 
             // TODO: This could probably be done in a better way...
             const root_block_id = self.spv.allocResultId();
-            _ = try writeInstruction(&self.spv.fn_decls, .OpLabel, &[_]u32{root_block_id});
-            try self.genBody(func_payload.data.body);
 
-            try writeInstruction(&self.spv.fn_decls, .OpFunctionEnd, &[_]u32{});
+            // We need to generate the label directly in the fn_decls here because we're going to write the local variables after
+            // here. Since we're not generating in self.code, we're just going to bypass self.beginSPIRVBlock here.
+            try writeInstruction(&self.spv.binary.fn_decls, .OpLabel, &[_]Word{root_block_id});
+            self.current_block_label_id = root_block_id;
+
+            const main_body = self.air.getMainBody();
+            try self.genBody(main_body);
+
+            // Append the actual code into the fn_decls section.
+            try self.spv.binary.fn_decls.appendSlice(self.code.items);
+            try writeInstruction(&self.spv.binary.fn_decls, .OpFunctionEnd, &[_]Word{});
         } else {
-            return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: generate decl type {}", .{decl.ty.zigTypeTag()});
+            return self.fail("TODO: SPIR-V backend: generate decl type {}", .{decl.ty.zigTypeTag()});
         }
     }
 
-    fn genBody(self: *DeclGen, body: ir.Body) !void {
-        for (body.instructions) |inst| {
-            const maybe_result_id = try self.genInst(inst);
-            if (maybe_result_id) |result_id|
-                try self.values.putNoClobber(inst, result_id);
+    fn genBody(self: *DeclGen, body: []const Air.Inst.Index) Error!void {
+        for (body) |inst| {
+            try self.genInst(inst);
         }
     }
 
-    fn genInst(self: *DeclGen, inst: *Inst) !?u32 {
-        return switch (inst.tag) {
-            .add, .addwrap => try self.genBinOp(inst.castTag(.add).?),
-            .sub, .subwrap => try self.genBinOp(inst.castTag(.sub).?),
-            .mul, .mulwrap => try self.genBinOp(inst.castTag(.mul).?),
-            .div => try self.genBinOp(inst.castTag(.div).?),
-            .bit_and => try self.genBinOp(inst.castTag(.bit_and).?),
-            .bit_or => try self.genBinOp(inst.castTag(.bit_or).?),
-            .xor => try self.genBinOp(inst.castTag(.xor).?),
-            .cmp_eq => try self.genBinOp(inst.castTag(.cmp_eq).?),
-            .cmp_neq => try self.genBinOp(inst.castTag(.cmp_neq).?),
-            .cmp_gt => try self.genBinOp(inst.castTag(.cmp_gt).?),
-            .cmp_gte => try self.genBinOp(inst.castTag(.cmp_gte).?),
-            .cmp_lt => try self.genBinOp(inst.castTag(.cmp_lt).?),
-            .cmp_lte => try self.genBinOp(inst.castTag(.cmp_lte).?),
-            .bool_and => try self.genBinOp(inst.castTag(.bool_and).?),
-            .bool_or => try self.genBinOp(inst.castTag(.bool_or).?),
-            .not => try self.genUnOp(inst.castTag(.not).?),
-            .arg => self.genArg(),
-            // TODO: Breakpoints won't be supported in SPIR-V, but the compiler seems to insert them
-            // throughout the IR.
-            .breakpoint => null,
-            .dbg_stmt => null,
-            .ret => self.genRet(inst.castTag(.ret).?),
-            .retvoid => self.genRetVoid(),
-            .unreach => self.genUnreach(),
-            else => self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: implement inst {}", .{inst.tag}),
+    fn genInst(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const air_tags = self.air.instructions.items(.tag);
+        const result_id = switch (air_tags[inst]) {
+            // zig fmt: off
+            .add, .addwrap => try self.airArithOp(inst, .{.OpFAdd, .OpIAdd, .OpIAdd}),
+            .sub, .subwrap => try self.airArithOp(inst, .{.OpFSub, .OpISub, .OpISub}),
+            .mul, .mulwrap => try self.airArithOp(inst, .{.OpFMul, .OpIMul, .OpIMul}),
+            .div           => try self.airArithOp(inst, .{.OpFDiv, .OpSDiv, .OpUDiv}),
+
+            .bit_and  => try self.airBinOpSimple(inst, .OpBitwiseAnd),
+            .bit_or   => try self.airBinOpSimple(inst, .OpBitwiseOr),
+            .xor      => try self.airBinOpSimple(inst, .OpBitwiseXor),
+            .bool_and => try self.airBinOpSimple(inst, .OpLogicalAnd),
+            .bool_or  => try self.airBinOpSimple(inst, .OpLogicalOr),
+
+            .not => try self.airNot(inst),
+
+            .cmp_eq  => try self.airCmp(inst, .{.OpFOrdEqual,            .OpLogicalEqual,      .OpIEqual}),
+            .cmp_neq => try self.airCmp(inst, .{.OpFOrdNotEqual,         .OpLogicalNotEqual,   .OpINotEqual}),
+            .cmp_gt  => try self.airCmp(inst, .{.OpFOrdGreaterThan,      .OpSGreaterThan,      .OpUGreaterThan}),
+            .cmp_gte => try self.airCmp(inst, .{.OpFOrdGreaterThanEqual, .OpSGreaterThanEqual, .OpUGreaterThanEqual}),
+            .cmp_lt  => try self.airCmp(inst, .{.OpFOrdLessThan,         .OpSLessThan,         .OpULessThan}),
+            .cmp_lte => try self.airCmp(inst, .{.OpFOrdLessThanEqual,    .OpSLessThanEqual,    .OpULessThanEqual}),
+
+            .arg   => self.airArg(),
+            .alloc => try self.airAlloc(inst),
+            .block => (try self.airBlock(inst)) orelse return,
+            .load  => try self.airLoad(inst),
+
+            .br         => return self.airBr(inst),
+            .breakpoint => return,
+            .cond_br    => return self.airCondBr(inst),
+            .constant   => unreachable,
+            .dbg_stmt   => return self.airDbgStmt(inst),
+            .loop       => return self.airLoop(inst),
+            .ret        => return self.airRet(inst),
+            .store      => return self.airStore(inst),
+            .unreach    => return self.airUnreach(),
+            // zig fmt: on
+
+            else => |tag| return self.fail("TODO: SPIR-V backend: implement AIR tag {s}", .{
+                @tagName(tag),
+            }),
         };
+
+        try self.inst_results.putNoClobber(inst, result_id);
     }
 
-    fn genBinOp(self: *DeclGen, inst: *Inst.BinOp) !u32 {
-        // TODO: Will lhs and rhs have the same type?
-        const lhs_id = try self.resolve(inst.lhs);
-        const rhs_id = try self.resolve(inst.rhs);
+    fn airBinOpSimple(self: *DeclGen, inst: Air.Inst.Index, opcode: Opcode) !ResultId {
+        const bin_op = self.air.instructions.items(.data)[inst].bin_op;
+        const lhs_id = try self.resolve(bin_op.lhs);
+        const rhs_id = try self.resolve(bin_op.rhs);
+        const result_id = self.spv.allocResultId();
+        const result_type_id = try self.genType(self.air.typeOfIndex(inst));
+        try writeInstruction(&self.code, opcode, &[_]Word{
+            result_type_id, result_id, lhs_id, rhs_id,
+        });
+        return result_id;
+    }
+
+    fn airArithOp(self: *DeclGen, inst: Air.Inst.Index, ops: [3]Opcode) !ResultId {
+        // LHS and RHS are guaranteed to have the same type, and AIR guarantees
+        // the result to be the same as the LHS and RHS, which matches SPIR-V.
+        const ty = self.air.typeOfIndex(inst);
+        const bin_op = self.air.instructions.items(.data)[inst].bin_op;
+        const lhs_id = try self.resolve(bin_op.lhs);
+        const rhs_id = try self.resolve(bin_op.rhs);
 
         const result_id = self.spv.allocResultId();
-        const result_type_id = try self.getOrGenType(inst.base.ty);
+        const result_type_id = try self.genType(ty);
 
-        // TODO: Is the result the same as the argument types?
-        // This is supposed to be the case for SPIR-V.
-        std.debug.assert(inst.rhs.ty.eql(inst.lhs.ty));
-        std.debug.assert(inst.base.ty.tag() == .bool or inst.base.ty.eql(inst.lhs.ty));
+        assert(self.air.typeOf(bin_op.lhs).eql(ty));
+        assert(self.air.typeOf(bin_op.rhs).eql(ty));
 
-        // Binary operations are generally applicable to both scalar and vector operations in SPIR-V, but int and float
-        // versions of operations require different opcodes.
-        // For operations which produce bools, the information of inst.base.ty is not useful, so just pick either operand
-        // instead.
-        const info = try self.arithmeticTypeInfo(inst.lhs.ty);
+        // Binary operations are generally applicable to both scalar and vector operations
+        // in SPIR-V, but int and float versions of operations require different opcodes.
+        const info = try self.arithmeticTypeInfo(ty);
 
-        if (info.class == .composite_integer)
-            return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: binary operations for composite integers", .{});
-
-        const is_bool = info.class == .bool;
-        const is_float = info.class == .float;
-        const is_signed = info.signedness == .signed;
-        // **Note**: All these operations must be valid for vectors of floats, integers and bools as well!
-        // For floating points, we generally want ordered operations (which return false if either operand is nan).
-        const opcode = switch (inst.base.tag) {
-            // The regular integer operations are all defined for wrapping. Since theyre only relevant for integers,
-            // we can just switch on both cases here.
-            .add, .addwrap => if (is_float) Opcode.OpFAdd else Opcode.OpIAdd,
-            .sub, .subwrap => if (is_float) Opcode.OpFSub else Opcode.OpISub,
-            .mul, .mulwrap => if (is_float) Opcode.OpFMul else Opcode.OpIMul,
-            // TODO: Trap if divisor is 0?
-            // TODO: Figure out of OpSDiv for unsigned/OpUDiv for signed does anything useful.
-            //  => Those are probably for divTrunc and divFloor, though the compiler does not yet generate those.
-            //  => TODO: Figure out how those work on the SPIR-V side.
-            //  => TODO: Test these.
-            .div => if (is_float) Opcode.OpFDiv else if (is_signed) Opcode.OpSDiv else Opcode.OpUDiv,
-            // Only integer versions for these.
-            .bit_and => Opcode.OpBitwiseAnd,
-            .bit_or => Opcode.OpBitwiseOr,
-            .xor => Opcode.OpBitwiseXor,
-            // Int/bool/float -> bool operations.
-            .cmp_eq => if (is_float) Opcode.OpFOrdEqual else if (is_bool) Opcode.OpLogicalEqual else Opcode.OpIEqual,
-            .cmp_neq => if (is_float) Opcode.OpFOrdNotEqual else if (is_bool) Opcode.OpLogicalNotEqual else Opcode.OpINotEqual,
-            // Int/float -> bool operations.
-            // TODO: Verify that these OpFOrd type operations produce the right value.
-            // TODO: Is there a more fundamental difference between OpU and OpS operations here than just the type?
-            .cmp_gt => if (is_float) Opcode.OpFOrdGreaterThan else if (is_signed) Opcode.OpSGreaterThan else Opcode.OpUGreaterThan,
-            .cmp_gte => if (is_float) Opcode.OpFOrdGreaterThanEqual else if (is_signed) Opcode.OpSGreaterThanEqual else Opcode.OpUGreaterThanEqual,
-            .cmp_lt => if (is_float) Opcode.OpFOrdLessThan else if (is_signed) Opcode.OpSLessThan else Opcode.OpULessThan,
-            .cmp_lte => if (is_float) Opcode.OpFOrdLessThanEqual else if (is_signed) Opcode.OpSLessThanEqual else Opcode.OpULessThanEqual,
-            // Bool -> bool operations.
-            .bool_and => Opcode.OpLogicalAnd,
-            .bool_or => Opcode.OpLogicalOr,
+        const opcode_index: usize = switch (info.class) {
+            .composite_integer => {
+                return self.fail("TODO: SPIR-V backend: binary operations for composite integers", .{});
+            },
+            .strange_integer => {
+                return self.fail("TODO: SPIR-V backend: binary operations for strange integers", .{});
+            },
+            .integer => switch (info.signedness) {
+                .signed => @as(usize, 1),
+                .unsigned => @as(usize, 2),
+            },
+            .float => 0,
             else => unreachable,
         };
-
-        try writeInstruction(&self.spv.fn_decls, opcode, &[_]u32{ result_type_id, result_id, lhs_id, rhs_id });
+        const opcode = ops[opcode_index];
+        try writeInstruction(&self.code, opcode, &[_]Word{ result_type_id, result_id, lhs_id, rhs_id });
 
         // TODO: Trap on overflow? Probably going to be annoying.
         // TODO: Look into SPV_KHR_no_integer_wrap_decoration which provides NoSignedWrap/NoUnsignedWrap.
 
-        if (info.class != .strange_integer)
-            return result_id;
-
-        return self.fail(.{ .node_offset = 0 }, "TODO: SPIR-V backend: strange integer operation mask", .{});
+        return result_id;
     }
 
-    fn genUnOp(self: *DeclGen, inst: *Inst.UnOp) !u32 {
-        const operand_id = try self.resolve(inst.operand);
-
+    fn airCmp(self: *DeclGen, inst: Air.Inst.Index, ops: [3]Opcode) !ResultId {
+        const bin_op = self.air.instructions.items(.data)[inst].bin_op;
+        const lhs_id = try self.resolve(bin_op.lhs);
+        const rhs_id = try self.resolve(bin_op.rhs);
         const result_id = self.spv.allocResultId();
-        const result_type_id = try self.getOrGenType(inst.base.ty);
+        const result_type_id = try self.genType(Type.initTag(.bool));
+        const op_ty = self.air.typeOf(bin_op.lhs);
+        assert(op_ty.eql(self.air.typeOf(bin_op.rhs)));
 
-        const info = try self.arithmeticTypeInfo(inst.operand.ty);
+        // Comparisons are generally applicable to both scalar and vector operations in SPIR-V,
+        // but int and float versions of operations require different opcodes.
+        const info = try self.arithmeticTypeInfo(op_ty);
 
-        const opcode = switch (inst.base.tag) {
-            // Bool -> bool
-            .not => Opcode.OpLogicalNot,
-            else => unreachable,
+        const opcode_index: usize = switch (info.class) {
+            .composite_integer => {
+                return self.fail("TODO: SPIR-V backend: binary operations for composite integers", .{});
+            },
+            .strange_integer => {
+                return self.fail("TODO: SPIR-V backend: comparison for strange integers", .{});
+            },
+            .float => 0,
+            .bool => 1,
+            .integer => switch (info.signedness) {
+                .signed => @as(usize, 1),
+                .unsigned => @as(usize, 2),
+            },
         };
+        const opcode = ops[opcode_index];
 
-        try writeInstruction(&self.spv.fn_decls, opcode, &[_]u32{ result_type_id, result_id, operand_id });
+        try writeInstruction(&self.code, opcode, &[_]Word{ result_type_id, result_id, lhs_id, rhs_id });
+        return result_id;
+    }
+
+    fn airNot(self: *DeclGen, inst: Air.Inst.Index) !ResultId {
+        const ty_op = self.air.instructions.items(.data)[inst].ty_op;
+        const operand_id = try self.resolve(ty_op.operand);
+        const result_id = self.spv.allocResultId();
+        const result_type_id = try self.genType(Type.initTag(.bool));
+        const opcode: Opcode = .OpLogicalNot;
+        try writeInstruction(&self.code, opcode, &[_]Word{ result_type_id, result_id, operand_id });
+        return result_id;
+    }
+
+    fn airAlloc(self: *DeclGen, inst: Air.Inst.Index) !ResultId {
+        const ty = self.air.typeOfIndex(inst);
+        const storage_class = spec.StorageClass.Function;
+        const result_type_id = try self.genPointerType(ty, storage_class);
+        const result_id = self.spv.allocResultId();
+
+        // Rather than generating into code here, we're just going to generate directly into the fn_decls section so that
+        // variable declarations appear in the first block of the function.
+        try writeInstruction(&self.spv.binary.fn_decls, .OpVariable, &[_]Word{ result_type_id, result_id, @enumToInt(storage_class) });
 
         return result_id;
     }
 
-    fn genArg(self: *DeclGen) u32 {
+    fn airArg(self: *DeclGen) ResultId {
         defer self.next_arg_index += 1;
         return self.args.items[self.next_arg_index];
     }
 
-    fn genRet(self: *DeclGen, inst: *Inst.UnOp) !?u32 {
-        const operand_id = try self.resolve(inst.operand);
-        // TODO: This instruction needs to be the last in a block. Is that guaranteed?
-        try writeInstruction(&self.spv.fn_decls, .OpReturnValue, &[_]u32{operand_id});
-        return null;
+    fn airBlock(self: *DeclGen, inst: Air.Inst.Index) !?ResultId {
+        // In IR, a block doesn't really define an entry point like a block, but more like a scope that breaks can jump out of and
+        // "return" a value from. This cannot be directly modelled in SPIR-V, so in a block instruction, we're going to split up
+        // the current block by first generating the code of the block, then a label, and then generate the rest of the current
+        // ir.Block in a different SPIR-V block.
+
+        const label_id = self.spv.allocResultId();
+
+        // 4 chosen as arbitrary initial capacity.
+        var incoming_blocks = try std.ArrayListUnmanaged(IncomingBlock).initCapacity(self.spv.gpa, 4);
+
+        try self.blocks.putNoClobber(inst, .{
+            .label_id = label_id,
+            .incoming_blocks = &incoming_blocks,
+        });
+        defer {
+            assert(self.blocks.remove(inst));
+            incoming_blocks.deinit(self.spv.gpa);
+        }
+
+        const ty = self.air.typeOfIndex(inst);
+        const inst_datas = self.air.instructions.items(.data);
+        const extra = self.air.extraData(Air.Block, inst_datas[inst].ty_pl.payload);
+        const body = self.air.extra[extra.end..][0..extra.data.body_len];
+
+        try self.genBody(body);
+        try self.beginSPIRVBlock(label_id);
+
+        // If this block didn't produce a value, simply return here.
+        if (!ty.hasCodeGenBits())
+            return null;
+
+        // Combine the result from the blocks using the Phi instruction.
+
+        const result_id = self.spv.allocResultId();
+
+        // TODO: OpPhi is limited in the types that it may produce, such as pointers. Figure out which other types
+        // are not allowed to be created from a phi node, and throw an error for those. For now, genType already throws
+        // an error for pointers.
+        const result_type_id = try self.genType(ty);
+        _ = result_type_id;
+
+        try writeOpcode(&self.code, .OpPhi, 2 + @intCast(u16, incoming_blocks.items.len * 2)); // result type + result + variable/parent...
+
+        for (incoming_blocks.items) |incoming| {
+            try self.code.appendSlice(&[_]Word{ incoming.break_value_id, incoming.src_label_id });
+        }
+
+        return result_id;
     }
 
-    fn genRetVoid(self: *DeclGen) !?u32 {
-        // TODO: This instruction needs to be the last in a block. Is that guaranteed?
-        try writeInstruction(&self.spv.fn_decls, .OpReturn, &[_]u32{});
-        return null;
+    fn airBr(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const br = self.air.instructions.items(.data)[inst].br;
+        const block = self.blocks.get(br.block_inst).?;
+        const operand_ty = self.air.typeOf(br.operand);
+
+        if (operand_ty.hasCodeGenBits()) {
+            const operand_id = try self.resolve(br.operand);
+            // current_block_label_id should not be undefined here, lest there is a br or br_void in the function's body.
+            try block.incoming_blocks.append(self.spv.gpa, .{ .src_label_id = self.current_block_label_id, .break_value_id = operand_id });
+        }
+
+        try writeInstruction(&self.code, .OpBranch, &[_]Word{block.label_id});
     }
 
-    fn genUnreach(self: *DeclGen) !?u32 {
-        // TODO: This instruction needs to be the last in a block. Is that guaranteed?
-        try writeInstruction(&self.spv.fn_decls, .OpUnreachable, &[_]u32{});
-        return null;
+    fn airCondBr(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const pl_op = self.air.instructions.items(.data)[inst].pl_op;
+        const cond_br = self.air.extraData(Air.CondBr, pl_op.payload);
+        const then_body = self.air.extra[cond_br.end..][0..cond_br.data.then_body_len];
+        const else_body = self.air.extra[cond_br.end + then_body.len ..][0..cond_br.data.else_body_len];
+        const condition_id = try self.resolve(pl_op.operand);
+
+        // These will always generate a new SPIR-V block, since they are ir.Body and not ir.Block.
+        const then_label_id = self.spv.allocResultId();
+        const else_label_id = self.spv.allocResultId();
+
+        // TODO: We can generate OpSelectionMerge here if we know the target block that both of these will resolve to,
+        // but i don't know if those will always resolve to the same block.
+
+        try writeInstruction(&self.code, .OpBranchConditional, &[_]Word{
+            condition_id,
+            then_label_id,
+            else_label_id,
+        });
+
+        try self.beginSPIRVBlock(then_label_id);
+        try self.genBody(then_body);
+        try self.beginSPIRVBlock(else_label_id);
+        try self.genBody(else_body);
+    }
+
+    fn airDbgStmt(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const dbg_stmt = self.air.instructions.items(.data)[inst].dbg_stmt;
+        const src_fname_id = try self.spv.resolveSourceFileName(self.decl);
+        try writeInstruction(&self.code, .OpLine, &[_]Word{ src_fname_id, dbg_stmt.line, dbg_stmt.column });
+    }
+
+    fn airLoad(self: *DeclGen, inst: Air.Inst.Index) !ResultId {
+        const ty_op = self.air.instructions.items(.data)[inst].ty_op;
+        const operand_id = try self.resolve(ty_op.operand);
+        const ty = self.air.typeOfIndex(inst);
+
+        const result_type_id = try self.genType(ty);
+        const result_id = self.spv.allocResultId();
+
+        const operands = if (ty.isVolatilePtr())
+            &[_]Word{ result_type_id, result_id, operand_id, @bitCast(u32, spec.MemoryAccess{ .Volatile = true }) }
+        else
+            &[_]Word{ result_type_id, result_id, operand_id };
+
+        try writeInstruction(&self.code, .OpLoad, operands);
+
+        return result_id;
+    }
+
+    fn airLoop(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const ty_pl = self.air.instructions.items(.data)[inst].ty_pl;
+        const loop = self.air.extraData(Air.Block, ty_pl.payload);
+        const body = self.air.extra[loop.end..][0..loop.data.body_len];
+        const loop_label_id = self.spv.allocResultId();
+
+        // Jump to the loop entry point
+        try writeInstruction(&self.code, .OpBranch, &[_]Word{loop_label_id});
+
+        // TODO: Look into OpLoopMerge.
+
+        try self.beginSPIRVBlock(loop_label_id);
+        try self.genBody(body);
+
+        try writeInstruction(&self.code, .OpBranch, &[_]Word{loop_label_id});
+    }
+
+    fn airRet(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const operand = self.air.instructions.items(.data)[inst].un_op;
+        const operand_ty = self.air.typeOf(operand);
+        if (operand_ty.hasCodeGenBits()) {
+            const operand_id = try self.resolve(operand);
+            try writeInstruction(&self.code, .OpReturnValue, &[_]Word{operand_id});
+        } else {
+            try writeInstruction(&self.code, .OpReturn, &[_]Word{});
+        }
+    }
+
+    fn airStore(self: *DeclGen, inst: Air.Inst.Index) !void {
+        const bin_op = self.air.instructions.items(.data)[inst].bin_op;
+        const dst_ptr_id = try self.resolve(bin_op.lhs);
+        const src_val_id = try self.resolve(bin_op.rhs);
+        const lhs_ty = self.air.typeOf(bin_op.lhs);
+
+        const operands = if (lhs_ty.isVolatilePtr())
+            &[_]Word{ dst_ptr_id, src_val_id, @bitCast(u32, spec.MemoryAccess{ .Volatile = true }) }
+        else
+            &[_]Word{ dst_ptr_id, src_val_id };
+
+        try writeInstruction(&self.code, .OpStore, operands);
+    }
+
+    fn airUnreach(self: *DeclGen) !void {
+        try writeInstruction(&self.code, .OpUnreachable, &[_]Word{});
     }
 };

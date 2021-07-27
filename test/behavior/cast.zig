@@ -102,6 +102,7 @@ fn castToOptionalTypeError(z: i32) !void {
 
     const f = z;
     const g: anyerror!?i32 = f;
+    _ = g catch {};
 
     const a = A{ .a = z };
     const b: anyerror!?A = a;
@@ -114,7 +115,9 @@ test "implicitly cast from int to anyerror!?T" {
 }
 fn implicitIntLitToOptional() void {
     const f: ?i32 = 1;
+    _ = f;
     const g: anyerror!?i32 = 1;
+    _ = g catch {};
 }
 
 test "return null from fn() anyerror!?&T" {
@@ -560,17 +563,6 @@ test "@intToEnum passed a comptime_int to an enum with one item" {
     try expect(x == E.A);
 }
 
-test "@intToEnum runtime to  an extern enum with duplicate values" {
-    const E = extern enum(u8) {
-        A = 1,
-        B = 1,
-    };
-    var a: u8 = 1;
-    var x = @intToEnum(E, a);
-    try expect(x == E.A);
-    try expect(x == E.B);
-}
-
 test "@intCast to u0 and use the result" {
     const S = struct {
         fn doTheTest(zero: u1, one: u1, bigzero: i32) !void {
@@ -665,7 +657,7 @@ test "*const [N]null u8 to ?[]const u8" {
 
 test "peer resolution of string literals" {
     const S = struct {
-        const E = extern enum {
+        const E = enum {
             a,
             b,
             c,
@@ -832,9 +824,13 @@ test "variable initialization uses result locations properly with regards to the
 test "cast between [*c]T and ?[*:0]T on fn parameter" {
     const S = struct {
         const Handler = ?fn ([*c]const u8) callconv(.C) void;
-        fn addCallback(handler: Handler) void {}
+        fn addCallback(handler: Handler) void {
+            _ = handler;
+        }
 
-        fn myCallback(cstr: ?[*:0]const u8) callconv(.C) void {}
+        fn myCallback(cstr: ?[*:0]const u8) callconv(.C) void {
+            _ = cstr;
+        }
 
         fn doTheTest() void {
             addCallback(myCallback);

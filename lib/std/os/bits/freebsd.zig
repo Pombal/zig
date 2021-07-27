@@ -206,13 +206,7 @@ pub const sockaddr = extern struct {
     data: [14]u8,
 };
 
-pub const sockaddr_storage = extern struct {
-    len: u8,
-    family: sa_family_t,
-    __pad1: [5]u8,
-    __align: i64,
-    __pad2: [112]u8,
-};
+pub const sockaddr_storage = std.x.os.Socket.Address.Native.Storage;
 
 pub const sockaddr_in = extern struct {
     len: u8 = @sizeOf(sockaddr_in),
@@ -735,8 +729,8 @@ pub const TIOCGSID = 0x40047463;
 pub const TIOCGPTN = 0x4004740f;
 pub const TIOCSIG = 0x2004745f;
 
-pub fn WEXITSTATUS(s: u32) u32 {
-    return (s & 0xff00) >> 8;
+pub fn WEXITSTATUS(s: u32) u8 {
+    return @intCast(u8, (s & 0xff00) >> 8);
 }
 pub fn WTERMSIG(s: u32) u32 {
     return s & 0x7f;
@@ -763,9 +757,9 @@ pub const winsize = extern struct {
 
 const NSIG = 32;
 
-pub const SIG_ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
 pub const SIG_DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
 pub const SIG_IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
+pub const SIG_ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
@@ -823,16 +817,16 @@ pub const sigval = extern union {
 pub const _SIG_WORDS = 4;
 pub const _SIG_MAXSIG = 128;
 
-pub fn _SIG_IDX(sig: usize) callconv(.Inline) usize {
+pub inline fn _SIG_IDX(sig: usize) usize {
     return sig - 1;
 }
-pub fn _SIG_WORD(sig: usize) callconv(.Inline) usize {
+pub inline fn _SIG_WORD(sig: usize) usize {
     return_SIG_IDX(sig) >> 5;
 }
-pub fn _SIG_BIT(sig: usize) callconv(.Inline) usize {
+pub inline fn _SIG_BIT(sig: usize) usize {
     return 1 << (_SIG_IDX(sig) & 31);
 }
-pub fn _SIG_VALID(sig: usize) callconv(.Inline) usize {
+pub inline fn _SIG_VALID(sig: usize) usize {
     return sig <= _SIG_MAXSIG and sig > 0;
 }
 

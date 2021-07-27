@@ -126,7 +126,7 @@ pub const AtomicMutex = struct {
 
             var iter = std.math.min(32, spin + 1);
             while (iter > 0) : (iter -= 1)
-                std.Thread.spinLoopHint();
+                std.atomic.spinLoopHint();
         }
 
         new_state = .waiting;
@@ -149,7 +149,7 @@ pub const AtomicMutex = struct {
                         else => unreachable,
                     }
                 },
-                else => std.Thread.spinLoopHint(),
+                else => std.atomic.spinLoopHint(),
             }
         }
     }
@@ -297,12 +297,12 @@ test "basic usage" {
         try testing.expect(context.data == TestContext.incr_count);
     } else {
         const thread_count = 10;
-        var threads: [thread_count]*std.Thread = undefined;
+        var threads: [thread_count]std.Thread = undefined;
         for (threads) |*t| {
-            t.* = try std.Thread.spawn(worker, &context);
+            t.* = try std.Thread.spawn(.{}, worker, .{&context});
         }
         for (threads) |t|
-            t.wait();
+            t.join();
 
         try testing.expect(context.data == thread_count * TestContext.incr_count);
     }

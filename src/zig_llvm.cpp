@@ -46,7 +46,9 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Host.h>
 #include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Process.h>
 #include <llvm/Support/TargetParser.h>
+#include <llvm/Support/TimeProfiler.h>
 #include <llvm/Support/Timer.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/TargetRegistry.h>
@@ -187,17 +189,54 @@ unsigned ZigLLVMDataLayoutGetProgramAddressSpace(LLVMTargetDataRef TD) {
     return unwrap(TD)->getProgramAddressSpace();
 }
 
+namespace {
+// LLVM's time profiler can provide a hierarchy view of the time spent
+// in each component. It generates JSON report in Chrome's "Trace Event"
+// format. So the report can be easily visualized by the Chrome browser.
+struct TimeTracerRAII {
+  // Granularity in ms
+  unsigned TimeTraceGranularity;
+  StringRef TimeTraceFile, OutputFilename;
+  bool EnableTimeTrace;
+
+  TimeTracerRAII(StringRef ProgramName, StringRef OF)
+    : TimeTraceGranularity(500U),
+      TimeTraceFile(std::getenv("ZIG_LLVM_TIME_TRACE_FILE")),
+      OutputFilename(OF),
+      EnableTimeTrace(!TimeTraceFile.empty()) {
+    if (EnableTimeTrace) {
+      if (const char *G = std::getenv("ZIG_LLVM_TIME_TRACE_GRANULARITY"))
+        TimeTraceGranularity = (unsigned)std::atoi(G);
+
+      llvm::timeTraceProfilerInitialize(TimeTraceGranularity, ProgramName);
+    }
+  }
+
+  ~TimeTracerRAII() {
+    if (EnableTimeTrace) {
+      if (auto E = llvm::timeTraceProfilerWrite(TimeTraceFile, OutputFilename)) {
+        handleAllErrors(std::move(E), [&](const StringError &SE) {
+          errs() << SE.getMessage() << "\n";
+        });
+        return;
+      }
+      timeTraceProfilerCleanup();
+    }
+  }
+};
+} // end anonymous namespace
+
 bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machine_ref, LLVMModuleRef module_ref,
         char **error_message, bool is_debug,
         bool is_small, bool time_report, bool tsan, bool lto,
-        const char *asm_filename, const char *bin_filename, const char *llvm_ir_filename)
+        const char *asm_filename, const char *bin_filename,
+        const char *llvm_ir_filename, const char *bitcode_filename)
 {
-    // TODO: Maybe we should collect time trace rather than using timer
-    // to get a more hierarchical timeline view
     TimePassesIsEnabled = time_report;
 
     raw_fd_ostream *dest_asm_ptr = nullptr;
     raw_fd_ostream *dest_bin_ptr = nullptr;
+    raw_fd_ostream *dest_bitcode_ptr = nullptr;
 
     if (asm_filename) {
         std::error_code EC;
@@ -215,9 +254,25 @@ bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machine_ref, LLVMM
             return true;
         }
     }
+    if (bitcode_filename) {
+        std::error_code EC;
+        dest_bitcode_ptr = new(std::nothrow) raw_fd_ostream(bitcode_filename, EC, sys::fs::F_None);
+        if (EC) {
+            *error_message = strdup((const char *)StringRef(EC.message()).bytes_begin());
+            return true;
+        }
+    }
 
     std::unique_ptr<raw_fd_ostream> dest_asm(dest_asm_ptr),
-                                    dest_bin(dest_bin_ptr);
+                                    dest_bin(dest_bin_ptr),
+                                    dest_bitcode(dest_bitcode_ptr);
+
+
+    auto PID = sys::Process::getProcessId();
+    std::string ProcName = "zig-";
+    ProcName += std::to_string(PID);
+    TimeTracerRAII TimeTracer(ProcName,
+                              bin_filename? bin_filename : asm_filename);
 
     TargetMachine &target_machine = *reinterpret_cast<TargetMachine*>(targ_machine_ref);
     target_machine.setO0WantsFastISel(true);
@@ -346,6 +401,9 @@ bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machine_ref, LLVMM
     if (dest_bin && lto) {
         WriteBitcodeToFile(module, *dest_bin);
     }
+    if (dest_bitcode) {
+        WriteBitcodeToFile(module, *dest_bitcode);
+    }
 
     if (time_report) {
         TimerGroup::printAll(errs());
@@ -397,6 +455,36 @@ LLVMValueRef ZigLLVMBuildMemSet(LLVMBuilderRef B, LLVMValueRef Ptr, LLVMValueRef
 {
     CallInst *call_inst = unwrap(B)->CreateMemSet(unwrap(Ptr), unwrap(Val), unwrap(Size),
             MaybeAlign(Align), isVolatile);
+    return wrap(call_inst);
+}
+
+LLVMValueRef ZigLLVMBuildMaxNum(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS, const char *name) {
+    CallInst *call_inst = unwrap(B)->CreateMaxNum(unwrap(LHS), unwrap(RHS), name);
+    return wrap(call_inst);
+}
+
+LLVMValueRef ZigLLVMBuildMinNum(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS, const char *name) {
+    CallInst *call_inst = unwrap(B)->CreateMinNum(unwrap(LHS), unwrap(RHS), name);
+    return wrap(call_inst);
+}
+
+LLVMValueRef ZigLLVMBuildUMax(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS, const char *name) {
+    CallInst *call_inst = unwrap(B)->CreateBinaryIntrinsic(Intrinsic::umax, unwrap(LHS), unwrap(RHS), nullptr, name);
+    return wrap(call_inst);
+}
+
+LLVMValueRef ZigLLVMBuildUMin(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS, const char *name) {
+    CallInst *call_inst = unwrap(B)->CreateBinaryIntrinsic(Intrinsic::umin, unwrap(LHS), unwrap(RHS), nullptr, name);
+    return wrap(call_inst);
+}
+
+LLVMValueRef ZigLLVMBuildSMax(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS, const char *name) {
+    CallInst *call_inst = unwrap(B)->CreateBinaryIntrinsic(Intrinsic::smax, unwrap(LHS), unwrap(RHS), nullptr, name);
+    return wrap(call_inst);
+}
+
+LLVMValueRef ZigLLVMBuildSMin(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS, const char *name) {
+    CallInst *call_inst = unwrap(B)->CreateBinaryIntrinsic(Intrinsic::smin, unwrap(LHS), unwrap(RHS), nullptr, name);
     return wrap(call_inst);
 }
 
@@ -926,6 +1014,12 @@ void ZigLLVMSetModulePIELevel(LLVMModuleRef module) {
     unwrap(module)->setPIELevel(PIELevel::Level::Large);
 }
 
+void ZigLLVMSetModuleCodeModel(LLVMModuleRef module, LLVMCodeModel code_model) {
+    bool JIT;
+    unwrap(module)->setCodeModel(*unwrap(code_model, JIT));
+    assert(!JIT);
+}
+
 static AtomicOrdering mapFromLLVMOrdering(LLVMAtomicOrdering Ordering) {
     switch (Ordering) {
         case LLVMAtomicOrderingNotAtomic: return AtomicOrdering::NotAtomic;
@@ -1136,11 +1230,6 @@ int ZigLLDLinkCOFF(int argc, const char **argv, bool can_exit_early) {
 int ZigLLDLinkELF(int argc, const char **argv, bool can_exit_early) {
     std::vector<const char *> args(argv, argv + argc);
     return lld::elf::link(args, can_exit_early, llvm::outs(), llvm::errs());
-}
-
-int ZigLLDLinkMachO(int argc, const char **argv, bool can_exit_early) {
-    std::vector<const char *> args(argv, argv + argc);
-    return lld::mach_o::link(args, can_exit_early, llvm::outs(), llvm::errs());
 }
 
 int ZigLLDLinkWasm(int argc, const char **argv, bool can_exit_early) {

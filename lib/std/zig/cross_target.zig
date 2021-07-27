@@ -133,6 +133,7 @@ pub const CrossTarget = struct {
             .opencl,
             .glsl450,
             .vulkan,
+            .plan9,
             .other,
             => {
                 self.os_version_min = .{ .none = {} };
@@ -472,16 +473,12 @@ pub const CrossTarget = struct {
         return self.getOsTag() == .windows;
     }
 
-    pub fn oFileExt(self: CrossTarget) [:0]const u8 {
-        return Target.oFileExt_cpu_arch_abi(self.getCpuArch(), self.getAbi());
-    }
-
     pub fn exeFileExt(self: CrossTarget) [:0]const u8 {
         return Target.exeFileExtSimple(self.getCpuArch(), self.getOsTag());
     }
 
     pub fn staticLibSuffix(self: CrossTarget) [:0]const u8 {
-        return Target.staticLibSuffix_cpu_arch_abi(self.getCpuArch(), self.getAbi());
+        return Target.staticLibSuffix_os_abi(self.getOsTag(), self.getAbi());
     }
 
     pub fn dynamicLibSuffix(self: CrossTarget) [:0]const u8 {
@@ -489,7 +486,7 @@ pub const CrossTarget = struct {
     }
 
     pub fn libPrefix(self: CrossTarget) [:0]const u8 {
-        return Target.libPrefix_cpu_arch_abi(self.getCpuArch(), self.getAbi());
+        return Target.libPrefix_os_abi(self.getOsTag(), self.getAbi());
     }
 
     pub fn isNativeCpu(self: CrossTarget) bool {
@@ -746,6 +743,7 @@ pub const CrossTarget = struct {
             .opencl,
             .glsl450,
             .vulkan,
+            .plan9,
             .other,
             => return error.InvalidOperatingSystemVersion,
 

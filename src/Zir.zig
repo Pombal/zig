@@ -1,7 +1,7 @@
 //! Zig Intermediate Representation. Astgen.zig converts AST nodes to these
-//! untyped IR instructions. Next, Sema.zig processes these into TZIR.
+//! untyped IR instructions. Next, Sema.zig processes these into AIR.
 //! The minimum amount of information needed to represent a list of ZIR instructions.
-//! Once this structure is completed, it can be used to generate TZIR, followed by
+//! Once this structure is completed, it can be used to generate AIR, followed by
 //! machine code, without any memory access into the AST tree token list, node list,
 //! or source bytes. Exceptions include:
 //!  * Compile errors, which may need to reach into these data structures to
@@ -22,7 +22,6 @@ const Zir = @This();
 const Type = @import("type.zig").Type;
 const Value = @import("value.zig").Value;
 const TypedValue = @import("TypedValue.zig");
-const ir = @import("ir.zig");
 const Module = @import("Module.zig");
 const LazySrcLoc = Module.LazySrcLoc;
 
@@ -138,10 +137,22 @@ pub fn renderAsTextToFile(
     const imports_index = scope_file.zir.extra[@enumToInt(ExtraIndex.imports)];
     if (imports_index != 0) {
         try fs_file.writeAll("Imports:\n");
-        const imports_len = scope_file.zir.extra[imports_index];
-        for (scope_file.zir.extra[imports_index + 1 ..][0..imports_len]) |str_index| {
-            const import_path = scope_file.zir.nullTerminatedString(str_index);
-            try fs_file.writer().print("  {s}\n", .{import_path});
+
+        const extra = scope_file.zir.extraData(Inst.Imports, imports_index);
+        var import_i: u32 = 0;
+        var extra_index = extra.end;
+
+        while (import_i < extra.data.imports_len) : (import_i += 1) {
+            const item = scope_file.zir.extraData(Inst.Imports.Item, extra_index);
+            extra_index = item.end;
+
+            const src: LazySrcLoc = .{ .token_abs = item.data.token };
+            const import_path = scope_file.zir.nullTerminatedString(item.data.name);
+            try fs_file.writer().print("  @import(\"{}\") ", .{
+                std.zig.fmtEscapes(import_path),
+            });
+            try writer.writeSrc(fs_file.writer(), src);
+            try fs_file.writer().writeAll("\n");
         }
     }
 }
@@ -202,7 +213,7 @@ pub const Inst = struct {
         as_node,
         /// Bitwise AND. `&`
         bit_and,
-        /// Bitcast a value to a different type.
+        /// Reinterpret the memory representation of a value as a different type.
         /// Uses the pl_node field with payload `Bin`.
         bitcast,
         /// A typed result location pointer is bitcasted to a new result location pointer.
@@ -225,15 +236,9 @@ pub const Inst = struct {
         /// Implements `suspend {...}`.
         /// Uses the `pl_node` union field. Payload is `Block`.
         suspend_block,
-        /// Boolean AND. See also `bit_and`.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        bool_and,
         /// Boolean NOT. See also `bit_not`.
         /// Uses the `un_node` field.
         bool_not,
-        /// Boolean OR. See also `bit_or`.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        bool_or,
         /// Short-circuiting boolean `and`. `lhs` is a boolean `Ref` and the other operand
         /// is a block, which is evaluated if `lhs` is `true`.
         /// Uses the `bool_br` union field.
@@ -347,8 +352,9 @@ pub const Inst = struct {
         error_union_type,
         /// `error.Foo` syntax. Uses the `str_tok` field of the Data union.
         error_value,
-        /// Implements the `@export` builtin function.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
+        /// Implements the `@export` builtin function, based on either an identifier to a Decl,
+        /// or field access of a Decl.
+        /// Uses the `pl_node` union field. Payload is `Export`.
         @"export",
         /// Given a pointer to a struct or object that contains virtual fields, returns a pointer
         /// to the named field. The field name is stored in string_bytes. Used by a.b syntax.
@@ -380,7 +386,7 @@ pub const Inst = struct {
         int,
         /// Arbitrary sized integer literal. Uses the `str` union field.
         int_big,
-        /// A float literal that fits in a f32. Uses the float union value.
+        /// A float literal that fits in a f64. Uses the float union value.
         float,
         /// A float literal that fits in a f128. Uses the `pl_node` union value.
         /// Payload is `Float128`.
@@ -391,26 +397,20 @@ pub const Inst = struct {
         /// Return a boolean false if an optional is null. `x != null`
         /// Uses the `un_node` field.
         is_non_null,
-        /// Return a boolean true if an optional is null. `x == null`
-        /// Uses the `un_node` field.
-        is_null,
         /// Return a boolean false if an optional is null. `x.* != null`
         /// Uses the `un_node` field.
         is_non_null_ptr,
-        /// Return a boolean true if an optional is null. `x.* == null`
+        /// Return a boolean false if value is an error
         /// Uses the `un_node` field.
-        is_null_ptr,
-        /// Return a boolean true if value is an error
+        is_non_err,
+        /// Return a boolean false if dereferenced pointer is an error
         /// Uses the `un_node` field.
-        is_err,
-        /// Return a boolean true if dereferenced pointer is an error
-        /// Uses the `un_node` field.
-        is_err_ptr,
+        is_non_err_ptr,
         /// A labeled block of code that loops forever. At the end of the body will have either
         /// a `repeat` instruction or a `repeat_inline` instruction.
         /// Uses the `pl_node` field. The AST node is either a for loop or while loop.
-        /// This ZIR instruction is needed because TZIR does not (yet?) match ZIR, and Sema
-        /// needs to emit more than 1 TZIR block for this instruction.
+        /// This ZIR instruction is needed because AIR does not (yet?) match ZIR, and Sema
+        /// needs to emit more than 1 AIR block for this instruction.
         /// The payload is `Block`.
         loop,
         /// Sends runtime control flow back to the beginning of the current block.
@@ -459,6 +459,19 @@ pub const Inst = struct {
         /// Uses the `un_tok` union field.
         /// The operand needs to get coerced to the function's return type.
         ret_coerce,
+        /// Sends control flow back to the function's callee.
+        /// The return operand is `error.foo` where `foo` is given by the string.
+        /// If the current function has an inferred error set, the error given by the
+        /// name is added to it.
+        /// Uses the `str_tok` union field.
+        ret_err_value,
+        /// A string name is provided which is an anonymous error set value.
+        /// If the current function has an inferred error set, the error given by the
+        /// name is added to it.
+        /// Results in the error code. Note that control flow is not diverted with
+        /// this instruction; a following 'ret' instruction will do the diversion.
+        /// Uses the `str_tok` union field.
+        ret_err_value_code,
         /// Create a pointer type that does not have a sentinel, alignment, or bit range specified.
         /// Uses the `ptr_type_simple` union field.
         ptr_type_simple,
@@ -859,9 +872,9 @@ pub const Inst = struct {
         /// Implements the `@bitOffsetOf` builtin.
         /// Uses the `pl_node` union field with payload `Bin`.
         bit_offset_of,
-        /// Implements the `@byteOffsetOf` builtin.
+        /// Implements the `@offsetOf` builtin.
         /// Uses the `pl_node` union field with payload `Bin`.
-        byte_offset_of,
+        offset_of,
         /// Implements the `@cmpxchgStrong` builtin.
         /// Uses the `pl_node` union field with payload `Cmpxchg`.
         cmpxchg_strong,
@@ -877,6 +890,9 @@ pub const Inst = struct {
         /// Implements the `@shuffle` builtin.
         /// Uses the `pl_node` union field with payload `Shuffle`.
         shuffle,
+        /// Implements the `@select` builtin.
+        /// Uses the `pl_node` union field with payload `Select`.
+        select,
         /// Implements the `@atomicLoad` builtin.
         /// Uses the `pl_node` union field with payload `Bin`.
         atomic_load,
@@ -899,12 +915,18 @@ pub const Inst = struct {
         /// Implements the `@fieldParentPtr` builtin.
         /// Uses the `pl_node` union field with payload `FieldParentPtr`.
         field_parent_ptr,
+        /// Implements the `@maximum` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`
+        maximum,
         /// Implements the `@memcpy` builtin.
         /// Uses the `pl_node` union field with payload `Memcpy`.
         memcpy,
         /// Implements the `@memset` builtin.
         /// Uses the `pl_node` union field with payload `Memset`.
         memset,
+        /// Implements the `@minimum` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`
+        minimum,
         /// Implements the `@asyncCall` builtin.
         /// Uses the `pl_node` union field with payload `AsyncCall`.
         builtin_async_call,
@@ -979,8 +1001,6 @@ pub const Inst = struct {
                 .bool_br_and,
                 .bool_br_or,
                 .bool_not,
-                .bool_and,
-                .bool_or,
                 .breakpoint,
                 .fence,
                 .call,
@@ -1026,11 +1046,9 @@ pub const Inst = struct {
                 .float128,
                 .int_type,
                 .is_non_null,
-                .is_null,
                 .is_non_null_ptr,
-                .is_null_ptr,
-                .is_err,
-                .is_err_ptr,
+                .is_non_err,
+                .is_non_err_ptr,
                 .mod_rem,
                 .mul,
                 .mulwrap,
@@ -1166,12 +1184,13 @@ pub const Inst = struct {
                 .shl_exact,
                 .shr_exact,
                 .bit_offset_of,
-                .byte_offset_of,
+                .offset_of,
                 .cmpxchg_strong,
                 .cmpxchg_weak,
                 .splat,
                 .reduce,
                 .shuffle,
+                .select,
                 .atomic_load,
                 .atomic_rmw,
                 .atomic_store,
@@ -1179,13 +1198,16 @@ pub const Inst = struct {
                 .builtin_call,
                 .field_ptr_type,
                 .field_parent_ptr,
+                .maximum,
                 .memcpy,
                 .memset,
+                .minimum,
                 .builtin_async_call,
                 .c_import,
                 .@"resume",
                 .@"await",
                 .await_nosuspend,
+                .ret_err_value_code,
                 .extended,
                 => false,
 
@@ -1196,6 +1218,7 @@ pub const Inst = struct {
                 .compile_error,
                 .ret_node,
                 .ret_coerce,
+                .ret_err_value,
                 .@"unreachable",
                 .repeat,
                 .repeat_inline,
@@ -1229,9 +1252,7 @@ pub const Inst = struct {
                 .block = .pl_node,
                 .block_inline = .pl_node,
                 .suspend_block = .pl_node,
-                .bool_and = .pl_node,
                 .bool_not = .un_node,
-                .bool_or = .pl_node,
                 .bool_br_and = .bool_br,
                 .bool_br_or = .bool_br,
                 .@"break" = .@"break",
@@ -1284,11 +1305,9 @@ pub const Inst = struct {
                 .float128 = .pl_node,
                 .int_type = .int_type,
                 .is_non_null = .un_node,
-                .is_null = .un_node,
                 .is_non_null_ptr = .un_node,
-                .is_null_ptr = .un_node,
-                .is_err = .un_node,
-                .is_err_ptr = .un_node,
+                .is_non_err = .un_node,
+                .is_non_err_ptr = .un_node,
                 .loop = .pl_node,
                 .repeat = .node,
                 .repeat_inline = .node,
@@ -1300,6 +1319,8 @@ pub const Inst = struct {
                 .ref = .un_tok,
                 .ret_node = .un_node,
                 .ret_coerce = .un_tok,
+                .ret_err_value = .str_tok,
+                .ret_err_value_code = .str_tok,
                 .ptr_type_simple = .ptr_type_simple,
                 .ptr_type = .ptr_type,
                 .slice_start = .pl_node,
@@ -1436,12 +1457,13 @@ pub const Inst = struct {
                 .shr_exact = .pl_node,
 
                 .bit_offset_of = .pl_node,
-                .byte_offset_of = .pl_node,
+                .offset_of = .pl_node,
                 .cmpxchg_strong = .pl_node,
                 .cmpxchg_weak = .pl_node,
                 .splat = .pl_node,
                 .reduce = .pl_node,
                 .shuffle = .pl_node,
+                .select = .pl_node,
                 .atomic_load = .pl_node,
                 .atomic_rmw = .pl_node,
                 .atomic_store = .pl_node,
@@ -1449,8 +1471,10 @@ pub const Inst = struct {
                 .builtin_call = .pl_node,
                 .field_ptr_type = .bin,
                 .field_parent_ptr = .pl_node,
+                .maximum = .pl_node,
                 .memcpy = .pl_node,
                 .memset = .pl_node,
+                .minimum = .pl_node,
                 .builtin_async_call = .pl_node,
                 .c_import = .pl_node,
 
@@ -1687,6 +1711,8 @@ pub const Inst = struct {
         one_usize,
         /// `std.builtin.CallingConvention.C`
         calling_convention_c,
+        /// `std.builtin.CallingConvention.Inline`
+        calling_convention_inline,
 
         _,
 
@@ -1954,6 +1980,10 @@ pub const Inst = struct {
                 .ty = Type.initTag(.calling_convention),
                 .val = .{ .ptr_otherwise = &calling_convention_c_payload.base },
             },
+            .calling_convention_inline = .{
+                .ty = Type.initTag(.calling_convention),
+                .val = .{ .ptr_otherwise = &calling_convention_inline_payload.base },
+            },
         });
     };
 
@@ -1962,6 +1992,13 @@ pub const Inst = struct {
     var calling_convention_c_payload: Value.Payload.U32 = .{
         .base = .{ .tag = .enum_field_index },
         .data = @enumToInt(std.builtin.CallingConvention.C),
+    };
+
+    /// We would like this to be const but `Value` wants a mutable pointer for
+    /// its payload field. Nothing should mutate this though.
+    var calling_convention_inline_payload: Value.Payload.U32 = .{
+        .base = .{ .tag = .enum_field_index },
+        .data = @enumToInt(std.builtin.CallingConvention.Inline),
     };
 
     /// All instructions have an 8-byte payload, which is contained within
@@ -2036,16 +2073,7 @@ pub const Inst = struct {
         /// Offset from Decl AST node index.
         node: i32,
         int: u64,
-        float: struct {
-            /// Offset from Decl AST node index.
-            /// `Tag` determines which kind of AST node this points to.
-            src_node: i32,
-            number: f32,
-
-            pub fn src(self: @This()) LazySrcLoc {
-                return .{ .node_offset = self.src_node };
-            }
-        },
+        float: f64,
         array_type_sentinel: struct {
             len: Ref,
             /// index into extra, points to an `ArrayTypeSentinel`
@@ -2163,7 +2191,8 @@ pub const Inst = struct {
     /// 2. clobber: u32 // index into string_bytes (null terminated) for every clobbers_len.
     pub const Asm = struct {
         src_node: i32,
-        asm_source: Ref,
+        // null-terminated string index
+        asm_source: u32,
         /// 1 bit for each outputs_len: whether it uses `-> T` or not.
         ///   0b0 - operand is a pointer to where to store the output.
         ///   0b1 - operand is a type; asm expression has the output as the result.
@@ -2448,9 +2477,10 @@ pub const Inst = struct {
             has_body_len: bool,
             has_fields_len: bool,
             has_decls_len: bool,
+            known_has_bits: bool,
             name_strategy: NameStrategy,
             layout: std.builtin.TypeInfo.ContainerLayout,
-            _: u8 = undefined,
+            _: u7 = undefined,
         };
     };
 
@@ -2710,6 +2740,13 @@ pub const Inst = struct {
         mask: Ref,
     };
 
+    pub const Select = struct {
+        elem_type: Ref,
+        pred: Ref,
+        a: Ref,
+        b: Ref,
+    };
+
     pub const AsyncCall = struct {
         frame_buffer: Ref,
         result_ptr: Ref,
@@ -2725,6 +2762,9 @@ pub const Inst = struct {
     };
 
     pub const Export = struct {
+        /// If present, this is referring to a Decl via field access, e.g. `a.b`.
+        /// If omitted, this is referring to a Decl via identifier, e.g. `a`.
+        namespace: Ref,
         /// Null-terminated string index.
         decl_name: u32,
         options: Ref,
@@ -2750,9 +2790,16 @@ pub const Inst = struct {
         };
     };
 
-    /// Trailing: for each `imports_len` there is a string table index.
+    /// Trailing: for each `imports_len` there is an Item
     pub const Imports = struct {
-        imports_len: u32,
+        imports_len: Zir.Inst.Index,
+
+        pub const Item = struct {
+            /// null terminated string index
+            name: u32,
+            /// points to the import name
+            token: ast.TokenIndex,
+        };
     };
 };
 
@@ -2816,11 +2863,9 @@ const Writer = struct {
             .err_union_code,
             .err_union_code_ptr,
             .is_non_null,
-            .is_null,
             .is_non_null_ptr,
-            .is_null_ptr,
-            .is_err,
-            .is_err_ptr,
+            .is_non_err,
+            .is_non_err_ptr,
             .typeof,
             .typeof_elem,
             .struct_init_empty,
@@ -2912,6 +2957,7 @@ const Writer = struct {
             .cmpxchg_strong,
             .cmpxchg_weak,
             .shuffle,
+            .select,
             .atomic_rmw,
             .atomic_store,
             .mul_add,
@@ -2941,8 +2987,6 @@ const Writer = struct {
             .mulwrap,
             .sub,
             .subwrap,
-            .bool_and,
-            .bool_or,
             .cmp_lt,
             .cmp_lte,
             .cmp_eq,
@@ -2979,13 +3023,15 @@ const Writer = struct {
             .mod,
             .rem,
             .bit_offset_of,
-            .byte_offset_of,
+            .offset_of,
             .splat,
             .reduce,
             .atomic_load,
             .bitcast,
             .bitcast_result_ptr,
             .vector_type,
+            .maximum,
+            .minimum,
             => try self.writePlNodeBin(stream, inst),
 
             .@"export" => try self.writePlNodeExport(stream, inst),
@@ -3053,6 +3099,8 @@ const Writer = struct {
             .decl_val,
             .import,
             .arg,
+            .ret_err_value,
+            .ret_err_value_code,
             => try self.writeStrTok(stream, inst),
 
             .func => try self.writeFunc(stream, inst, false),
@@ -3159,6 +3207,7 @@ const Writer = struct {
         inst: Inst.Index,
     ) (@TypeOf(stream).Error || error{OutOfMemory})!void {
         const inst_data = self.code.instructions.items(.data)[inst].array_type_sentinel;
+        _ = inst_data;
         try stream.writeAll("TODO)");
     }
 
@@ -3196,6 +3245,7 @@ const Writer = struct {
         inst: Inst.Index,
     ) (@TypeOf(stream).Error || error{OutOfMemory})!void {
         const inst_data = self.code.instructions.items(.data)[inst].ptr_type;
+        _ = inst_data;
         try stream.writeAll("TODO)");
     }
 
@@ -3218,16 +3268,14 @@ const Writer = struct {
             .limbs = limbs,
             .positive = true,
         };
-        const as_string = try big_int.toStringAlloc(self.gpa, 10, false);
+        const as_string = try big_int.toStringAlloc(self.gpa, 10, .lower);
         defer self.gpa.free(as_string);
         try stream.print("{s})", .{as_string});
     }
 
     fn writeFloat(self: *Writer, stream: anytype, inst: Inst.Index) !void {
-        const inst_data = self.code.instructions.items(.data)[inst].float;
-        const src = inst_data.src();
-        try stream.print("{d}) ", .{inst_data.number});
-        try self.writeSrc(stream, src);
+        const number = self.code.instructions.items(.data)[inst].float;
+        try stream.print("{d})", .{number});
     }
 
     fn writeFloat128(self: *Writer, stream: anytype, inst: Inst.Index) !void {
@@ -3271,7 +3319,8 @@ const Writer = struct {
         const extra = self.code.extraData(Inst.Export, inst_data.payload_index).data;
         const decl_name = self.code.nullTerminatedString(extra.decl_name);
 
-        try stream.print("{}, ", .{std.zig.fmtId(decl_name)});
+        try self.writeInstRef(stream, extra.namespace);
+        try stream.print(", {}, ", .{std.zig.fmtId(decl_name)});
         try self.writeInstRef(stream, extra.options);
         try stream.writeAll(") ");
         try self.writeSrc(stream, inst_data.src());
@@ -3361,9 +3410,10 @@ const Writer = struct {
         const inputs_len = @truncate(u5, extended.small >> 5);
         const clobbers_len = @truncate(u5, extended.small >> 10);
         const is_volatile = @truncate(u1, extended.small >> 15) != 0;
+        const asm_source = self.code.nullTerminatedString(extra.data.asm_source);
 
         try self.writeFlag(stream, "volatile, ", is_volatile);
-        try self.writeInstRef(stream, extra.data.asm_source);
+        try stream.print("\"{}\", ", .{std.zig.fmtEscapes(asm_source)});
         try stream.writeAll(", ");
 
         var extra_i: usize = extra.end;
@@ -3519,6 +3569,7 @@ const Writer = struct {
             break :blk decls_len;
         } else 0;
 
+        try self.writeFlag(stream, "known_has_bits, ", small.known_has_bits);
         try stream.print("{s}, {s}, ", .{
             @tagName(small.name_strategy), @tagName(small.layout),
         });
@@ -3541,6 +3592,8 @@ const Writer = struct {
             assert(body.len == 0);
             try stream.writeAll("{}, {})");
         } else {
+            const prev_parent_decl_node = self.parent_decl_node;
+            if (src_node) |off| self.parent_decl_node = self.relativeToNodeIndex(off);
             self.indent += 2;
             if (body.len == 0) {
                 try stream.writeAll("{}, {\n");
@@ -3603,6 +3656,7 @@ const Writer = struct {
                 try stream.writeAll(",\n");
             }
 
+            self.parent_decl_node = prev_parent_decl_node;
             self.indent -= 2;
             try stream.writeByteNTimes(' ', self.indent);
             try stream.writeAll("})");
@@ -3671,6 +3725,8 @@ const Writer = struct {
         const body = self.code.extra[extra_index..][0..body_len];
         extra_index += body.len;
 
+        const prev_parent_decl_node = self.parent_decl_node;
+        if (src_node) |off| self.parent_decl_node = self.relativeToNodeIndex(off);
         self.indent += 2;
         if (body.len == 0) {
             try stream.writeAll("{}, {\n");
@@ -3736,6 +3792,7 @@ const Writer = struct {
             try stream.writeAll(",\n");
         }
 
+        self.parent_decl_node = prev_parent_decl_node;
         self.indent -= 2;
         try stream.writeByteNTimes(' ', self.indent);
         try stream.writeAll("})");
@@ -3891,6 +3948,8 @@ const Writer = struct {
             assert(body.len == 0);
             try stream.writeAll("{}, {})");
         } else {
+            const prev_parent_decl_node = self.parent_decl_node;
+            if (src_node) |off| self.parent_decl_node = self.relativeToNodeIndex(off);
             self.indent += 2;
             if (body.len == 0) {
                 try stream.writeAll("{}, {\n");
@@ -3931,6 +3990,7 @@ const Writer = struct {
                 }
                 try stream.writeAll(",\n");
             }
+            self.parent_decl_node = prev_parent_decl_node;
             self.indent -= 2;
             try stream.writeByteNTimes(' ', self.indent);
             try stream.writeAll("})");
@@ -4413,6 +4473,7 @@ const Writer = struct {
     }
 
     fn writeInstIndex(self: *Writer, stream: anytype, inst: Inst.Index) !void {
+        _ = self;
         return stream.print("%{d}", .{inst});
     }
 
@@ -4433,6 +4494,7 @@ const Writer = struct {
         name: []const u8,
         flag: bool,
     ) !void {
+        _ = self;
         if (!flag) return;
         try stream.writeAll(name);
     }
@@ -4721,7 +4783,6 @@ fn findDeclsSwitch(
     var extra_index: usize = special.end;
     var scalar_i: usize = 0;
     while (scalar_i < extra.data.cases_len) : (scalar_i += 1) {
-        const item_ref = @intToEnum(Inst.Ref, zir.extra[extra_index]);
         extra_index += 1;
         const body_len = zir.extra[extra_index];
         extra_index += 1;
@@ -4761,7 +4822,6 @@ fn findDeclsSwitchMulti(
     {
         var scalar_i: usize = 0;
         while (scalar_i < extra.data.scalar_cases_len) : (scalar_i += 1) {
-            const item_ref = @intToEnum(Inst.Ref, zir.extra[extra_index]);
             extra_index += 1;
             const body_len = zir.extra[extra_index];
             extra_index += 1;
@@ -4782,12 +4842,11 @@ fn findDeclsSwitchMulti(
             extra_index += 1;
             const items = zir.refSlice(extra_index, items_len);
             extra_index += items_len;
+            _ = items;
 
             var range_i: usize = 0;
             while (range_i < ranges_len) : (range_i += 1) {
-                const item_first = @intToEnum(Inst.Ref, zir.extra[extra_index]);
                 extra_index += 1;
-                const item_last = @intToEnum(Inst.Ref, zir.extra[extra_index]);
                 extra_index += 1;
             }
 

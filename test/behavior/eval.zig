@@ -184,6 +184,7 @@ fn testTryToTrickEvalWithRuntimeIf(b: bool) usize {
     comptime var i: usize = 0;
     inline while (i < 10) : (i += 1) {
         const result = if (b) false else true;
+        _ = result;
     }
     comptime {
         return i;
@@ -195,6 +196,7 @@ test "inlined loop has array literal with elided runtime scope on first iteratio
     comptime var i: usize = 0;
     inline while (i < 2) : (i += 1) {
         const result = if (i == 0) [1]i32{2} else runtime;
+        _ = result;
     }
     comptime {
         try expect(i == 2);
@@ -415,11 +417,12 @@ test "f128 at compile time is lossy" {
     try expect(@as(f128, 10384593717069655257060992658440192.0) + 1 == 10384593717069655257060992658440192.0);
 }
 
-comptime {
-    try expect(@as(f128, 1 << 113) == 10384593717069655257060992658440192);
+test {
+    comptime try expect(@as(f128, 1 << 113) == 10384593717069655257060992658440192);
 }
 
 pub fn TypeWithCompTimeSlice(comptime field_name: []const u8) type {
+    _ = field_name;
     return struct {
         pub const Node = struct {};
     };
@@ -570,6 +573,13 @@ test "comptime shlWithOverflow" {
     try expect(ct_shifted == rt_shifted);
 }
 
+test "comptime shl" {
+    var a: u128 = 3;
+    var b: u7 = 63;
+    var c: u128 = 3 << 63;
+    try expectEqual(a << b, c);
+}
+
 test "runtime 128 bit integer division" {
     var a: u128 = 152313999999999991610955792383;
     var b: u128 = 10000000000000000000;
@@ -696,7 +706,9 @@ test "refer to the type of a generic function" {
     f(i32);
 }
 
-fn doNothingWithType(comptime T: type) void {}
+fn doNothingWithType(comptime T: type) void {
+    _ = T;
+}
 
 test "zero extend from u0 to u1" {
     var zero_u0: u0 = 0;
@@ -817,7 +829,9 @@ test "two comptime calls with array default initialized to undefined" {
                 result.getCpuArch();
             }
 
-            pub fn getCpuArch(self: CrossTarget) void {}
+            pub fn getCpuArch(self: CrossTarget) void {
+                _ = self;
+            }
         };
 
         const DynamicLinker = struct {

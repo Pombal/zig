@@ -79,7 +79,23 @@ test "openDirAbsolute" {
         break :blk try fs.realpathAlloc(&arena.allocator, relative_path);
     };
 
-    var dir = try fs.openDirAbsolute(base_path, .{});
+    {
+        var dir = try fs.openDirAbsolute(base_path, .{});
+        defer dir.close();
+    }
+
+    for ([_][]const u8{ ".", ".." }) |sub_path| {
+        const dir_path = try fs.path.join(&arena.allocator, &[_][]const u8{ base_path, sub_path });
+        defer arena.allocator.free(dir_path);
+        var dir = try fs.openDirAbsolute(dir_path, .{});
+        defer dir.close();
+    }
+}
+
+test "openDir cwd parent .." {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    var dir = try fs.cwd().openDir("..", .{});
     defer dir.close();
 }
 
@@ -261,12 +277,15 @@ test "directory operations on files" {
     try testing.expectError(error.NotDir, tmp_dir.dir.openDir(test_file_name, .{}));
     try testing.expectError(error.NotDir, tmp_dir.dir.deleteDir(test_file_name));
 
-    if (builtin.os.tag != .wasi and builtin.os.tag != .freebsd and builtin.os.tag != .openbsd) {
-        const absolute_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_name);
-        defer testing.allocator.free(absolute_path);
+    switch (builtin.os.tag) {
+        .wasi, .freebsd, .netbsd, .openbsd, .dragonfly => {},
+        else => {
+            const absolute_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_name);
+            defer testing.allocator.free(absolute_path);
 
-        try testing.expectError(error.PathAlreadyExists, fs.makeDirAbsolute(absolute_path));
-        try testing.expectError(error.NotDir, fs.deleteDirAbsolute(absolute_path));
+            try testing.expectError(error.PathAlreadyExists, fs.makeDirAbsolute(absolute_path));
+            try testing.expectError(error.NotDir, fs.deleteDirAbsolute(absolute_path));
+        },
     }
 
     // ensure the file still exists and is a file as a sanity check
@@ -289,21 +308,29 @@ test "file operations on directories" {
 
     try testing.expectError(error.IsDir, tmp_dir.dir.createFile(test_dir_name, .{}));
     try testing.expectError(error.IsDir, tmp_dir.dir.deleteFile(test_dir_name));
-    // Currently, WASI will return error.Unexpected (via ENOTCAPABLE) when attempting fd_read on a directory handle.
-    // TODO: Re-enable on WASI once https://github.com/bytecodealliance/wasmtime/issues/1935 is resolved.
-    if (builtin.os.tag != .wasi) {
-        try testing.expectError(error.IsDir, tmp_dir.dir.readFileAlloc(testing.allocator, test_dir_name, std.math.maxInt(usize)));
+    switch (builtin.os.tag) {
+        // NetBSD does not error when reading a directory.
+        .netbsd => {},
+        // Currently, WASI will return error.Unexpected (via ENOTCAPABLE) when attempting fd_read on a directory handle.
+        // TODO: Re-enable on WASI once https://github.com/bytecodealliance/wasmtime/issues/1935 is resolved.
+        .wasi => {},
+        else => {
+            try testing.expectError(error.IsDir, tmp_dir.dir.readFileAlloc(testing.allocator, test_dir_name, std.math.maxInt(usize)));
+        },
     }
     // Note: The `.write = true` is necessary to ensure the error occurs on all platforms.
     // TODO: Add a read-only test as well, see https://github.com/ziglang/zig/issues/5732
     try testing.expectError(error.IsDir, tmp_dir.dir.openFile(test_dir_name, .{ .write = true }));
 
-    if (builtin.os.tag != .wasi and builtin.os.tag != .freebsd and builtin.os.tag != .openbsd) {
-        const absolute_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_dir_name);
-        defer testing.allocator.free(absolute_path);
+    switch (builtin.os.tag) {
+        .wasi, .freebsd, .netbsd, .openbsd, .dragonfly => {},
+        else => {
+            const absolute_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_dir_name);
+            defer testing.allocator.free(absolute_path);
 
-        try testing.expectError(error.IsDir, fs.createFileAbsolute(absolute_path, .{}));
-        try testing.expectError(error.IsDir, fs.deleteFileAbsolute(absolute_path));
+            try testing.expectError(error.IsDir, fs.createFileAbsolute(absolute_path, .{}));
+            try testing.expectError(error.IsDir, fs.deleteFileAbsolute(absolute_path));
+        },
     }
 
     // ensure the directory still exists as a sanity check
@@ -514,6 +541,7 @@ test "makePath, put some files in it, deleteTree" {
     try tmp.dir.writeFile("os_test_tmp" ++ fs.path.sep_str ++ "b" ++ fs.path.sep_str ++ "file2.txt", "blah");
     try tmp.dir.deleteTree("os_test_tmp");
     if (tmp.dir.openDir("os_test_tmp", .{})) |dir| {
+        _ = dir;
         @panic("expected error");
     } else |err| {
         try testing.expect(err == error.FileNotFound);
@@ -611,6 +639,7 @@ test "access file" {
 
     try tmp.dir.makePath("os_test_tmp");
     if (tmp.dir.access("os_test_tmp" ++ fs.path.sep_str ++ "file.txt", .{})) |ok| {
+        _ = ok;
         @panic("expected error");
     } else |err| {
         try testing.expect(err == error.FileNotFound);
@@ -833,11 +862,10 @@ test "open file with exclusive lock twice, make sure it waits" {
     errdefer file.close();
 
     const S = struct {
-        const C = struct { dir: *fs.Dir, evt: *std.Thread.ResetEvent };
-        fn checkFn(ctx: C) !void {
-            const file1 = try ctx.dir.createFile(filename, .{ .lock = .Exclusive });
+        fn checkFn(dir: *fs.Dir, evt: *std.Thread.ResetEvent) !void {
+            const file1 = try dir.createFile(filename, .{ .lock = .Exclusive });
             defer file1.close();
-            ctx.evt.set();
+            evt.set();
         }
     };
 
@@ -845,8 +873,8 @@ test "open file with exclusive lock twice, make sure it waits" {
     try evt.init();
     defer evt.deinit();
 
-    const t = try std.Thread.spawn(S.checkFn, S.C{ .dir = &tmp.dir, .evt = &evt });
-    defer t.wait();
+    const t = try std.Thread.spawn(.{}, S.checkFn, .{ &tmp.dir, &evt });
+    defer t.join();
 
     const SLEEP_TIMEOUT_NS = 10 * std.time.ns_per_ms;
     // Make sure we've slept enough.
@@ -915,4 +943,76 @@ test "walker" {
         var entry = (try walker.next()).?;
         try testing.expectEqualStrings(expected_dir_name, try fs.path.relative(allocator, tmp_path, entry.path));
     }
+}
+
+test ". and .. in fs.Dir functions" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    var tmp = tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("./subdir");
+    try tmp.dir.access("./subdir", .{});
+    var created_subdir = try tmp.dir.openDir("./subdir", .{});
+    created_subdir.close();
+
+    const created_file = try tmp.dir.createFile("./subdir/../file", .{});
+    created_file.close();
+    try tmp.dir.access("./subdir/../file", .{});
+
+    try tmp.dir.copyFile("./subdir/../file", tmp.dir, "./subdir/../copy", .{});
+    try tmp.dir.rename("./subdir/../copy", "./subdir/../rename");
+    const renamed_file = try tmp.dir.openFile("./subdir/../rename", .{});
+    renamed_file.close();
+    try tmp.dir.deleteFile("./subdir/../rename");
+
+    try tmp.dir.writeFile("./subdir/../update", "something");
+    const prev_status = try tmp.dir.updateFile("./subdir/../file", tmp.dir, "./subdir/../update", .{});
+    try testing.expectEqual(fs.PrevStatus.stale, prev_status);
+
+    try tmp.dir.deleteDir("./subdir");
+}
+
+test ". and .. in absolute functions" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    var tmp = tmpDir(.{});
+    defer tmp.cleanup();
+
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = &arena.allocator;
+
+    const base_path = blk: {
+        const relative_path = try fs.path.join(&arena.allocator, &[_][]const u8{ "zig-cache", "tmp", tmp.sub_path[0..] });
+        break :blk try fs.realpathAlloc(&arena.allocator, relative_path);
+    };
+
+    const subdir_path = try fs.path.join(allocator, &[_][]const u8{ base_path, "./subdir" });
+    try fs.makeDirAbsolute(subdir_path);
+    try fs.accessAbsolute(subdir_path, .{});
+    var created_subdir = try fs.openDirAbsolute(subdir_path, .{});
+    created_subdir.close();
+
+    const created_file_path = try fs.path.join(allocator, &[_][]const u8{ subdir_path, "../file" });
+    const created_file = try fs.createFileAbsolute(created_file_path, .{});
+    created_file.close();
+    try fs.accessAbsolute(created_file_path, .{});
+
+    const copied_file_path = try fs.path.join(allocator, &[_][]const u8{ subdir_path, "../copy" });
+    try fs.copyFileAbsolute(created_file_path, copied_file_path, .{});
+    const renamed_file_path = try fs.path.join(allocator, &[_][]const u8{ subdir_path, "../rename" });
+    try fs.renameAbsolute(copied_file_path, renamed_file_path);
+    const renamed_file = try fs.openFileAbsolute(renamed_file_path, .{});
+    renamed_file.close();
+    try fs.deleteFileAbsolute(renamed_file_path);
+
+    const update_file_path = try fs.path.join(allocator, &[_][]const u8{ subdir_path, "../update" });
+    const update_file = try fs.createFileAbsolute(update_file_path, .{});
+    try update_file.writeAll("something");
+    update_file.close();
+    const prev_status = try fs.updateFileAbsolute(created_file_path, update_file_path, .{});
+    try testing.expectEqual(fs.PrevStatus.stale, prev_status);
+
+    try fs.deleteDirAbsolute(subdir_path);
 }

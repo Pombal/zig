@@ -11,7 +11,7 @@ const fs = std.fs;
 const InstallDirectoryOptions = std.build.InstallDirectoryOptions;
 const assert = std.debug.assert;
 
-const zig_version = std.builtin.Version{ .major = 0, .minor = 8, .patch = 0 };
+const zig_version = std.builtin.Version{ .major = 0, .minor = 9, .patch = 0 };
 
 pub fn build(b: *Builder) !void {
     b.setPreferredReleaseMode(.ReleaseFast);
@@ -40,7 +40,7 @@ pub fn build(b: *Builder) !void {
 
     var test_stage2 = b.addTest("src/test.zig");
     test_stage2.setBuildMode(mode);
-    test_stage2.addPackagePath("stage2_tests", "test/stage2/test.zig");
+    test_stage2.addPackagePath("test_cases", "test/cases.zig");
 
     const fmt_build_zig = b.addFmt(&[_][]const u8{"build.zig"});
 
@@ -66,7 +66,7 @@ pub fn build(b: *Builder) !void {
     if (!skip_install_lib_files) {
         b.installDirectory(InstallDirectoryOptions{
             .source_dir = "lib",
-            .install_dir = .Lib,
+            .install_dir = .lib,
             .install_subdir = "zig",
             .exclude_extensions = &[_][]const u8{
                 "README.md",
@@ -113,11 +113,15 @@ pub fn build(b: *Builder) !void {
         if (is_stage1) {
             exe.addIncludeDir("src");
             exe.addIncludeDir("deps/SoftFloat-3e/source/include");
+
+            test_stage2.addIncludeDir("src");
+            test_stage2.addIncludeDir("deps/SoftFloat-3e/source/include");
             // This is intentionally a dummy path. stage1.zig tries to @import("compiler_rt") in case
             // of being built by cmake. But when built by zig it's gonna get a compiler_rt so that
             // is pointless.
             exe.addPackagePath("compiler_rt", "src/empty.zig");
-            exe.defineCMacro("ZIG_LINK_MODE=Static");
+            exe.defineCMacro("ZIG_LINK_MODE", "Static");
+            test_stage2.defineCMacro("ZIG_LINK_MODE", "Static");
 
             const softfloat = b.addStaticLibrary("softfloat", null);
             softfloat.setBuildMode(.ReleaseFast);
@@ -126,10 +130,15 @@ pub fn build(b: *Builder) !void {
             softfloat.addIncludeDir("deps/SoftFloat-3e/source/8086");
             softfloat.addIncludeDir("deps/SoftFloat-3e/source/include");
             softfloat.addCSourceFiles(&softfloat_sources, &[_][]const u8{ "-std=c99", "-O3" });
+
             exe.linkLibrary(softfloat);
+            test_stage2.linkLibrary(softfloat);
 
             exe.addCSourceFiles(&stage1_sources, &exe_cflags);
             exe.addCSourceFiles(&optimized_c_sources, &[_][]const u8{ "-std=c99", "-O3" });
+
+            test_stage2.addCSourceFiles(&stage1_sources, &exe_cflags);
+            test_stage2.addCSourceFiles(&optimized_c_sources, &[_][]const u8{ "-std=c99", "-O3" });
         }
         if (cmake_cfg) |cfg| {
             // Inside this code path, we have to coordinate with system packaged LLVM, Clang, and LLD.
@@ -139,8 +148,8 @@ pub fn build(b: *Builder) !void {
                 b.addSearchPrefix(cfg.cmake_prefix_path);
             }
 
-            try addCmakeCfgOptionsToExe(b, cfg, tracy, exe);
-            try addCmakeCfgOptionsToExe(b, cfg, tracy, test_stage2);
+            try addCmakeCfgOptionsToExe(b, cfg, exe);
+            try addCmakeCfgOptionsToExe(b, cfg, test_stage2);
         } else {
             // Here we are -Denable-llvm but no cmake integration.
             try addStaticLlvmOptionsToExe(exe);
@@ -168,7 +177,7 @@ pub fn build(b: *Builder) !void {
 
         switch (mem.count(u8, git_describe, "-")) {
             0 => {
-                // Tagged release version (e.g. 0.7.0).
+                // Tagged release version (e.g. 0.8.0).
                 if (!mem.eql(u8, git_describe, version_string)) {
                     std.debug.print("Zig version '{s}' does not match Git tag '{s}'\n", .{ version_string, git_describe });
                     std.process.exit(1);
@@ -176,7 +185,7 @@ pub fn build(b: *Builder) !void {
                 break :v version_string;
             },
             2 => {
-                // Untagged development build (e.g. 0.7.0-684-gbbe2cca1a).
+                // Untagged development build (e.g. 0.8.0-684-gbbe2cca1a).
                 var it = mem.split(git_describe, "-");
                 const tagged_ancestor = it.next() orelse unreachable;
                 const commit_height = it.next() orelse unreachable;
@@ -233,7 +242,9 @@ pub fn build(b: *Builder) !void {
     const is_darling_enabled = b.option(bool, "enable-darling", "[Experimental] Use Darling to run cross compiled macOS tests") orelse false;
     const glibc_multi_dir = b.option([]const u8, "enable-foreign-glibc", "Provide directory with glibc installations to run cross compiled tests that link glibc");
 
+    test_stage2.addBuildOption(bool, "enable_logging", enable_logging);
     test_stage2.addBuildOption(bool, "skip_non_native", skip_non_native);
+    test_stage2.addBuildOption(bool, "skip_compile_errors", skip_compile_errors);
     test_stage2.addBuildOption(bool, "is_stage1", is_stage1);
     test_stage2.addBuildOption(bool, "omit_stage2", omit_stage2);
     test_stage2.addBuildOption(bool, "have_llvm", enable_llvm);
@@ -243,7 +254,8 @@ pub fn build(b: *Builder) !void {
     test_stage2.addBuildOption(u32, "mem_leak_frames", mem_leak_frames * 2);
     test_stage2.addBuildOption(bool, "enable_darling", is_darling_enabled);
     test_stage2.addBuildOption(?[]const u8, "glibc_multi_install_dir", glibc_multi_dir);
-    test_stage2.addBuildOption([]const u8, "version", version);
+    test_stage2.addBuildOption([:0]const u8, "version", try b.allocator.dupeZ(u8, version));
+    test_stage2.addBuildOption(std.SemanticVersion, "semver", semver);
 
     const test_stage2_step = b.step("test-stage2", "Run the stage2 compiler tests");
     test_stage2_step.dependOn(&test_stage2.step);
@@ -328,7 +340,7 @@ pub fn build(b: *Builder) !void {
     ));
 
     toolchain_step.dependOn(tests.addCompareOutputTests(b, test_filter, modes));
-    toolchain_step.dependOn(tests.addStandaloneTests(b, test_filter, modes));
+    toolchain_step.dependOn(tests.addStandaloneTests(b, test_filter, modes, skip_non_native, target));
     toolchain_step.dependOn(tests.addStackTraceTests(b, test_filter, modes));
     toolchain_step.dependOn(tests.addCliTests(b, test_filter, modes));
     toolchain_step.dependOn(tests.addAssembleAndLinkTests(b, test_filter, modes));
@@ -339,9 +351,6 @@ pub fn build(b: *Builder) !void {
     }
     // tests for this feature are disabled until we have the self-hosted compiler available
     // toolchain_step.dependOn(tests.addGenHTests(b, test_filter));
-    if (!skip_compile_errors) {
-        toolchain_step.dependOn(tests.addCompileErrorTests(b, test_filter, modes));
-    }
 
     const std_step = tests.addPkgTests(
         b,
@@ -383,7 +392,6 @@ const exe_cflags = [_][]const u8{
 fn addCmakeCfgOptionsToExe(
     b: *Builder,
     cfg: CMakeConfig,
-    tracy: ?[]const u8,
     exe: *std.build.LibExeObjStep,
 ) !void {
     exe.addObjectFile(fs.path.join(b.allocator, &[_][]const u8{
@@ -397,7 +405,7 @@ fn addCmakeCfgOptionsToExe(
     addCMakeLibraryList(exe, cfg.lld_libraries);
     addCMakeLibraryList(exe, cfg.llvm_libraries);
 
-    const need_cpp_includes = tracy != null;
+    const need_cpp_includes = true;
 
     // System -lc++ must be used because in this code path we are attempting to link
     // against system-provided LLVM, Clang, LLD.
@@ -486,9 +494,9 @@ fn addCxxKnownPath(
     if (need_cpp_includes) {
         // I used these temporarily for testing something but we obviously need a
         // more general purpose solution here.
-        //exe.addIncludeDir("/nix/store/b3zsk4ihlpiimv3vff86bb5bxghgdzb9-gcc-9.2.0/lib/gcc/x86_64-unknown-linux-gnu/9.2.0/../../../../include/c++/9.2.0");
-        //exe.addIncludeDir("/nix/store/b3zsk4ihlpiimv3vff86bb5bxghgdzb9-gcc-9.2.0/lib/gcc/x86_64-unknown-linux-gnu/9.2.0/../../../../include/c++/9.2.0/x86_64-unknown-linux-gnu");
-        //exe.addIncludeDir("/nix/store/b3zsk4ihlpiimv3vff86bb5bxghgdzb9-gcc-9.2.0/lib/gcc/x86_64-unknown-linux-gnu/9.2.0/../../../../include/c++/9.2.0/backward");
+        //exe.addIncludeDir("/nix/store/fvf3qjqa5qpcjjkq37pb6ypnk1mzhf5h-gcc-9.3.0/lib/gcc/x86_64-unknown-linux-gnu/9.3.0/../../../../include/c++/9.3.0");
+        //exe.addIncludeDir("/nix/store/fvf3qjqa5qpcjjkq37pb6ypnk1mzhf5h-gcc-9.3.0/lib/gcc/x86_64-unknown-linux-gnu/9.3.0/../../../../include/c++/9.3.0/x86_64-unknown-linux-gnu");
+        //exe.addIncludeDir("/nix/store/fvf3qjqa5qpcjjkq37pb6ypnk1mzhf5h-gcc-9.3.0/lib/gcc/x86_64-unknown-linux-gnu/9.3.0/../../../../include/c++/9.3.0/backward");
     }
 }
 
@@ -741,7 +749,7 @@ const softfloat_sources = [_][]const u8{
 
 const stage1_sources = [_][]const u8{
     "src/stage1/analyze.cpp",
-    "src/stage1/ast_render.cpp",
+    "src/stage1/astgen.cpp",
     "src/stage1/bigfloat.cpp",
     "src/stage1/bigint.cpp",
     "src/stage1/buffer.cpp",
@@ -769,6 +777,7 @@ const zig_cpp_sources = [_][]const u8{
     // These are planned to stay even when we are self-hosted.
     "src/zig_llvm.cpp",
     "src/zig_clang.cpp",
+    "src/zig_llvm-ar.cpp",
     "src/zig_clang_driver.cpp",
     "src/zig_clang_cc1_main.cpp",
     "src/zig_clang_cc1as_main.cpp",

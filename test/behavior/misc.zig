@@ -1,6 +1,7 @@
 const std = @import("std");
 const expect = std.testing.expect;
 const expectEqualSlices = std.testing.expectEqualSlices;
+const expectEqualStrings = std.testing.expectEqualStrings;
 const mem = std.mem;
 const builtin = @import("builtin");
 
@@ -147,13 +148,13 @@ test "array mult operator" {
 }
 
 test "string escapes" {
-    try expect(mem.eql(u8, "\"", "\x22"));
-    try expect(mem.eql(u8, "\'", "\x27"));
-    try expect(mem.eql(u8, "\n", "\x0a"));
-    try expect(mem.eql(u8, "\r", "\x0d"));
-    try expect(mem.eql(u8, "\t", "\x09"));
-    try expect(mem.eql(u8, "\\", "\x5c"));
-    try expect(mem.eql(u8, "\u{1234}\u{069}\u{1}", "\xe1\x88\xb4\x69\x01"));
+    try expectEqualStrings("\"", "\x22");
+    try expectEqualStrings("\'", "\x27");
+    try expectEqualStrings("\n", "\x0a");
+    try expectEqualStrings("\r", "\x0d");
+    try expectEqualStrings("\t", "\x09");
+    try expectEqualStrings("\\", "\x5c");
+    try expectEqualStrings("\u{1234}\u{069}\u{1}", "\xe1\x88\xb4\x69\x01");
 }
 
 test "multiline string" {
@@ -233,6 +234,7 @@ test "compile time global reinterpret" {
 test "explicit cast maybe pointers" {
     const a: ?*i32 = undefined;
     const b: ?*f32 = @ptrCast(?*f32, a);
+    _ = b;
 }
 
 test "generic malloc free" {
@@ -243,14 +245,18 @@ var some_mem: [100]u8 = undefined;
 fn memAlloc(comptime T: type, n: usize) anyerror![]T {
     return @ptrCast([*]T, &some_mem[0])[0..n];
 }
-fn memFree(comptime T: type, memory: []T) void {}
+fn memFree(comptime T: type, memory: []T) void {
+    _ = memory;
+}
 
 test "cast undefined" {
     const array: [100]u8 = undefined;
     const slice = @as([]const u8, &array);
     testCastUndefined(slice);
 }
-fn testCastUndefined(x: []const u8) void {}
+fn testCastUndefined(x: []const u8) void {
+    _ = x;
+}
 
 test "cast small unsigned to larger signed" {
     try expect(castSmallUnsignedToLargerSigned1(200) == @as(i16, 200));
@@ -450,6 +456,7 @@ test "@typeName" {
 }
 
 fn TypeFromFn(comptime T: type) type {
+    _ = T;
     return struct {};
 }
 
@@ -545,19 +552,20 @@ const PackedUnion = packed union {
     a: u8,
     b: u32,
 };
-const PackedEnum = packed enum {
-    A,
-    B,
-};
 
 test "packed struct, enum, union parameters in extern function" {
     testPackedStuff(&(PackedStruct{
         .a = 1,
         .b = 2,
-    }), &(PackedUnion{ .a = 1 }), PackedEnum.A);
+    }), &(PackedUnion{ .a = 1 }));
 }
 
-export fn testPackedStuff(a: *const PackedStruct, b: *const PackedUnion, c: PackedEnum) void {}
+export fn testPackedStuff(a: *const PackedStruct, b: *const PackedUnion) void {
+    if (false) {
+        a;
+        b;
+    }
+}
 
 test "slicing zero length array" {
     const s1 = ""[0..];
@@ -586,6 +594,7 @@ test "self reference through fn ptr field" {
         };
 
         fn foo(a: A) u8 {
+            _ = a;
             return 12;
         }
     };
@@ -755,7 +764,9 @@ test "extern variable with non-pointer opaque type" {
 
 test "lazy typeInfo value as generic parameter" {
     const S = struct {
-        fn foo(args: anytype) void {}
+        fn foo(args: anytype) void {
+            _ = args;
+        }
     };
     S.foo(@typeInfo(@TypeOf(.{})));
 }

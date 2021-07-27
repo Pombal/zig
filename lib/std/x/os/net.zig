@@ -10,17 +10,17 @@ const os = std.os;
 const fmt = std.fmt;
 const mem = std.mem;
 const math = std.math;
-const builtin = std.builtin;
 const testing = std.testing;
+const native_os = std.Target.current.os;
 
 /// Resolves a network interface name into a scope/zone ID. It returns
 /// an error if either resolution fails, or if the interface name is
 /// too long.
 pub fn resolveScopeID(name: []const u8) !u32 {
-    if (comptime @hasDecl(os, "IFNAMESIZE")) {
+    if (@hasDecl(os, "IFNAMESIZE")) {
         if (name.len >= os.IFNAMESIZE - 1) return error.NameTooLong;
 
-        if (comptime builtin.os.tag == .windows) {
+        if (native_os.tag == .windows) {
             var interface_name: [os.IFNAMESIZE]u8 = undefined;
             mem.copy(u8, &interface_name, name);
             interface_name[name.len] = 0;
@@ -143,6 +143,7 @@ pub const IPv4 = extern struct {
         opts: fmt.FormatOptions,
         writer: anytype,
     ) !void {
+        _ = opts;
         if (comptime layout.len != 0 and layout[0] != 's') {
             @compileError("Unsupported format specifier for IPv4 type '" ++ layout ++ "'.");
         }
@@ -352,6 +353,7 @@ pub const IPv6 = extern struct {
         opts: fmt.FormatOptions,
         writer: anytype,
     ) !void {
+        _ = opts;
         const specifier = comptime &[_]u8{if (layout.len == 0) 'x' else switch (layout[0]) {
             'x', 'X' => |specifier| specifier,
             's' => 'x',

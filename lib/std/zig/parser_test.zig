@@ -61,27 +61,47 @@ test "zig fmt: respect line breaks in struct field value declaration" {
     );
 }
 
-// TODO Remove this after zig 0.9.0 is released.
-test "zig fmt: rewrite inline functions as callconv(.Inline)" {
-    try testTransform(
+test "zig fmt: respect line breaks before functions" {
+    try testCanonical(
+        \\const std = @import("std");
+        \\
         \\inline fn foo() void {}
         \\
-    ,
+        \\noinline fn foo() void {}
+        \\
+        \\export fn foo() void {}
+        \\
+        \\extern fn foo() void;
+        \\
+        \\extern "foo" fn foo() void;
+        \\
+    );
+}
+
+test "zig fmt: rewrite callconv(.Inline) to the inline keyword" {
+    try testTransform(
         \\fn foo() callconv(.Inline) void {}
+        \\const bar = .Inline;
+        \\fn foo() callconv(bar) void {}
+        \\
+    ,
+        \\inline fn foo() void {}
+        \\const bar = .Inline;
+        \\fn foo() callconv(bar) void {}
         \\
     );
 }
 
 // TODO Remove this after zig 0.9.0 is released.
-test "zig fmt: rewrite suspend without block expression" {
+test "zig fmt: rewrite @byteOffsetOf to @offsetOf" {
     try testTransform(
         \\fn foo() void {
-        \\    suspend;
+        \\    @byteOffsetOf(Foo, "bar");
         \\}
         \\
     ,
         \\fn foo() void {
-        \\    suspend {}
+        \\    @offsetOf(Foo, "bar");
         \\}
         \\
     );
@@ -2867,17 +2887,17 @@ test "zig fmt: functions" {
         \\extern fn puts(s: *const u8) c_int;
         \\extern "c" fn puts(s: *const u8) c_int;
         \\export fn puts(s: *const u8) c_int;
-        \\fn puts(s: *const u8) callconv(.Inline) c_int;
+        \\inline fn puts(s: *const u8) c_int;
         \\noinline fn puts(s: *const u8) c_int;
         \\pub extern fn puts(s: *const u8) c_int;
         \\pub extern "c" fn puts(s: *const u8) c_int;
         \\pub export fn puts(s: *const u8) c_int;
-        \\pub fn puts(s: *const u8) callconv(.Inline) c_int;
+        \\pub inline fn puts(s: *const u8) c_int;
         \\pub noinline fn puts(s: *const u8) c_int;
         \\pub extern fn puts(s: *const u8) align(2 + 2) c_int;
         \\pub extern "c" fn puts(s: *const u8) align(2 + 2) c_int;
         \\pub export fn puts(s: *const u8) align(2 + 2) c_int;
-        \\pub fn puts(s: *const u8) align(2 + 2) callconv(.Inline) c_int;
+        \\pub inline fn puts(s: *const u8) align(2 + 2) c_int;
         \\pub noinline fn puts(s: *const u8) align(2 + 2) c_int;
         \\
     );
@@ -4132,14 +4152,14 @@ test "zig fmt: hex literals with underscore separators" {
 test "zig fmt: decimal float literals with underscore separators" {
     try testTransform(
         \\pub fn main() void {
-        \\    const a:f64=(10.0e-0+(10.e+0))+10_00.00_00e-2+00_00.00_10e+4;
-        \\    const b:f64=010.0--0_10.+0_1_0.0_0+1e2;
+        \\    const a:f64=(10.0e-0+(10.0e+0))+10_00.00_00e-2+00_00.00_10e+4;
+        \\    const b:f64=010.0--0_10.0+0_1_0.0_0+1e2;
         \\    std.debug.warn("a: {}, b: {} -> a+b: {}\n", .{ a, b, a + b });
         \\}
     ,
         \\pub fn main() void {
-        \\    const a: f64 = (10.0e-0 + (10.e+0)) + 10_00.00_00e-2 + 00_00.00_10e+4;
-        \\    const b: f64 = 010.0 - -0_10. + 0_1_0.0_0 + 1e2;
+        \\    const a: f64 = (10.0e-0 + (10.0e+0)) + 10_00.00_00e-2 + 00_00.00_10e+4;
+        \\    const b: f64 = 010.0 - -0_10.0 + 0_1_0.0_0 + 1e2;
         \\    std.debug.warn("a: {}, b: {} -> a+b: {}\n", .{ a, b, a + b });
         \\}
         \\
@@ -4149,14 +4169,14 @@ test "zig fmt: decimal float literals with underscore separators" {
 test "zig fmt: hexadeciaml float literals with underscore separators" {
     try testTransform(
         \\pub fn main() void {
-        \\    const a: f64 = (0x10.0p-0+(0x10.p+0))+0x10_00.00_00p-8+0x00_00.00_10p+16;
-        \\    const b: f64 = 0x0010.0--0x00_10.+0x10.00+0x1p4;
+        \\    const a: f64 = (0x10.0p-0+(0x10.0p+0))+0x10_00.00_00p-8+0x00_00.00_10p+16;
+        \\    const b: f64 = 0x0010.0--0x00_10.0+0x10.00+0x1p4;
         \\    std.debug.warn("a: {}, b: {} -> a+b: {}\n", .{ a, b, a + b });
         \\}
     ,
         \\pub fn main() void {
-        \\    const a: f64 = (0x10.0p-0 + (0x10.p+0)) + 0x10_00.00_00p-8 + 0x00_00.00_10p+16;
-        \\    const b: f64 = 0x0010.0 - -0x00_10. + 0x10.00 + 0x1p4;
+        \\    const a: f64 = (0x10.0p-0 + (0x10.0p+0)) + 0x10_00.00_00p-8 + 0x00_00.00_10p+16;
+        \\    const b: f64 = 0x0010.0 - -0x00_10.0 + 0x10.00 + 0x1p4;
         \\    std.debug.warn("a: {}, b: {} -> a+b: {}\n", .{ a, b, a + b });
         \\}
         \\
@@ -4385,6 +4405,13 @@ test "zig fmt: regression test for #5722" {
         \\            return;
         \\        };
         \\}
+        \\
+    );
+}
+
+test "zig fmt: regression test for #8974" {
+    try testCanonical(
+        \\pub const VARIABLE;
         \\
     );
 }
@@ -4888,7 +4915,6 @@ test "recovery: missing comma" {
     , &[_]Error{
         .expected_token,
         .expected_token,
-        .invalid_and,
         .invalid_token,
     });
 }
@@ -4921,7 +4947,6 @@ test "recovery: missing return type" {
         \\test ""
     , &[_]Error{
         .expected_return_type,
-        .invalid_and,
         .expected_block,
     });
 }
@@ -4938,7 +4963,6 @@ test "recovery: continue after invalid decl" {
         .expected_token,
         .expected_pub_item,
         .expected_param_list,
-        .invalid_and,
     });
     try testError(
         \\threadlocal test "" {
@@ -4947,7 +4971,6 @@ test "recovery: continue after invalid decl" {
     , &[_]Error{
         .expected_var_decl,
         .expected_param_list,
-        .invalid_and,
     });
 }
 
@@ -4956,13 +4979,11 @@ test "recovery: invalid extern/inline" {
         \\inline test "" { a && b; }
     , &[_]Error{
         .expected_fn,
-        .invalid_and,
     });
     try testError(
         \\extern "" test "" { a && b; }
     , &[_]Error{
         .expected_var_decl_or_fn,
-        .invalid_and,
     });
 }
 
@@ -4974,9 +4995,7 @@ test "recovery: missing semicolon" {
         \\    @foo
         \\}
     , &[_]Error{
-        .invalid_and,
         .expected_token,
-        .invalid_and,
         .expected_token,
         .expected_param_list,
         .expected_token,
@@ -4996,7 +5015,6 @@ test "recovery: invalid container members" {
         .expected_expr,
         .expected_token,
         .expected_container_members,
-        .invalid_and,
         .expected_token,
     });
 }
@@ -5034,7 +5052,6 @@ test "recovery: invalid global error set access" {
     , &[_]Error{
         .expected_token,
         .expected_token,
-        .invalid_and,
     });
 }
 
@@ -5052,7 +5069,6 @@ test "recovery: invalid asterisk after pointer dereference" {
         \\}
     , &[_]Error{
         .asterisk_after_ptr_deref,
-        .invalid_and,
     });
 }
 
@@ -5068,7 +5084,6 @@ test "recovery: missing semicolon after if, for, while stmt" {
         .expected_semi_or_else,
         .expected_semi_or_else,
         .expected_semi_or_else,
-        .invalid_and,
     });
 }
 
@@ -5112,7 +5127,7 @@ test "recovery: missing for payload" {
     try testError(
         \\comptime {
         \\    const a = for(a) {};
-        \\    const a: for(a) {};
+        \\    const a: for(a) blk: {};
         \\    for(a) {}
         \\}
     , &[_]Error{
@@ -5144,6 +5159,18 @@ test "recovery: missing while rbrace" {
     });
 }
 
+test "recovery: nonfinal varargs" {
+    try testError(
+        \\extern fn f(a: u32, ..., b: u32) void;
+        \\extern fn g(a: u32, ..., b: anytype) void;
+        \\extern fn h(a: u32, ..., ...) void;
+    , &[_]Error{
+        .varargs_nonfinal,
+        .varargs_nonfinal,
+        .varargs_nonfinal,
+    });
+}
+
 const std = @import("std");
 const mem = std.mem;
 const print = std.debug.print;
@@ -5152,14 +5179,13 @@ const maxInt = std.math.maxInt;
 
 var fixed_buffer_mem: [100 * 1024]u8 = undefined;
 
-fn testParse(source: []const u8, allocator: *mem.Allocator, anything_changed: *bool) ![]u8 {
+fn testParse(source: [:0]const u8, allocator: *mem.Allocator, anything_changed: *bool) ![]u8 {
     const stderr = io.getStdErr().writer();
 
     var tree = try std.zig.parse(allocator, source);
     defer tree.deinit(allocator);
 
     for (tree.errors) |parse_error| {
-        const token_start = tree.tokens.items(.start)[parse_error.token];
         const loc = tree.tokenLocation(0, parse_error.token);
         try stderr.print("(memory buffer):{d}:{d}: error: ", .{ loc.line + 1, loc.column + 1 });
         try tree.renderError(parse_error, stderr);
@@ -5181,7 +5207,7 @@ fn testParse(source: []const u8, allocator: *mem.Allocator, anything_changed: *b
     anything_changed.* = !mem.eql(u8, formatted, source);
     return formatted;
 }
-fn testTransform(source: []const u8, expected_source: []const u8) !void {
+fn testTransform(source: [:0]const u8, expected_source: []const u8) !void {
     const needed_alloc_count = x: {
         // Try it once with unlimited memory, make sure it works
         var fixed_allocator = std.heap.FixedBufferAllocator.init(fixed_buffer_mem[0..]);
@@ -5227,13 +5253,13 @@ fn testTransform(source: []const u8, expected_source: []const u8) !void {
         }
     }
 }
-fn testCanonical(source: []const u8) !void {
+fn testCanonical(source: [:0]const u8) !void {
     return testTransform(source, source);
 }
 
 const Error = std.zig.ast.Error.Tag;
 
-fn testError(source: []const u8, expected_errors: []const Error) !void {
+fn testError(source: [:0]const u8, expected_errors: []const Error) !void {
     var tree = try std.zig.parse(std.testing.allocator, source);
     defer tree.deinit(std.testing.allocator);
 

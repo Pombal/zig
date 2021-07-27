@@ -320,18 +320,9 @@ test "std.Thread.getCurrentId" {
     if (builtin.single_threaded) return error.SkipZigTest;
 
     var thread_current_id: Thread.Id = undefined;
-    const thread = try Thread.spawn(testThreadIdFn, &thread_current_id);
-    const thread_id = thread.handle();
-    thread.wait();
-    if (Thread.use_pthreads) {
-        try expect(thread_current_id == thread_id);
-    } else if (native_os == .windows) {
-        try expect(Thread.getCurrentId() != thread_current_id);
-    } else {
-        // If the thread completes very quickly, then thread_id can be 0. See the
-        // documentation comments for `std.Thread.handle`.
-        try expect(thread_id == 0 or thread_current_id == thread_id);
-    }
+    const thread = try Thread.spawn(.{}, testThreadIdFn, .{&thread_current_id});
+    thread.join();
+    try expect(Thread.getCurrentId() != thread_current_id);
 }
 
 test "spawn threads" {
@@ -339,20 +330,20 @@ test "spawn threads" {
 
     var shared_ctx: i32 = 1;
 
-    const thread1 = try Thread.spawn(start1, {});
-    const thread2 = try Thread.spawn(start2, &shared_ctx);
-    const thread3 = try Thread.spawn(start2, &shared_ctx);
-    const thread4 = try Thread.spawn(start2, &shared_ctx);
+    const thread1 = try Thread.spawn(.{}, start1, .{});
+    const thread2 = try Thread.spawn(.{}, start2, .{&shared_ctx});
+    const thread3 = try Thread.spawn(.{}, start2, .{&shared_ctx});
+    const thread4 = try Thread.spawn(.{}, start2, .{&shared_ctx});
 
-    thread1.wait();
-    thread2.wait();
-    thread3.wait();
-    thread4.wait();
+    thread1.join();
+    thread2.join();
+    thread3.join();
+    thread4.join();
 
     try expect(shared_ctx == 4);
 }
 
-fn start1(ctx: void) u8 {
+fn start1() u8 {
     return 0;
 }
 
@@ -364,21 +355,21 @@ fn start2(ctx: *i32) u8 {
 test "cpu count" {
     if (native_os == .wasi) return error.SkipZigTest;
 
-    const cpu_count = try Thread.cpuCount();
+    const cpu_count = try Thread.getCpuCount();
     try expect(cpu_count >= 1);
 }
 
 test "thread local storage" {
     if (builtin.single_threaded) return error.SkipZigTest;
-    const thread1 = try Thread.spawn(testTls, {});
-    const thread2 = try Thread.spawn(testTls, {});
-    try testTls({});
-    thread1.wait();
-    thread2.wait();
+    const thread1 = try Thread.spawn(.{}, testTls, .{});
+    const thread2 = try Thread.spawn(.{}, testTls, .{});
+    try testTls();
+    thread1.join();
+    thread2.join();
 }
 
 threadlocal var x: i32 = 1234;
-fn testTls(context: void) !void {
+fn testTls() !void {
     if (x != 1234) return error.TlsBadStartValue;
     x += 1;
     if (x != 1235) return error.TlsBadEndValue;
@@ -425,6 +416,7 @@ const IterFnError = error{
 };
 
 fn iter_fn(info: *dl_phdr_info, size: usize, counter: *usize) IterFnError!void {
+    _ = size;
     // Count how many libraries are loaded
     counter.* += @as(usize, 1);
 
@@ -731,9 +723,18 @@ test "sigaction" {
 
     const S = struct {
         fn handler(sig: i32, info: *const os.siginfo_t, ctx_ptr: ?*const c_void) callconv(.C) void {
+            _ = ctx_ptr;
             // Check that we received the correct signal.
-            if (sig == os.SIGUSR1 and sig == info.signo)
-                signal_test_failed = false;
+            switch (native_os) {
+                .netbsd => {
+                    if (sig == os.SIGUSR1 and sig == info.info.signo)
+                        signal_test_failed = false;
+                },
+                else => {
+                    if (sig == os.SIGUSR1 and sig == info.signo)
+                        signal_test_failed = false;
+                },
+            }
         }
     };
 
@@ -755,4 +756,33 @@ test "sigaction" {
     // Check if the handler has been correctly reset to SIG_DFL
     os.sigaction(os.SIGUSR1, null, &old_sa);
     try testing.expectEqual(os.SIG_DFL, old_sa.handler.sigaction);
+}
+
+test "dup & dup2" {
+    if (native_os != .linux) return error.SkipZigTest;
+
+    var tmp = tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var file = try tmp.dir.createFile("os_dup_test", .{});
+        defer file.close();
+
+        var duped = std.fs.File{ .handle = try std.os.dup(file.handle) };
+        defer duped.close();
+        try duped.writeAll("dup");
+
+        // Tests aren't run in parallel so using the next fd shouldn't be an issue.
+        const new_fd = duped.handle + 1;
+        try std.os.dup2(file.handle, new_fd);
+        var dup2ed = std.fs.File{ .handle = new_fd };
+        defer dup2ed.close();
+        try dup2ed.writeAll("dup2");
+    }
+
+    var file = try tmp.dir.openFile("os_dup_test", .{});
+    defer file.close();
+
+    var buf: [7]u8 = undefined;
+    try testing.expectEqualStrings("dupdup2", buf[0..try file.readAll(&buf)]);
 }

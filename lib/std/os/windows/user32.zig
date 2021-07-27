@@ -14,7 +14,7 @@ const SetLastError = windows.kernel32.SetLastError;
 
 fn selectSymbol(comptime function_static: anytype, function_dynamic: @TypeOf(function_static), comptime os: std.Target.Os.WindowsVersion) @TypeOf(function_static) {
     comptime {
-        const sym_ok = builtin.Target.current.os.isAtLeast(.windows, os);
+        const sym_ok = std.Target.current.os.isAtLeast(.windows, os);
         if (sym_ok == true) return function_static;
         if (sym_ok == null) return function_dynamic;
         if (sym_ok == false) @compileError("Target OS range does not support function, at least " ++ @tagName(os) ++ " is required");
@@ -1336,7 +1336,7 @@ pub extern "user32" fn AdjustWindowRectEx(lpRect: *RECT, dwStyle: DWORD, bMenu: 
 pub fn adjustWindowRectEx(lpRect: *RECT, dwStyle: u32, bMenu: bool, dwExStyle: u32) !void {
     assert(dwStyle & WS_OVERLAPPED == 0);
 
-    if (AdjustWindowRectEx(lpRect, dwStyle, bMenu, dwExStyle) == 0) {
+    if (AdjustWindowRectEx(lpRect, dwStyle, @boolToInt(bMenu), dwExStyle) == 0) {
         switch (GetLastError()) {
             .INVALID_PARAMETER => unreachable,
             else => |err| return windows.unexpectedError(err),

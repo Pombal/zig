@@ -31,7 +31,7 @@ pub const Node = extern union {
         @"anytype",
         @"continue",
         @"break",
-        /// pub usingnamespace @import("std").c.builtins;
+        /// pub usingnamespace @import("std").zig.c_builtins
         usingnamespace_builtins,
         // After this, the tag requires a payload.
 
@@ -60,10 +60,10 @@ pub const Node = extern union {
         array_access,
         call,
         var_decl,
+        /// const name = struct { init }
+        static_local_var,
         func,
         warning,
-        /// All enums are non-exhaustive
-        @"enum",
         @"struct",
         @"union",
         @"comptime",
@@ -71,7 +71,8 @@ pub const Node = extern union {
         array_init,
         tuple,
         container_init,
-        std_meta_cast,
+        container_init_dot,
+        helpers_cast,
         /// _ = operand;
         discard,
 
@@ -121,8 +122,8 @@ pub const Node = extern union {
         std_math_Log2Int,
         /// @intCast(lhs, rhs)
         int_cast,
-        /// @import("std").meta.promoteIntLiteral(value, type, radix)
-        std_meta_promoteIntLiteral,
+        /// @import("std").zig.c_translation.promoteIntLiteral(value, type, radix)
+        helpers_promoteIntLiteral,
         /// @import("std").meta.alignment(value)
         std_meta_alignment,
         /// @rem(lhs, rhs)
@@ -143,10 +144,6 @@ pub const Node = extern union {
         float_to_int,
         /// @intToFloat(lhs, rhs)
         int_to_float,
-        /// @intToEnum(lhs, rhs)
-        int_to_enum,
-        /// @enumToInt(operand)
-        enum_to_int,
         /// @intToPtr(lhs, rhs)
         int_to_ptr,
         /// @ptrToInt(operand)
@@ -157,8 +154,8 @@ pub const Node = extern union {
         ptr_cast,
         /// @divExact(lhs, rhs)
         div_exact,
-        /// @byteOffsetOf(lhs, rhs)
-        byte_offset_of,
+        /// @offsetOf(lhs, rhs)
+        offset_of,
         /// @shuffle(type, a, b, mask)
         shuffle,
 
@@ -190,10 +187,14 @@ pub const Node = extern union {
         array_type,
         null_sentinel_array_type,
 
-        /// @import("std").meta.sizeof(operand)
-        std_meta_sizeof,
-        /// @import("std").meta.shuffleVectorIndex(lhs, rhs)
-        std_meta_shuffle_vector_index,
+        /// @import("std").zig.c_translation.sizeof(operand)
+        helpers_sizeof,
+        /// @import("std").zig.c_translation.FlexibleArrayType(lhs, rhs)
+        helpers_flexible_array_type,
+        /// @import("std").zig.c_translation.shuffleVectorIndex(lhs, rhs)
+        helpers_shuffle_vector_index,
+        /// @import("std").zig.c_translation.Macro.<operand>
+        helpers_macro,
         /// @import("std").meta.Vector(lhs, rhs)
         std_meta_vector,
         /// @import("std").mem.zeroes(operand)
@@ -210,9 +211,8 @@ pub const Node = extern union {
         var_simple,
         /// pub const name = init;
         pub_var_simple,
-        /// pub const enum_field_name = @enumToInt(enum_name.field_name);
-        pub_enum_redecl,
-        enum_redecl,
+        /// pub? const name (: type)? = value
+        enum_constant,
 
         /// pub inline fn name(params) return_type body
         pub_inline_fn,
@@ -250,7 +250,6 @@ pub const Node = extern union {
                 .@"comptime",
                 .@"defer",
                 .asm_simple,
-                .discard,
                 .std_math_Log2Int,
                 .negate,
                 .negate_wrap,
@@ -261,13 +260,12 @@ pub const Node = extern union {
                 .unwrap,
                 .deref,
                 .ptr_to_int,
-                .enum_to_int,
                 .empty_array,
                 .while_true,
                 .if_not_break,
                 .switch_else,
                 .block_single,
-                .std_meta_sizeof,
+                .helpers_sizeof,
                 .std_meta_alignment,
                 .bool_to_int,
                 .sizeof,
@@ -319,7 +317,6 @@ pub const Node = extern union {
                 .float_cast,
                 .float_to_int,
                 .int_to_float,
-                .int_to_enum,
                 .int_to_ptr,
                 .array_cat,
                 .ellipsis3,
@@ -327,11 +324,13 @@ pub const Node = extern union {
                 .align_cast,
                 .array_access,
                 .std_mem_zeroinit,
-                .std_meta_shuffle_vector_index,
+                .helpers_flexible_array_type,
+                .helpers_shuffle_vector_index,
                 .std_meta_vector,
                 .ptr_cast,
                 .div_exact,
-                .byte_offset_of,
+                .offset_of,
+                .helpers_cast,
                 => Payload.BinOp,
 
                 .integer_literal,
@@ -342,7 +341,9 @@ pub const Node = extern union {
                 .identifier,
                 .warning,
                 .type,
+                .helpers_macro,
                 => Payload.Value,
+                .discard => Payload.Discard,
                 .@"if" => Payload.If,
                 .@"while" => Payload.While,
                 .@"switch", .array_init, .switch_prong => Payload.Switch,
@@ -350,19 +351,18 @@ pub const Node = extern union {
                 .call => Payload.Call,
                 .var_decl => Payload.VarDecl,
                 .func => Payload.Func,
-                .@"enum" => Payload.Enum,
                 .@"struct", .@"union" => Payload.Record,
                 .tuple => Payload.TupleInit,
                 .container_init => Payload.ContainerInit,
-                .std_meta_cast => Payload.Infix,
-                .std_meta_promoteIntLiteral => Payload.PromoteIntLiteral,
+                .container_init_dot => Payload.ContainerInitDot,
+                .helpers_promoteIntLiteral => Payload.PromoteIntLiteral,
                 .block => Payload.Block,
                 .c_pointer, .single_pointer => Payload.Pointer,
                 .array_type, .null_sentinel_array_type => Payload.Array,
                 .arg_redecl, .alias, .fail_decl => Payload.ArgRedecl,
                 .log2_int_type => Payload.Log2IntType,
-                .var_simple, .pub_var_simple => Payload.SimpleVarDecl,
-                .pub_enum_redecl, .enum_redecl => Payload.EnumRedecl,
+                .var_simple, .pub_var_simple, .static_local_var => Payload.SimpleVarDecl,
+                .enum_constant => Payload.EnumConstant,
                 .array_filler => Payload.ArrayFiller,
                 .pub_inline_fn => Payload.PubInlineFn,
                 .field_access => Payload.FieldAccess,
@@ -448,14 +448,6 @@ pub const Node = extern union {
 pub const Payload = struct {
     tag: Node.Tag,
 
-    pub const Infix = struct {
-        base: Payload,
-        data: struct {
-            lhs: Node,
-            rhs: Node,
-        },
-    };
-
     pub const Value = struct {
         base: Payload,
         data: []const u8,
@@ -471,6 +463,14 @@ pub const Payload = struct {
         data: struct {
             lhs: Node,
             rhs: Node,
+        },
+    };
+
+    pub const Discard = struct {
+        base: Payload,
+        data: struct {
+            should_skip: bool,
+            value: Node,
         },
     };
 
@@ -555,24 +555,12 @@ pub const Payload = struct {
         type: Node,
     };
 
-    pub const Enum = struct {
-        base: Payload,
-        data: struct {
-            int_type: Node,
-            fields: []Field,
-        },
-
-        pub const Field = struct {
-            name: []const u8,
-            value: ?Node,
-        };
-    };
-
     pub const Record = struct {
         base: Payload,
         data: struct {
             is_packed: bool,
             fields: []Field,
+            functions: []Node,
         },
 
         pub const Field = struct {
@@ -593,6 +581,16 @@ pub const Payload = struct {
             lhs: Node,
             inits: []Initializer,
         },
+
+        pub const Initializer = struct {
+            name: []const u8,
+            value: Node,
+        };
+    };
+
+    pub const ContainerInitDot = struct {
+        base: Payload,
+        data: []Initializer,
 
         pub const Initializer = struct {
             name: []const u8,
@@ -648,12 +646,13 @@ pub const Payload = struct {
         },
     };
 
-    pub const EnumRedecl = struct {
+    pub const EnumConstant = struct {
         base: Payload,
         data: struct {
-            enum_val_name: []const u8,
-            field_name: []const u8,
-            enum_name: []const u8,
+            name: []const u8,
+            is_public: bool,
+            type: ?Node,
+            value: Node,
         },
     };
 
@@ -766,7 +765,7 @@ pub fn render(gpa: *Allocator, nodes: []const Node) !std.zig.ast.Tree {
     });
 
     return std.zig.ast.Tree{
-        .source = ctx.buf.toOwnedSlice(),
+        .source = try ctx.buf.toOwnedSliceSentinel(0),
         .tokens = ctx.tokens.toOwnedSlice(),
         .nodes = ctx.nodes.toOwnedSlice(),
         .extra_data = ctx.extra_data.toOwnedSlice(gpa),
@@ -858,7 +857,7 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
             // pub usingnamespace @import("std").c.builtins;
             _ = try c.addToken(.keyword_pub, "pub");
             const usingnamespace_token = try c.addToken(.keyword_usingnamespace, "usingnamespace");
-            const import_node = try renderStdImport(c, "c", "builtins");
+            const import_node = try renderStdImport(c, &.{ "zig", "c_builtins" });
             _ = try c.addToken(.semicolon, ";");
 
             return c.addNode(.{
@@ -872,47 +871,52 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
         },
         .std_math_Log2Int => {
             const payload = node.castTag(.std_math_Log2Int).?.data;
-            const import_node = try renderStdImport(c, "math", "Log2Int");
+            const import_node = try renderStdImport(c, &.{ "math", "Log2Int" });
             return renderCall(c, import_node, &.{payload});
         },
-        .std_meta_cast => {
-            const payload = node.castTag(.std_meta_cast).?.data;
-            const import_node = try renderStdImport(c, "meta", "cast");
+        .helpers_cast => {
+            const payload = node.castTag(.helpers_cast).?.data;
+            const import_node = try renderStdImport(c, &.{ "zig", "c_translation", "cast" });
             return renderCall(c, import_node, &.{ payload.lhs, payload.rhs });
         },
-        .std_meta_promoteIntLiteral => {
-            const payload = node.castTag(.std_meta_promoteIntLiteral).?.data;
-            const import_node = try renderStdImport(c, "meta", "promoteIntLiteral");
+        .helpers_promoteIntLiteral => {
+            const payload = node.castTag(.helpers_promoteIntLiteral).?.data;
+            const import_node = try renderStdImport(c, &.{ "zig", "c_translation", "promoteIntLiteral" });
             return renderCall(c, import_node, &.{ payload.type, payload.value, payload.radix });
         },
         .std_meta_alignment => {
             const payload = node.castTag(.std_meta_alignment).?.data;
-            const import_node = try renderStdImport(c, "meta", "alignment");
+            const import_node = try renderStdImport(c, &.{ "meta", "alignment" });
             return renderCall(c, import_node, &.{payload});
         },
-        .std_meta_sizeof => {
-            const payload = node.castTag(.std_meta_sizeof).?.data;
-            const import_node = try renderStdImport(c, "meta", "sizeof");
+        .helpers_sizeof => {
+            const payload = node.castTag(.helpers_sizeof).?.data;
+            const import_node = try renderStdImport(c, &.{ "zig", "c_translation", "sizeof" });
             return renderCall(c, import_node, &.{payload});
         },
         .std_mem_zeroes => {
             const payload = node.castTag(.std_mem_zeroes).?.data;
-            const import_node = try renderStdImport(c, "mem", "zeroes");
+            const import_node = try renderStdImport(c, &.{ "mem", "zeroes" });
             return renderCall(c, import_node, &.{payload});
         },
         .std_mem_zeroinit => {
             const payload = node.castTag(.std_mem_zeroinit).?.data;
-            const import_node = try renderStdImport(c, "mem", "zeroInit");
+            const import_node = try renderStdImport(c, &.{ "mem", "zeroInit" });
             return renderCall(c, import_node, &.{ payload.lhs, payload.rhs });
         },
-        .std_meta_shuffle_vector_index => {
-            const payload = node.castTag(.std_meta_shuffle_vector_index).?.data;
-            const import_node = try renderStdImport(c, "meta", "shuffleVectorIndex");
+        .helpers_flexible_array_type => {
+            const payload = node.castTag(.helpers_flexible_array_type).?.data;
+            const import_node = try renderStdImport(c, &.{ "zig", "c_translation", "FlexibleArrayType" });
+            return renderCall(c, import_node, &.{ payload.lhs, payload.rhs });
+        },
+        .helpers_shuffle_vector_index => {
+            const payload = node.castTag(.helpers_shuffle_vector_index).?.data;
+            const import_node = try renderStdImport(c, &.{ "zig", "c_translation", "shuffleVectorIndex" });
             return renderCall(c, import_node, &.{ payload.lhs, payload.rhs });
         },
         .std_meta_vector => {
             const payload = node.castTag(.std_meta_vector).?.data;
-            const import_node = try renderStdImport(c, "meta", "Vector");
+            const import_node = try renderStdImport(c, &.{ "meta", "Vector" });
             return renderCall(c, import_node, &.{ payload.lhs, payload.rhs });
         },
         .call => {
@@ -1111,6 +1115,16 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
                 .data = undefined,
             });
         },
+        .helpers_macro => {
+            const payload = node.castTag(.helpers_macro).?.data;
+            const chain = [_][]const u8{
+                "zig",
+                "c_translation",
+                "Macros",
+                payload,
+            };
+            return renderStdImport(c, &chain);
+        },
         .string_slice => {
             const payload = node.castTag(.string_slice).?.data;
 
@@ -1196,6 +1210,35 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
                 },
             });
         },
+        .static_local_var => {
+            const payload = node.castTag(.static_local_var).?.data;
+
+            const const_tok = try c.addToken(.keyword_const, "const");
+            _ = try c.addIdentifier(payload.name);
+            _ = try c.addToken(.equal, "=");
+
+            const kind_tok = try c.addToken(.keyword_struct, "struct");
+            _ = try c.addToken(.l_brace, "{");
+
+            const container_def = try c.addNode(.{
+                .tag = .container_decl_two_trailing,
+                .main_token = kind_tok,
+                .data = .{
+                    .lhs = try renderNode(c, payload.init),
+                    .rhs = 0,
+                },
+            });
+            _ = try c.addToken(.r_brace, "}");
+
+            return c.addNode(.{
+                .tag = .simple_var_decl,
+                .main_token = const_tok,
+                .data = .{
+                    .lhs = 0,
+                    .rhs = container_def,
+                },
+            });
+        },
         .var_decl => return renderVar(c, node),
         .arg_redecl, .alias => {
             const payload = @fieldParentPtr(Payload.ArgRedecl, "base", node.ptr_otherwise).data;
@@ -1263,14 +1306,6 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
             const payload = node.castTag(.int_to_float).?.data;
             return renderBuiltinCall(c, "@intToFloat", &.{ payload.lhs, payload.rhs });
         },
-        .int_to_enum => {
-            const payload = node.castTag(.int_to_enum).?.data;
-            return renderBuiltinCall(c, "@intToEnum", &.{ payload.lhs, payload.rhs });
-        },
-        .enum_to_int => {
-            const payload = node.castTag(.enum_to_int).?.data;
-            return renderBuiltinCall(c, "@enumToInt", &.{payload});
-        },
         .int_to_ptr => {
             const payload = node.castTag(.int_to_ptr).?.data;
             return renderBuiltinCall(c, "@intToPtr", &.{ payload.lhs, payload.rhs });
@@ -1291,9 +1326,9 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
             const payload = node.castTag(.div_exact).?.data;
             return renderBuiltinCall(c, "@divExact", &.{ payload.lhs, payload.rhs });
         },
-        .byte_offset_of => {
-            const payload = node.castTag(.byte_offset_of).?.data;
-            return renderBuiltinCall(c, "@byteOffsetOf", &.{ payload.lhs, payload.rhs });
+        .offset_of => {
+            const payload = node.castTag(.offset_of).?.data;
+            return renderBuiltinCall(c, "@offsetOf", &.{ payload.lhs, payload.rhs });
         },
         .sizeof => {
             const payload = node.castTag(.sizeof).?.data;
@@ -1477,6 +1512,8 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
         .pub_inline_fn => return renderMacroFunc(c, node),
         .discard => {
             const payload = node.castTag(.discard).?.data;
+            if (payload.should_skip) return @as(NodeIndex, 0);
+
             const lhs = try c.addNode(.{
                 .tag = .identifier,
                 .main_token = try c.addToken(.identifier, "_"),
@@ -1487,7 +1524,7 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
                 .main_token = try c.addToken(.equal, "="),
                 .data = .{
                     .lhs = lhs,
-                    .rhs = try renderNode(c, payload),
+                    .rhs = try renderNode(c, payload.value),
                 },
             });
         },
@@ -1770,91 +1807,28 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
             return renderFieldAccess(c, lhs, payload.field_name);
         },
         .@"struct", .@"union" => return renderRecord(c, node),
-        .@"enum" => {
-            const payload = node.castTag(.@"enum").?.data;
-            _ = try c.addToken(.keyword_extern, "extern");
-            const enum_tok = try c.addToken(.keyword_enum, "enum");
-            _ = try c.addToken(.l_paren, "(");
-            const arg_expr = try renderNode(c, payload.int_type);
-            _ = try c.addToken(.r_paren, ")");
-            _ = try c.addToken(.l_brace, "{");
-            const members = try c.gpa.alloc(NodeIndex, std.math.max(payload.fields.len + 1, 1));
-            defer c.gpa.free(members);
-            members[0] = 0;
+        .enum_constant => {
+            const payload = node.castTag(.enum_constant).?.data;
 
-            for (payload.fields) |field, i| {
-                const name_tok = try c.addIdentifier(field.name);
-                const value_expr = if (field.value) |some| blk: {
-                    _ = try c.addToken(.equal, "=");
-                    break :blk try renderNode(c, some);
-                } else 0;
-
-                members[i] = try c.addNode(.{
-                    .tag = .container_field_init,
-                    .main_token = name_tok,
-                    .data = .{
-                        .lhs = 0,
-                        .rhs = value_expr,
-                    },
-                });
-                _ = try c.addToken(.comma, ",");
-            }
-            // make non-exhaustive
-            members[payload.fields.len] = try c.addNode(.{
-                .tag = .container_field_init,
-                .main_token = try c.addIdentifier("_"),
-                .data = .{
-                    .lhs = 0,
-                    .rhs = 0,
-                },
-            });
-            _ = try c.addToken(.comma, ",");
-            _ = try c.addToken(.r_brace, "}");
-
-            const span = try c.listToSpan(members);
-            return c.addNode(.{
-                .tag = .container_decl_arg_trailing,
-                .main_token = enum_tok,
-                .data = .{
-                    .lhs = arg_expr,
-                    .rhs = try c.addExtra(NodeSubRange{
-                        .start = span.start,
-                        .end = span.end,
-                    }),
-                },
-            });
-        },
-        .pub_enum_redecl, .enum_redecl => {
-            const payload = @fieldParentPtr(Payload.EnumRedecl, "base", node.ptr_otherwise).data;
-            if (node.tag() == .pub_enum_redecl) _ = try c.addToken(.keyword_pub, "pub");
+            if (payload.is_public) _ = try c.addToken(.keyword_pub, "pub");
             const const_tok = try c.addToken(.keyword_const, "const");
-            _ = try c.addIdentifier(payload.enum_val_name);
+            _ = try c.addIdentifier(payload.name);
+
+            const type_node = if (payload.type) |enum_const_type| blk: {
+                _ = try c.addToken(.colon, ":");
+                break :blk try renderNode(c, enum_const_type);
+            } else 0;
+
             _ = try c.addToken(.equal, "=");
 
-            const enum_to_int_tok = try c.addToken(.builtin, "@enumToInt");
-            _ = try c.addToken(.l_paren, "(");
-            const enum_name = try c.addNode(.{
-                .tag = .identifier,
-                .main_token = try c.addIdentifier(payload.enum_name),
-                .data = undefined,
-            });
-            const field_access = try renderFieldAccess(c, enum_name, payload.field_name);
-            const init_node = try c.addNode(.{
-                .tag = .builtin_call_two,
-                .main_token = enum_to_int_tok,
-                .data = .{
-                    .lhs = field_access,
-                    .rhs = 0,
-                },
-            });
-            _ = try c.addToken(.r_paren, ")");
+            const init_node = try renderNode(c, payload.value);
             _ = try c.addToken(.semicolon, ";");
 
             return c.addNode(.{
                 .tag = .simple_var_decl,
                 .main_token = const_tok,
                 .data = .{
-                    .lhs = 0,
+                    .lhs = type_node,
                     .rhs = init_node,
                 },
             });
@@ -1885,6 +1859,44 @@ fn renderNode(c: *Context, node: Node) Allocator.Error!NodeIndex {
                 const span = try c.listToSpan(inits);
                 return c.addNode(.{
                     .tag = .array_init_dot,
+                    .main_token = l_brace,
+                    .data = .{
+                        .lhs = span.start,
+                        .rhs = span.end,
+                    },
+                });
+            }
+        },
+        .container_init_dot => {
+            const payload = node.castTag(.container_init_dot).?.data;
+            _ = try c.addToken(.period, ".");
+            const l_brace = try c.addToken(.l_brace, "{");
+            var inits = try c.gpa.alloc(NodeIndex, std.math.max(payload.len, 2));
+            defer c.gpa.free(inits);
+            inits[0] = 0;
+            inits[1] = 0;
+            for (payload) |init, i| {
+                _ = try c.addToken(.period, ".");
+                _ = try c.addIdentifier(init.name);
+                _ = try c.addToken(.equal, "=");
+                inits[i] = try renderNode(c, init.value);
+                _ = try c.addToken(.comma, ",");
+            }
+            _ = try c.addToken(.r_brace, "}");
+
+            if (payload.len < 3) {
+                return c.addNode(.{
+                    .tag = .struct_init_dot_two_comma,
+                    .main_token = l_brace,
+                    .data = .{
+                        .lhs = inits[0],
+                        .rhs = inits[1],
+                    },
+                });
+            } else {
+                const span = try c.listToSpan(inits);
+                return c.addNode(.{
+                    .tag = .struct_init_dot_comma,
                     .main_token = l_brace,
                     .data = .{
                         .lhs = span.start,
@@ -1950,7 +1962,10 @@ fn renderRecord(c: *Context, node: Node) !NodeIndex {
         try c.addToken(.keyword_union, "union");
 
     _ = try c.addToken(.l_brace, "{");
-    const members = try c.gpa.alloc(NodeIndex, std.math.max(payload.fields.len, 2));
+
+    const num_funcs = payload.functions.len;
+    const total_members = payload.fields.len + num_funcs;
+    const members = try c.gpa.alloc(NodeIndex, std.math.max(total_members, 2));
     defer c.gpa.free(members);
     members[0] = 0;
     members[1] = 0;
@@ -1991,9 +2006,12 @@ fn renderRecord(c: *Context, node: Node) !NodeIndex {
         });
         _ = try c.addToken(.comma, ",");
     }
+    for (payload.functions) |function, i| {
+        members[payload.fields.len + i] = try renderNode(c, function);
+    }
     _ = try c.addToken(.r_brace, "}");
 
-    if (payload.fields.len == 0) {
+    if (total_members == 0) {
         return c.addNode(.{
             .tag = .container_decl_two,
             .main_token = kind_tok,
@@ -2002,9 +2020,9 @@ fn renderRecord(c: *Context, node: Node) !NodeIndex {
                 .rhs = 0,
             },
         });
-    } else if (payload.fields.len <= 2) {
+    } else if (total_members <= 2) {
         return c.addNode(.{
-            .tag = .container_decl_two_trailing,
+            .tag = if (num_funcs == 0) .container_decl_two_trailing else .container_decl_two,
             .main_token = kind_tok,
             .data = .{
                 .lhs = members[0],
@@ -2014,7 +2032,7 @@ fn renderRecord(c: *Context, node: Node) !NodeIndex {
     } else {
         const span = try c.listToSpan(members);
         return c.addNode(.{
-            .tag = .container_decl_trailing,
+            .tag = if (num_funcs == 0) .container_decl_trailing else .container_decl,
             .main_token = kind_tok,
             .data = .{
                 .lhs = span.start,
@@ -2122,7 +2140,7 @@ fn renderNullSentinelArrayType(c: *Context, len: usize, elem_type: Node) !NodeIn
 fn addSemicolonIfNeeded(c: *Context, node: Node) !void {
     switch (node.tag()) {
         .warning => unreachable,
-        .var_decl, .var_simple, .arg_redecl, .alias, .enum_redecl, .block, .empty_block, .block_single, .@"switch" => {},
+        .var_decl, .var_simple, .arg_redecl, .alias, .block, .empty_block, .block_single, .@"switch" => {},
         .while_true => {
             const payload = node.castTag(.while_true).?.data;
             return addSemicolonIfNotBlock(c, payload);
@@ -2170,23 +2188,22 @@ fn renderNodeGrouped(c: *Context, node: Node) !NodeIndex {
         .float_cast,
         .float_to_int,
         .int_to_float,
-        .int_to_enum,
         .int_to_ptr,
         .std_mem_zeroes,
         .std_math_Log2Int,
         .log2_int_type,
         .ptr_to_int,
-        .enum_to_int,
         .sizeof,
         .alignof,
         .typeof,
         .typeinfo,
-        .std_meta_sizeof,
         .std_meta_alignment,
-        .std_meta_cast,
-        .std_meta_promoteIntLiteral,
         .std_meta_vector,
-        .std_meta_shuffle_vector_index,
+        .helpers_sizeof,
+        .helpers_cast,
+        .helpers_promoteIntLiteral,
+        .helpers_shuffle_vector_index,
+        .helpers_flexible_array_type,
         .std_mem_zeroinit,
         .integer_literal,
         .float_literal,
@@ -2205,7 +2222,6 @@ fn renderNodeGrouped(c: *Context, node: Node) !NodeIndex {
         .single_pointer,
         .unwrap,
         .deref,
-        .address_of,
         .not,
         .negate,
         .negate_wrap,
@@ -2216,8 +2232,9 @@ fn renderNodeGrouped(c: *Context, node: Node) !NodeIndex {
         .null_sentinel_array_type,
         .bool_to_int,
         .div_exact,
-        .byte_offset_of,
+        .offset_of,
         .shuffle,
+        .static_local_var,
         => {
             // no grouping needed
             return renderNode(c, node);
@@ -2251,13 +2268,14 @@ fn renderNodeGrouped(c: *Context, node: Node) !NodeIndex {
         .array_cat,
         .array_filler,
         .@"if",
-        .@"enum",
         .@"struct",
         .@"union",
         .array_init,
         .tuple,
         .container_init,
+        .container_init_dot,
         .block,
+        .address_of,
         => return c.addNode(.{
             .tag = .grouped_expression,
             .main_token = try c.addToken(.l_paren, "("),
@@ -2275,8 +2293,7 @@ fn renderNodeGrouped(c: *Context, node: Node) !NodeIndex {
         .alias,
         .var_simple,
         .pub_var_simple,
-        .pub_enum_redecl,
-        .enum_redecl,
+        .enum_constant,
         .@"while",
         .@"switch",
         .@"break",
@@ -2306,6 +2323,7 @@ fn renderNodeGrouped(c: *Context, node: Node) !NodeIndex {
         .bit_or_assign,
         .bit_xor_assign,
         .assign,
+        .helpers_macro,
         => {
             // these should never appear in places where grouping might be needed.
             unreachable;
@@ -2351,7 +2369,7 @@ fn renderBinOp(c: *Context, node: Node, tag: std.zig.ast.Node.Tag, tok_tag: Toke
     });
 }
 
-fn renderStdImport(c: *Context, first: []const u8, second: []const u8) !NodeIndex {
+fn renderStdImport(c: *Context, parts: []const []const u8) !NodeIndex {
     const import_tok = try c.addToken(.builtin, "@import");
     _ = try c.addToken(.l_paren, "(");
     const std_tok = try c.addToken(.string_literal, "\"std\"");
@@ -2372,8 +2390,9 @@ fn renderStdImport(c: *Context, first: []const u8, second: []const u8) !NodeInde
     });
 
     var access_chain = import_node;
-    access_chain = try renderFieldAccess(c, access_chain, first);
-    access_chain = try renderFieldAccess(c, access_chain, second);
+    for (parts) |part| {
+        access_chain = try renderFieldAccess(c, access_chain, part);
+    }
     return access_chain;
 }
 
@@ -2689,6 +2708,7 @@ fn renderFunc(c: *Context, node: Node) !NodeIndex {
 fn renderMacroFunc(c: *Context, node: Node) !NodeIndex {
     const payload = node.castTag(.pub_inline_fn).?.data;
     _ = try c.addToken(.keyword_pub, "pub");
+    _ = try c.addToken(.keyword_inline, "inline");
     const fn_token = try c.addToken(.keyword_fn, "fn");
     _ = try c.addIdentifier(payload.name);
 
@@ -2697,50 +2717,31 @@ fn renderMacroFunc(c: *Context, node: Node) !NodeIndex {
     var span: NodeSubRange = undefined;
     if (params.items.len > 1) span = try c.listToSpan(params.items);
 
-    const callconv_expr = blk: {
-        _ = try c.addToken(.keyword_callconv, "callconv");
-        _ = try c.addToken(.l_paren, "(");
-        _ = try c.addToken(.period, ".");
-        const res = try c.addNode(.{
-            .tag = .enum_literal,
-            .main_token = try c.addToken(.identifier, "Inline"),
-            .data = undefined,
-        });
-        _ = try c.addToken(.r_paren, ")");
-        break :blk res;
-    };
     const return_type_expr = try renderNodeGrouped(c, payload.return_type);
 
-    const fn_proto = try blk: {
-        if (params.items.len < 2)
-            break :blk c.addNode(.{
-                .tag = .fn_proto_one,
+    const fn_proto = blk: {
+        if (params.items.len < 2) {
+            break :blk try c.addNode(.{
+                .tag = .fn_proto_simple,
                 .main_token = fn_token,
                 .data = .{
-                    .lhs = try c.addExtra(std.zig.ast.Node.FnProtoOne{
-                        .param = params.items[0],
-                        .align_expr = 0,
-                        .section_expr = 0,
-                        .callconv_expr = callconv_expr,
-                    }),
+                    .lhs = params.items[0],
                     .rhs = return_type_expr,
                 },
-            })
-        else
-            break :blk c.addNode(.{
-                .tag = .fn_proto,
+            });
+        } else {
+            break :blk try c.addNode(.{
+                .tag = .fn_proto_multi,
                 .main_token = fn_token,
                 .data = .{
-                    .lhs = try c.addExtra(std.zig.ast.Node.FnProto{
-                        .params_start = span.start,
-                        .params_end = span.end,
-                        .align_expr = 0,
-                        .section_expr = 0,
-                        .callconv_expr = callconv_expr,
+                    .lhs = try c.addExtra(std.zig.ast.Node.SubRange{
+                        .start = span.start,
+                        .end = span.end,
                     }),
                     .rhs = return_type_expr,
                 },
             });
+        }
     };
     return c.addNode(.{
         .tag = .fn_decl,

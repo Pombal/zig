@@ -16,7 +16,6 @@ const LibExeObjStep = build.LibExeObjStep;
 const compare_output = @import("compare_output.zig");
 const standalone = @import("standalone.zig");
 const stack_traces = @import("stack_traces.zig");
-const compile_errors = @import("compile_errors.zig");
 const assemble_and_link = @import("assemble_and_link.zig");
 const runtime_safety = @import("runtime_safety.zig");
 const translate_c = @import("translate_c.zig");
@@ -384,22 +383,7 @@ pub fn addRuntimeSafetyTests(b: *build.Builder, test_filter: ?[]const u8, modes:
     return cases.step;
 }
 
-pub fn addCompileErrorTests(b: *build.Builder, test_filter: ?[]const u8, modes: []const Mode) *build.Step {
-    const cases = b.allocator.create(CompileErrorContext) catch unreachable;
-    cases.* = CompileErrorContext{
-        .b = b,
-        .step = b.step("test-compile-errors", "Run the compile error tests"),
-        .test_index = 0,
-        .test_filter = test_filter,
-        .modes = modes,
-    };
-
-    compile_errors.addCases(cases);
-
-    return cases.step;
-}
-
-pub fn addStandaloneTests(b: *build.Builder, test_filter: ?[]const u8, modes: []const Mode) *build.Step {
+pub fn addStandaloneTests(b: *build.Builder, test_filter: ?[]const u8, modes: []const Mode, skip_non_native: bool, target: std.zig.CrossTarget) *build.Step {
     const cases = b.allocator.create(StandaloneContext) catch unreachable;
     cases.* = StandaloneContext{
         .b = b,
@@ -407,6 +391,8 @@ pub fn addStandaloneTests(b: *build.Builder, test_filter: ?[]const u8, modes: []
         .test_index = 0,
         .test_filter = test_filter,
         .modes = modes,
+        .skip_non_native = skip_non_native,
+        .target = target,
     };
 
     standalone.addCases(cases);
@@ -415,6 +401,8 @@ pub fn addStandaloneTests(b: *build.Builder, test_filter: ?[]const u8, modes: []
 }
 
 pub fn addCliTests(b: *build.Builder, test_filter: ?[]const u8, modes: []const Mode) *build.Step {
+    _ = test_filter;
+    _ = modes;
     const step = b.step("test-cli", "Test the command line interface");
 
     const exe = b.addExecutable("test-cli", "test/cli.zig");
@@ -523,7 +511,6 @@ pub fn addPkgTests(
         if (skip_single_threaded and test_target.single_threaded)
             continue;
 
-        const ArchTag = std.meta.Tag(std.Target.Cpu.Arch);
         if (test_target.disable_native and
             test_target.target.getOsTag() == std.Target.current.os.tag and
             test_target.target.getCpuArch() == std.Target.current.cpu.arch)
@@ -652,7 +639,7 @@ pub const StackTracesContext = struct {
         const b = self.b;
         const src_basename = "source.zig";
         const write_src = b.addWriteFile(src_basename, source);
-        const exe = b.addExecutableFromWriteFileStep("test", write_src, src_basename);
+        const exe = b.addExecutableSource("test", write_src.getFileSource(src_basename).?);
         exe.setBuildMode(mode);
 
         const run_and_compare = RunAndCompareStep.create(
@@ -667,6 +654,8 @@ pub const StackTracesContext = struct {
     }
 
     const RunAndCompareStep = struct {
+        pub const base_id = .custom;
+
         step: build.Step,
         context: *StackTracesContext,
         exe: *LibExeObjStep,
@@ -685,7 +674,7 @@ pub const StackTracesContext = struct {
             const allocator = context.b.allocator;
             const ptr = allocator.create(RunAndCompareStep) catch unreachable;
             ptr.* = RunAndCompareStep{
-                .step = build.Step.init(.Custom, "StackTraceCompareOutputStep", allocator, make),
+                .step = build.Step.init(.custom, "StackTraceCompareOutputStep", allocator, make),
                 .context = context,
                 .exe = exe,
                 .name = name,
@@ -702,7 +691,7 @@ pub const StackTracesContext = struct {
             const self = @fieldParentPtr(RunAndCompareStep, "step", step);
             const b = self.context.b;
 
-            const full_exe_path = self.exe.getOutputPath();
+            const full_exe_path = self.exe.getOutputSource().getPath(b);
             var args = ArrayList([]const u8).init(b.allocator);
             defer args.deinit();
             args.append(full_exe_path) catch unreachable;
@@ -774,6 +763,7 @@ pub const StackTracesContext = struct {
                 var it = mem.split(stderr, "\n");
                 process_lines: while (it.next()) |line| {
                     if (line.len == 0) continue;
+
                     // offset search past `[drive]:` on windows
                     var pos: usize = if (std.Target.current.os.tag == .windows) 2 else 0;
                     // locate delims/anchor
@@ -834,308 +824,14 @@ pub const StackTracesContext = struct {
     };
 };
 
-pub const CompileErrorContext = struct {
-    b: *build.Builder,
-    step: *build.Step,
-    test_index: usize,
-    test_filter: ?[]const u8,
-    modes: []const Mode,
-
-    const TestCase = struct {
-        name: []const u8,
-        sources: ArrayList(SourceFile),
-        expected_errors: ArrayList([]const u8),
-        expect_exact: bool,
-        link_libc: bool,
-        is_exe: bool,
-        is_test: bool,
-        target: CrossTarget = CrossTarget{},
-
-        const SourceFile = struct {
-            filename: []const u8,
-            source: []const u8,
-        };
-
-        pub fn addSourceFile(self: *TestCase, filename: []const u8, source: []const u8) void {
-            self.sources.append(SourceFile{
-                .filename = filename,
-                .source = source,
-            }) catch unreachable;
-        }
-
-        pub fn addExpectedError(self: *TestCase, text: []const u8) void {
-            self.expected_errors.append(text) catch unreachable;
-        }
-    };
-
-    const CompileCmpOutputStep = struct {
-        step: build.Step,
-        context: *CompileErrorContext,
-        name: []const u8,
-        test_index: usize,
-        case: *const TestCase,
-        build_mode: Mode,
-        write_src: *build.WriteFileStep,
-
-        const ErrLineIter = struct {
-            lines: mem.SplitIterator,
-
-            const source_file = "tmp.zig";
-
-            fn init(input: []const u8) ErrLineIter {
-                return ErrLineIter{ .lines = mem.split(input, "\n") };
-            }
-
-            fn next(self: *ErrLineIter) ?[]const u8 {
-                while (self.lines.next()) |line| {
-                    if (mem.indexOf(u8, line, source_file) != null)
-                        return line;
-                }
-                return null;
-            }
-        };
-
-        pub fn create(
-            context: *CompileErrorContext,
-            name: []const u8,
-            case: *const TestCase,
-            build_mode: Mode,
-            write_src: *build.WriteFileStep,
-        ) *CompileCmpOutputStep {
-            const allocator = context.b.allocator;
-            const ptr = allocator.create(CompileCmpOutputStep) catch unreachable;
-            ptr.* = CompileCmpOutputStep{
-                .step = build.Step.init(.Custom, "CompileCmpOutput", allocator, make),
-                .context = context,
-                .name = name,
-                .test_index = context.test_index,
-                .case = case,
-                .build_mode = build_mode,
-                .write_src = write_src,
-            };
-
-            context.test_index += 1;
-            return ptr;
-        }
-
-        fn make(step: *build.Step) !void {
-            const self = @fieldParentPtr(CompileCmpOutputStep, "step", step);
-            const b = self.context.b;
-
-            var zig_args = ArrayList([]const u8).init(b.allocator);
-            zig_args.append(b.zig_exe) catch unreachable;
-
-            if (self.case.is_exe) {
-                try zig_args.append("build-exe");
-            } else if (self.case.is_test) {
-                try zig_args.append("test");
-            } else {
-                try zig_args.append("build-obj");
-            }
-            const root_src_basename = self.case.sources.items[0].filename;
-            try zig_args.append(self.write_src.getOutputPath(root_src_basename));
-
-            zig_args.append("--name") catch unreachable;
-            zig_args.append("test") catch unreachable;
-
-            if (!self.case.target.isNative()) {
-                try zig_args.append("-target");
-                try zig_args.append(try self.case.target.zigTriple(b.allocator));
-            }
-
-            zig_args.append("-O") catch unreachable;
-            zig_args.append(@tagName(self.build_mode)) catch unreachable;
-
-            warn("Test {d}/{d} {s}...", .{ self.test_index + 1, self.context.test_index, self.name });
-
-            if (b.verbose) {
-                printInvocation(zig_args.items);
-            }
-
-            const child = std.ChildProcess.init(zig_args.items, b.allocator) catch unreachable;
-            defer child.deinit();
-
-            child.env_map = b.env_map;
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Pipe;
-            child.stderr_behavior = .Pipe;
-
-            child.spawn() catch |err| debug.panic("Unable to spawn {s}: {s}\n", .{ zig_args.items[0], @errorName(err) });
-
-            var stdout_buf = ArrayList(u8).init(b.allocator);
-            var stderr_buf = ArrayList(u8).init(b.allocator);
-
-            child.stdout.?.reader().readAllArrayList(&stdout_buf, max_stdout_size) catch unreachable;
-            child.stderr.?.reader().readAllArrayList(&stderr_buf, max_stdout_size) catch unreachable;
-
-            const term = child.wait() catch |err| {
-                debug.panic("Unable to spawn {s}: {s}\n", .{ zig_args.items[0], @errorName(err) });
-            };
-            switch (term) {
-                .Exited => |code| {
-                    if (code == 0) {
-                        printInvocation(zig_args.items);
-                        return error.CompilationIncorrectlySucceeded;
-                    }
-                },
-                else => {
-                    warn("Process {s} terminated unexpectedly\n", .{b.zig_exe});
-                    printInvocation(zig_args.items);
-                    return error.TestFailed;
-                },
-            }
-
-            const stdout = stdout_buf.items;
-            const stderr = stderr_buf.items;
-
-            if (stdout.len != 0) {
-                warn(
-                    \\
-                    \\Expected empty stdout, instead found:
-                    \\================================================
-                    \\{s}
-                    \\================================================
-                    \\
-                , .{stdout});
-                return error.TestFailed;
-            }
-
-            var ok = true;
-            if (self.case.expect_exact) {
-                var err_iter = ErrLineIter.init(stderr);
-                var i: usize = 0;
-                ok = while (err_iter.next()) |line| : (i += 1) {
-                    if (i >= self.case.expected_errors.items.len) break false;
-                    const expected = self.case.expected_errors.items[i];
-                    if (mem.indexOf(u8, line, expected) == null) break false;
-                    continue;
-                } else true;
-
-                ok = ok and i == self.case.expected_errors.items.len;
-
-                if (!ok) {
-                    warn("\n======== Expected these compile errors: ========\n", .{});
-                    for (self.case.expected_errors.items) |expected| {
-                        warn("{s}\n", .{expected});
-                    }
-                }
-            } else {
-                for (self.case.expected_errors.items) |expected| {
-                    if (mem.indexOf(u8, stderr, expected) == null) {
-                        warn(
-                            \\
-                            \\=========== Expected compile error: ============
-                            \\{s}
-                            \\
-                        , .{expected});
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-
-            if (!ok) {
-                warn(
-                    \\================= Full output: =================
-                    \\{s}
-                    \\
-                , .{stderr});
-                return error.TestFailed;
-            }
-
-            warn("OK\n", .{});
-        }
-    };
-
-    pub fn create(
-        self: *CompileErrorContext,
-        name: []const u8,
-        source: []const u8,
-        expected_lines: []const []const u8,
-    ) *TestCase {
-        const tc = self.b.allocator.create(TestCase) catch unreachable;
-        tc.* = TestCase{
-            .name = name,
-            .sources = ArrayList(TestCase.SourceFile).init(self.b.allocator),
-            .expected_errors = ArrayList([]const u8).init(self.b.allocator),
-            .expect_exact = false,
-            .link_libc = false,
-            .is_exe = false,
-            .is_test = false,
-        };
-
-        tc.addSourceFile("tmp.zig", source);
-        var arg_i: usize = 0;
-        while (arg_i < expected_lines.len) : (arg_i += 1) {
-            tc.addExpectedError(expected_lines[arg_i]);
-        }
-        return tc;
-    }
-
-    pub fn addC(self: *CompileErrorContext, name: []const u8, source: []const u8, expected_lines: []const []const u8) void {
-        var tc = self.create(name, source, expected_lines);
-        tc.link_libc = true;
-        self.addCase(tc);
-    }
-
-    pub fn addExe(
-        self: *CompileErrorContext,
-        name: []const u8,
-        source: []const u8,
-        expected_lines: []const []const u8,
-    ) void {
-        var tc = self.create(name, source, expected_lines);
-        tc.is_exe = true;
-        self.addCase(tc);
-    }
-
-    pub fn add(
-        self: *CompileErrorContext,
-        name: []const u8,
-        source: []const u8,
-        expected_lines: []const []const u8,
-    ) void {
-        const tc = self.create(name, source, expected_lines);
-        self.addCase(tc);
-    }
-
-    pub fn addTest(
-        self: *CompileErrorContext,
-        name: []const u8,
-        source: []const u8,
-        expected_lines: []const []const u8,
-    ) void {
-        const tc = self.create(name, source, expected_lines);
-        tc.is_test = true;
-        self.addCase(tc);
-    }
-
-    pub fn addCase(self: *CompileErrorContext, case: *const TestCase) void {
-        const b = self.b;
-
-        const annotated_case_name = fmt.allocPrint(self.b.allocator, "compile-error {s}", .{
-            case.name,
-        }) catch unreachable;
-        if (self.test_filter) |filter| {
-            if (mem.indexOf(u8, annotated_case_name, filter) == null) return;
-        }
-        const write_src = b.addWriteFiles();
-        for (case.sources.items) |src_file| {
-            write_src.add(src_file.filename, src_file.source);
-        }
-
-        const compile_and_cmp_errors = CompileCmpOutputStep.create(self, annotated_case_name, case, .Debug, write_src);
-        compile_and_cmp_errors.step.dependOn(&write_src.step);
-        self.step.dependOn(&compile_and_cmp_errors.step);
-    }
-};
-
 pub const StandaloneContext = struct {
     b: *build.Builder,
     step: *build.Step,
     test_index: usize,
     test_filter: ?[]const u8,
     modes: []const Mode,
+    skip_non_native: bool,
+    target: std.zig.CrossTarget,
 
     pub fn addC(self: *StandaloneContext, root_src: []const u8) void {
         self.addAllArgs(root_src, true);
@@ -1145,10 +841,10 @@ pub const StandaloneContext = struct {
         self.addAllArgs(root_src, false);
     }
 
-    pub fn addBuildFile(self: *StandaloneContext, build_file: []const u8) void {
+    pub fn addBuildFile(self: *StandaloneContext, build_file: []const u8, features: struct { build_modes: bool = false, cross_targets: bool = false }) void {
         const b = self.b;
 
-        const annotated_case_name = b.fmt("build {s} (Debug)", .{build_file});
+        const annotated_case_name = b.fmt("build {s}", .{build_file});
         if (self.test_filter) |filter| {
             if (mem.indexOf(u8, annotated_case_name, filter) == null) return;
         }
@@ -1167,12 +863,30 @@ pub const StandaloneContext = struct {
             zig_args.append("--verbose") catch unreachable;
         }
 
-        const run_cmd = b.addSystemCommand(zig_args.items);
+        if (features.cross_targets and !self.target.isNative()) {
+            const target_arg = fmt.allocPrint(b.allocator, "-Dtarget={s}", .{self.target.zigTriple(b.allocator) catch unreachable}) catch unreachable;
+            zig_args.append(target_arg) catch unreachable;
+        }
 
-        const log_step = b.addLog("PASS {s}\n", .{annotated_case_name});
-        log_step.step.dependOn(&run_cmd.step);
+        const modes = if (features.build_modes) self.modes else &[1]Mode{.Debug};
+        for (modes) |mode| {
+            const arg = switch (mode) {
+                .Debug => "",
+                .ReleaseFast => "-Drelease-fast",
+                .ReleaseSafe => "-Drelease-safe",
+                .ReleaseSmall => "-Drelease-small",
+            };
+            const zig_args_base_len = zig_args.items.len;
+            if (arg.len > 0)
+                zig_args.append(arg) catch unreachable;
+            defer zig_args.resize(zig_args_base_len) catch unreachable;
 
-        self.step.dependOn(&log_step.step);
+            const run_cmd = b.addSystemCommand(zig_args.items);
+            const log_step = b.addLog("PASS {s} ({s})\n", .{ annotated_case_name, @tagName(mode) });
+            log_step.step.dependOn(&run_cmd.step);
+
+            self.step.dependOn(&log_step.step);
+        }
     }
 
     pub fn addAllArgs(self: *StandaloneContext, root_src: []const u8, link_libc: bool) void {
@@ -1283,13 +997,6 @@ pub const GenHContext = struct {
             warn("OK\n", .{});
         }
     };
-
-    fn printInvocation(args: []const []const u8) void {
-        for (args) |arg| {
-            warn("{s} ", .{arg});
-        }
-        warn("\n", .{});
-    }
 
     pub fn create(
         self: *GenHContext,

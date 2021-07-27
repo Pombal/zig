@@ -69,7 +69,7 @@ void bigfloat_init_bigint(BigFloat *dest, const BigInt *op) {
     }
 }
 
-Error bigfloat_init_buf(BigFloat *dest, const uint8_t *buf_ptr, size_t buf_len) {
+Error bigfloat_init_buf(BigFloat *dest, const uint8_t *buf_ptr) {
     char *str_begin = (char *)buf_ptr;
     char *str_end;
 
@@ -79,7 +79,6 @@ Error bigfloat_init_buf(BigFloat *dest, const uint8_t *buf_ptr, size_t buf_len) 
         return ErrorOverflow;
     }
 
-    assert(str_end <= ((char*)buf_ptr) + buf_len);
     return ErrorNone;
 }
 
@@ -190,6 +189,30 @@ bool bigfloat_has_fraction(const BigFloat *bigfloat) {
 
 void bigfloat_sqrt(BigFloat *dest, const BigFloat *op) {
     f128M_sqrt(&op->value, &dest->value);
+}
+
+void bigfloat_min(BigFloat *dest, const BigFloat *op1, const BigFloat *op2) {
+    if (bigfloat_is_nan(op1)) {
+        bigfloat_init_bigfloat(dest, op2);
+    } else if (bigfloat_is_nan(op2)) {
+        bigfloat_init_bigfloat(dest, op1);
+    } else if (f128M_lt(&op1->value, &op2->value)) {
+        bigfloat_init_bigfloat(dest, op1);
+    } else {
+        bigfloat_init_bigfloat(dest, op2);
+    }
+}
+
+void bigfloat_max(BigFloat *dest, const BigFloat *op1, const BigFloat *op2) {
+    if (bigfloat_is_nan(op1)) {
+        bigfloat_init_bigfloat(dest, op2);
+    } else if (bigfloat_is_nan(op2)) {
+        bigfloat_init_bigfloat(dest, op1);
+    } else if (f128M_lt(&op1->value, &op2->value)) {
+        bigfloat_init_bigfloat(dest, op2);
+    } else {
+        bigfloat_init_bigfloat(dest, op1);
+    }
 }
 
 bool bigfloat_is_nan(const BigFloat *op) {

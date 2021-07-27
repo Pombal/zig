@@ -56,13 +56,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\}
             \\fn bar() void {}
         ,
-        // This is what you get when you take the bits of the IEE-754
-        // representation of 42.0 and reinterpret them as an unsigned
-        // integer.
-        // Bug is fixed in wasmtime v0.26 but updating to v0.26 is blocked
-        // on this issue:
-        // https://github.com/ziglang/zig/issues/8742
-            "1109917696\n",
+            "42\n",
         );
 
         case.addCompareOutput(
@@ -70,7 +64,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    foo(10, 20);
             \\    return 5;
             \\}
-            \\fn foo(x: u32, y: u32) void {}
+            \\fn foo(x: u32, y: u32) void { _ = x; _ = y; }
         , "5\n");
     }
 
@@ -82,6 +76,10 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    var i: u32 = 5;
             \\    var y: f32 = 42.0;
             \\    var x: u32 = 10;
+            \\    if (false) {
+            \\      y;
+            \\      x;
+            \\    }
             \\    return i;
             \\}
         , "5\n");
@@ -90,12 +88,14 @@ pub fn addCases(ctx: *TestContext) !void {
             \\pub export fn _start() u32 {
             \\    var i: u32 = 5;
             \\    var y: f32 = 42.0;
+            \\    _ = y;
             \\    var x: u32 = 10;
             \\    foo(i, x);
             \\    i = x;
             \\    return i;
             \\}
             \\fn foo(x: u32, y: u32) void {
+            \\    _  = y;
             \\    var i: u32 = 10;
             \\    i = x;
             \\}
@@ -394,6 +394,10 @@ pub fn addCases(ctx: *TestContext) !void {
             \\pub export fn _start() i32 {
             \\    var number1 = Number.One;
             \\    var number2: Number = .Two;
+            \\    if (false) {
+            \\        number1;
+            \\        number2;
+            \\    }
             \\    const number3 = @intToEnum(Number, 2);
             \\
             \\    return @enumToInt(number3);
@@ -534,5 +538,78 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    return a;
             \\}
         , "2\n");
+    }
+
+    {
+        var case = ctx.exe("wasm error unions", wasi);
+
+        case.addCompareOutput(
+            \\pub export fn _start() void {
+            \\    var e1 = error.Foo;
+            \\    var e2 = error.Bar;
+            \\    assert(e1 != e2);
+            \\    assert(e1 == error.Foo);
+            \\    assert(e2 == error.Bar);
+            \\}
+            \\
+            \\fn assert(b: bool) void {
+            \\    if (!b) unreachable;
+            \\}
+        , "");
+
+        case.addCompareOutput(
+            \\pub export fn _start() u32 {
+            \\    var e: anyerror!u32 = 5;
+            \\    const i = e catch 10;
+            \\    return i;
+            \\}
+        , "5\n");
+
+        case.addCompareOutput(
+            \\pub export fn _start() u32 {
+            \\    var e: anyerror!u32 = error.Foo;
+            \\    const i = e catch 10;
+            \\    return i;
+            \\}
+        , "10\n");
+
+        case.addCompareOutput(
+            \\pub export fn _start() u32 {
+            \\    var e = foo();
+            \\    const i = e catch 69;
+            \\    return i;
+            \\}
+            \\
+            \\fn foo() anyerror!u32 {
+            \\    return 5;
+            \\}
+        , "5\n");
+    }
+
+    {
+        var case = ctx.exe("wasm error union part 2", wasi);
+
+        case.addCompareOutput(
+            \\pub export fn _start() u32 {
+            \\    var e = foo();
+            \\    const i = e catch 69;
+            \\    return i;
+            \\}
+            \\
+            \\fn foo() anyerror!u32 {
+            \\    return error.Bruh;
+            \\}
+        , "69\n");
+        case.addCompareOutput(
+            \\pub export fn _start() u32 {
+            \\    var e = foo();
+            \\    const i = e catch 42;
+            \\    return i;
+            \\}
+            \\
+            \\fn foo() anyerror!u32 {
+            \\    return error.Dab;
+            \\}
+        , "42\n");
     }
 }

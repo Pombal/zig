@@ -9,8 +9,29 @@ const assert = std.debug.assert;
 
 const Allocator = std.mem.Allocator;
 const MachO = @import("../MachO.zig");
-const makeStaticString = MachO.makeStaticString;
 const padToIdeal = MachO.padToIdeal;
+
+pub const HeaderArgs = struct {
+    magic: u32 = macho.MH_MAGIC_64,
+    cputype: macho.cpu_type_t = 0,
+    cpusubtype: macho.cpu_subtype_t = 0,
+    filetype: u32 = 0,
+    flags: u32 = 0,
+    reserved: u32 = 0,
+};
+
+pub fn emptyHeader(args: HeaderArgs) macho.mach_header_64 {
+    return .{
+        .magic = args.magic,
+        .cputype = args.cputype,
+        .cpusubtype = args.cpusubtype,
+        .filetype = args.filetype,
+        .ncmds = 0,
+        .sizeofcmds = 0,
+        .flags = args.flags,
+        .reserved = args.reserved,
+    };
+}
 
 pub const LoadCommand = union(enum) {
     Segment: SegmentCommand,
@@ -187,11 +208,70 @@ pub const SegmentCommand = struct {
     inner: macho.segment_command_64,
     sections: std.ArrayListUnmanaged(macho.section_64) = .{},
 
-    pub fn empty(inner: macho.segment_command_64) SegmentCommand {
-        return .{ .inner = inner };
+    const SegmentOptions = struct {
+        cmdsize: u32 = @sizeOf(macho.segment_command_64),
+        vmaddr: u64 = 0,
+        vmsize: u64 = 0,
+        fileoff: u64 = 0,
+        filesize: u64 = 0,
+        maxprot: macho.vm_prot_t = macho.VM_PROT_NONE,
+        initprot: macho.vm_prot_t = macho.VM_PROT_NONE,
+        nsects: u32 = 0,
+        flags: u32 = 0,
+    };
+
+    pub fn empty(comptime segname: []const u8, opts: SegmentOptions) SegmentCommand {
+        return .{
+            .inner = .{
+                .cmd = macho.LC_SEGMENT_64,
+                .cmdsize = opts.cmdsize,
+                .segname = makeStaticString(segname),
+                .vmaddr = opts.vmaddr,
+                .vmsize = opts.vmsize,
+                .fileoff = opts.fileoff,
+                .filesize = opts.filesize,
+                .maxprot = opts.maxprot,
+                .initprot = opts.initprot,
+                .nsects = opts.nsects,
+                .flags = opts.flags,
+            },
+        };
     }
 
-    pub fn addSection(self: *SegmentCommand, alloc: *Allocator, section: macho.section_64) !void {
+    const SectionOptions = struct {
+        addr: u64 = 0,
+        size: u64 = 0,
+        offset: u32 = 0,
+        @"align": u32 = 0,
+        reloff: u32 = 0,
+        nreloc: u32 = 0,
+        flags: u32 = macho.S_REGULAR,
+        reserved1: u32 = 0,
+        reserved2: u32 = 0,
+        reserved3: u32 = 0,
+    };
+
+    pub fn addSection(
+        self: *SegmentCommand,
+        alloc: *Allocator,
+        comptime sectname: []const u8,
+        opts: SectionOptions,
+    ) !void {
+        var section = macho.section_64{
+            .sectname = makeStaticString(sectname),
+            .segname = undefined,
+            .addr = opts.addr,
+            .size = opts.size,
+            .offset = opts.offset,
+            .@"align" = opts.@"align",
+            .reloff = opts.reloff,
+            .nreloc = opts.nreloc,
+            .flags = opts.flags,
+            .reserved1 = opts.reserved1,
+            .reserved2 = opts.reserved2,
+            .reserved3 = opts.reserved3,
+        };
+        mem.copy(u8, &section.segname, &self.inner.segname);
         try self.sections.append(alloc, section);
         self.inner.cmdsize += @sizeOf(macho.section_64);
         self.inner.nsects += 1;
@@ -316,7 +396,7 @@ pub fn createLoadDylibCommand(
 ) !GenericCommandWithData(macho.dylib_command) {
     const cmdsize = @intCast(u32, mem.alignForwardGeneric(
         u64,
-        @sizeOf(macho.dylib_command) + name.len,
+        @sizeOf(macho.dylib_command) + name.len + 1, // +1 for nul
         @sizeOf(u64),
     ));
 
@@ -336,6 +416,51 @@ pub fn createLoadDylibCommand(
     mem.copy(u8, dylib_cmd.data, name);
 
     return dylib_cmd;
+}
+
+fn makeStaticString(bytes: []const u8) [16]u8 {
+    var buf = [_]u8{0} ** 16;
+    assert(bytes.len <= buf.len);
+    mem.copy(u8, &buf, bytes);
+    return buf;
+}
+
+fn parseName(name: *const [16]u8) []const u8 {
+    const len = mem.indexOfScalar(u8, name, @as(u8, 0)) orelse name.len;
+    return name[0..len];
+}
+
+pub fn segmentName(sect: macho.section_64) []const u8 {
+    return parseName(&sect.segname);
+}
+
+pub fn sectionName(sect: macho.section_64) []const u8 {
+    return parseName(&sect.sectname);
+}
+
+pub fn sectionType(sect: macho.section_64) u8 {
+    return @truncate(u8, sect.flags & 0xff);
+}
+
+pub fn sectionAttrs(sect: macho.section_64) u32 {
+    return sect.flags & 0xffffff00;
+}
+
+pub fn sectionIsCode(sect: macho.section_64) bool {
+    const attr = sectionAttrs(sect);
+    return attr & macho.S_ATTR_PURE_INSTRUCTIONS != 0 or attr & macho.S_ATTR_SOME_INSTRUCTIONS != 0;
+}
+
+pub fn sectionIsDebug(sect: macho.section_64) bool {
+    return sectionAttrs(sect) & macho.S_ATTR_DEBUG != 0;
+}
+
+pub fn sectionIsDontDeadStrip(sect: macho.section_64) bool {
+    return sectionAttrs(sect) & macho.S_ATTR_NO_DEAD_STRIP != 0;
+}
+
+pub fn sectionIsDontDeadStripIfReferencesLive(sect: macho.section_64) bool {
+    return sectionAttrs(sect) & macho.S_ATTR_LIVE_SUPPORT != 0;
 }
 
 fn testRead(allocator: *Allocator, buffer: []const u8, expected: anytype) !void {

@@ -65,6 +65,8 @@ pub const StackTrace = struct {
         options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
+        _ = fmt;
+        _ = options;
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const debug_info = std.debug.getSelfDebugInfo() catch |err| {
@@ -457,6 +459,13 @@ pub const LinkMode = enum {
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
+pub const WasiExecModel = enum {
+    command,
+    reactor,
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
 pub const Version = struct {
     major: u32,
     minor: u32,
@@ -521,6 +530,7 @@ pub const Version = struct {
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
+        _ = options;
         if (fmt.len == 0) {
             if (self.patch == 0) {
                 if (self.minor == 0) {
@@ -667,6 +677,13 @@ pub const panic: PanicFn = if (@hasDecl(root, "panic")) root.panic else default_
 /// therefore must be kept in sync with the compiler implementation.
 pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace) noreturn {
     @setCold(true);
+    // Until self-hosted catches up with stage1 language features, we have a simpler
+    // default panic function:
+    if (builtin.zig_is_stage2) {
+        while (true) {
+            @breakpoint();
+        }
+    }
     if (@hasDecl(root, "os") and @hasDecl(root.os, "panic")) {
         root.os.panic(msg, error_return_trace);
         unreachable;

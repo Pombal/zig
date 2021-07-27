@@ -28,7 +28,7 @@ void bigfloat_init_64(BigFloat *dest, double x);
 void bigfloat_init_128(BigFloat *dest, float128_t x);
 void bigfloat_init_bigfloat(BigFloat *dest, const BigFloat *x);
 void bigfloat_init_bigint(BigFloat *dest, const BigInt *op);
-Error bigfloat_init_buf(BigFloat *dest, const uint8_t *buf_ptr, size_t buf_len);
+Error bigfloat_init_buf(BigFloat *dest, const uint8_t *buf_ptr);
 
 float16_t bigfloat_to_f16(const BigFloat *bigfloat);
 float bigfloat_to_f32(const BigFloat *bigfloat);
@@ -45,8 +45,11 @@ void bigfloat_div_floor(BigFloat *dest, const BigFloat *op1, const BigFloat *op2
 void bigfloat_rem(BigFloat *dest, const BigFloat *op1, const BigFloat *op2);
 void bigfloat_mod(BigFloat *dest, const BigFloat *op1, const BigFloat *op2);
 void bigfloat_sqrt(BigFloat *dest, const BigFloat *op);
+void bigfloat_min(BigFloat *dest, const BigFloat *op1, const BigFloat *op2);
+void bigfloat_max(BigFloat *dest, const BigFloat *op1, const BigFloat *op2);
 void bigfloat_append_buf(Buf *buf, const BigFloat *op);
 Cmp bigfloat_cmp(const BigFloat *op1, const BigFloat *op2);
+
 
 bool bigfloat_is_nan(const BigFloat *op);
 

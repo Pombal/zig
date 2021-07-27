@@ -25,6 +25,7 @@ pub const shell32 = @import("windows/shell32.zig");
 pub const user32 = @import("windows/user32.zig");
 pub const ws2_32 = @import("windows/ws2_32.zig");
 pub const gdi32 = @import("windows/gdi32.zig");
+pub const winmm = @import("windows/winmm.zig");
 
 pub usingnamespace @import("windows/bits.zig");
 
@@ -48,7 +49,6 @@ pub const OpenFileOptions = struct {
     dir: ?HANDLE = null,
     sa: ?*SECURITY_ATTRIBUTES = null,
     share_access: ULONG = FILE_SHARE_WRITE | FILE_SHARE_READ | FILE_SHARE_DELETE,
-    share_access_nonblocking: bool = false,
     creation: ULONG,
     io_mode: std.io.ModeOverride,
     /// If true, tries to open path as a directory.
@@ -59,8 +59,6 @@ pub const OpenFileOptions = struct {
     follow_symlinks: bool = true,
 };
 
-/// TODO when share_access_nonblocking is false, this implementation uses
-/// untinterruptible sleep() to block. This is not the final iteration of the API.
 pub fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!HANDLE {
     if (mem.eql(u16, sub_path_w, &[_]u16{'.'}) and !options.open_dir) {
         return error.IsDir;
@@ -93,53 +91,39 @@ pub fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!HAN
     // If we're not following symlinks, we need to ensure we don't pass in any synchronization flags such as FILE_SYNCHRONOUS_IO_NONALERT.
     const flags: ULONG = if (options.follow_symlinks) file_or_dir_flag | blocking_flag else file_or_dir_flag | FILE_OPEN_REPARSE_POINT;
 
-    var delay: usize = 1;
-    while (true) {
-        const rc = ntdll.NtCreateFile(
-            &result,
-            options.access_mask,
-            &attr,
-            &io,
-            null,
-            FILE_ATTRIBUTE_NORMAL,
-            options.share_access,
-            options.creation,
-            flags,
-            null,
-            0,
-        );
-        switch (rc) {
-            .SUCCESS => {
-                if (std.io.is_async and options.io_mode == .evented) {
-                    _ = CreateIoCompletionPort(result, std.event.Loop.instance.?.os_data.io_port, undefined, undefined) catch undefined;
-                }
-                return result;
-            },
-            .OBJECT_NAME_INVALID => unreachable,
-            .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
-            .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
-            .NO_MEDIA_IN_DEVICE => return error.NoDevice,
-            .INVALID_PARAMETER => unreachable,
-            .SHARING_VIOLATION => {
-                if (options.share_access_nonblocking) {
-                    return error.WouldBlock;
-                }
-                // TODO sleep in a way that is interruptable
-                // TODO integrate with async I/O
-                std.time.sleep(delay);
-                if (delay < 1 * std.time.ns_per_s) {
-                    delay *= 2;
-                }
-                continue;
-            },
-            .ACCESS_DENIED => return error.AccessDenied,
-            .PIPE_BUSY => return error.PipeBusy,
-            .OBJECT_PATH_SYNTAX_BAD => unreachable,
-            .OBJECT_NAME_COLLISION => return error.PathAlreadyExists,
-            .FILE_IS_A_DIRECTORY => return error.IsDir,
-            .NOT_A_DIRECTORY => return error.NotDir,
-            else => return unexpectedStatus(rc),
-        }
+    const rc = ntdll.NtCreateFile(
+        &result,
+        options.access_mask,
+        &attr,
+        &io,
+        null,
+        FILE_ATTRIBUTE_NORMAL,
+        options.share_access,
+        options.creation,
+        flags,
+        null,
+        0,
+    );
+    switch (rc) {
+        .SUCCESS => {
+            if (std.io.is_async and options.io_mode == .evented) {
+                _ = CreateIoCompletionPort(result, std.event.Loop.instance.?.os_data.io_port, undefined, undefined) catch undefined;
+            }
+            return result;
+        },
+        .OBJECT_NAME_INVALID => unreachable,
+        .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
+        .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
+        .NO_MEDIA_IN_DEVICE => return error.NoDevice,
+        .INVALID_PARAMETER => unreachable,
+        .SHARING_VIOLATION => return error.AccessDenied,
+        .ACCESS_DENIED => return error.AccessDenied,
+        .PIPE_BUSY => return error.PipeBusy,
+        .OBJECT_PATH_SYNTAX_BAD => unreachable,
+        .OBJECT_NAME_COLLISION => return error.PathAlreadyExists,
+        .FILE_IS_A_DIRECTORY => return error.IsDir,
+        .NOT_A_DIRECTORY => return error.NotDir,
+        else => return unexpectedStatus(rc),
     }
 }
 
@@ -454,8 +438,12 @@ pub fn ReadFile(in_hFile: HANDLE, buffer: []u8, offset: ?u64, io_mode: std.io.Mo
                 .overlapped = OVERLAPPED{
                     .Internal = 0,
                     .InternalHigh = 0,
-                    .Offset = @truncate(u32, off),
-                    .OffsetHigh = @truncate(u32, off >> 32),
+                    .DUMMYUNIONNAME = .{
+                        .DUMMYSTRUCTNAME = .{
+                            .Offset = @truncate(u32, off),
+                            .OffsetHigh = @truncate(u32, off >> 32),
+                        },
+                    },
                     .hEvent = null,
                 },
             },
@@ -490,8 +478,12 @@ pub fn ReadFile(in_hFile: HANDLE, buffer: []u8, offset: ?u64, io_mode: std.io.Mo
                 overlapped_data = .{
                     .Internal = 0,
                     .InternalHigh = 0,
-                    .Offset = @truncate(u32, off),
-                    .OffsetHigh = @truncate(u32, off >> 32),
+                    .DUMMYUNIONNAME = .{
+                        .DUMMYSTRUCTNAME = .{
+                            .Offset = @truncate(u32, off),
+                            .OffsetHigh = @truncate(u32, off >> 32),
+                        },
+                    },
                     .hEvent = null,
                 };
                 break :blk &overlapped_data;
@@ -534,8 +526,12 @@ pub fn WriteFile(
                 .overlapped = OVERLAPPED{
                     .Internal = 0,
                     .InternalHigh = 0,
-                    .Offset = @truncate(u32, off),
-                    .OffsetHigh = @truncate(u32, off >> 32),
+                    .DUMMYUNIONNAME = .{
+                        .DUMMYSTRUCTNAME = .{
+                            .Offset = @truncate(u32, off),
+                            .OffsetHigh = @truncate(u32, off >> 32),
+                        },
+                    },
                     .hEvent = null,
                 },
             },
@@ -570,8 +566,12 @@ pub fn WriteFile(
             overlapped_data = .{
                 .Internal = 0,
                 .InternalHigh = 0,
-                .Offset = @truncate(u32, off),
-                .OffsetHigh = @truncate(u32, off >> 32),
+                .DUMMYUNIONNAME = .{
+                    .DUMMYSTRUCTNAME = .{
+                        .Offset = @truncate(u32, off),
+                        .OffsetHigh = @truncate(u32, off >> 32),
+                    },
+                },
                 .hEvent = null,
             };
             break :blk &overlapped_data;
@@ -1139,7 +1139,6 @@ pub fn GetFinalPathNameByHandle(
                 &mount_points_struct.MountPoints[0],
             )[0..mount_points_struct.NumberOfMountPoints];
 
-            var found: bool = false;
             for (mount_points) |mount_point| {
                 const symlink = @ptrCast(
                     [*]const u16,
@@ -1406,7 +1405,7 @@ pub fn recvfrom(s: ws2_32.SOCKET, buf: [*]u8, len: usize, flags: u32, from: ?*ws
     var buffer = ws2_32.WSABUF{ .len = @truncate(u31, len), .buf = buf };
     var bytes_received: DWORD = undefined;
     var flags_inout = flags;
-    if (ws2_32.WSARecvFrom(s, @ptrCast([*]ws2_32.WSABUF, &buffer), 1, &bytes_received, &flags_inout, from, from_len, null, null) == ws2_32.SOCKET_ERROR) {
+    if (ws2_32.WSARecvFrom(s, @ptrCast([*]ws2_32.WSABUF, &buffer), 1, &bytes_received, &flags_inout, from, @ptrCast(?*i32, from_len), null, null) == ws2_32.SOCKET_ERROR) {
         return ws2_32.SOCKET_ERROR;
     } else {
         return @as(i32, @intCast(u31, bytes_received));
@@ -1663,6 +1662,64 @@ pub fn SetFileTime(
     }
 }
 
+pub const LockFileError = error{
+    SystemResources,
+    WouldBlock,
+} || std.os.UnexpectedError;
+
+pub fn LockFile(
+    FileHandle: HANDLE,
+    Event: ?HANDLE,
+    ApcRoutine: ?*IO_APC_ROUTINE,
+    ApcContext: ?*c_void,
+    IoStatusBlock: *IO_STATUS_BLOCK,
+    ByteOffset: *const LARGE_INTEGER,
+    Length: *const LARGE_INTEGER,
+    Key: ?*ULONG,
+    FailImmediately: BOOLEAN,
+    ExclusiveLock: BOOLEAN,
+) !void {
+    const rc = ntdll.NtLockFile(
+        FileHandle,
+        Event,
+        ApcRoutine,
+        ApcContext,
+        IoStatusBlock,
+        ByteOffset,
+        Length,
+        Key,
+        FailImmediately,
+        ExclusiveLock,
+    );
+    switch (rc) {
+        .SUCCESS => return,
+        .INSUFFICIENT_RESOURCES => return error.SystemResources,
+        .LOCK_NOT_GRANTED => return error.WouldBlock,
+        .ACCESS_VIOLATION => unreachable, // bad io_status_block pointer
+        else => return unexpectedStatus(rc),
+    }
+}
+
+pub const UnlockFileError = error{
+    RangeNotLocked,
+} || std.os.UnexpectedError;
+
+pub fn UnlockFile(
+    FileHandle: HANDLE,
+    IoStatusBlock: *IO_STATUS_BLOCK,
+    ByteOffset: *const LARGE_INTEGER,
+    Length: *const LARGE_INTEGER,
+    Key: ?*ULONG,
+) !void {
+    const rc = ntdll.NtUnlockFile(FileHandle, IoStatusBlock, ByteOffset, Length, Key);
+    switch (rc) {
+        .SUCCESS => return,
+        .RANGE_NOT_LOCKED => return error.RangeNotLocked,
+        .ACCESS_VIOLATION => unreachable, // bad io_status_block pointer
+        else => return unexpectedStatus(rc),
+    }
+}
+
 pub fn teb() *TEB {
     return switch (builtin.target.cpu.arch) {
         .i386 => asm volatile (
@@ -1723,6 +1780,81 @@ pub const PathSpace = struct {
     }
 };
 
+/// The error type for `removeDotDirsSanitized`
+pub const RemoveDotDirsError = error{TooManyParentDirs};
+
+/// Removes '.' and '..' path components from a "sanitized relative path".
+/// A "sanitized path" is one where:
+///    1) all forward slashes have been replaced with back slashes
+///    2) all repeating back slashes have been collapsed
+///    3) the path is a relative one (does not start with a back slash)
+pub fn removeDotDirsSanitized(comptime T: type, path: []T) RemoveDotDirsError!usize {
+    std.debug.assert(path.len == 0 or path[0] != '\\');
+
+    var write_idx: usize = 0;
+    var read_idx: usize = 0;
+    while (read_idx < path.len) {
+        if (path[read_idx] == '.') {
+            if (read_idx + 1 == path.len)
+                return write_idx;
+
+            const after_dot = path[read_idx + 1];
+            if (after_dot == '\\') {
+                read_idx += 2;
+                continue;
+            }
+            if (after_dot == '.' and (read_idx + 2 == path.len or path[read_idx + 2] == '\\')) {
+                if (write_idx == 0) return error.TooManyParentDirs;
+                std.debug.assert(write_idx >= 2);
+                write_idx -= 1;
+                while (true) {
+                    write_idx -= 1;
+                    if (write_idx == 0) break;
+                    if (path[write_idx] == '\\') {
+                        write_idx += 1;
+                        break;
+                    }
+                }
+                if (read_idx + 2 == path.len)
+                    return write_idx;
+                read_idx += 3;
+                continue;
+            }
+        }
+
+        // skip to the next path separator
+        while (true) : (read_idx += 1) {
+            if (read_idx == path.len)
+                return write_idx;
+            path[write_idx] = path[read_idx];
+            write_idx += 1;
+            if (path[read_idx] == '\\')
+                break;
+        }
+        read_idx += 1;
+    }
+    return write_idx;
+}
+
+/// Normalizes a Windows path with the following steps:
+///     1) convert all forward slashes to back slashes
+///     2) collapse duplicate back slashes
+///     3) remove '.' and '..' directory parts
+/// Returns the length of the new path.
+pub fn normalizePath(comptime T: type, path: []T) RemoveDotDirsError!usize {
+    mem.replaceScalar(T, path, '/', '\\');
+    const new_len = mem.collapseRepeatsLen(T, path, '\\');
+
+    const prefix_len: usize = init: {
+        if (new_len >= 1 and path[0] == '\\') break :init 1;
+        if (new_len >= 2 and path[1] == ':')
+            break :init if (new_len >= 3 and path[2] == '\\') @as(usize, 3) else @as(usize, 2);
+        break :init 0;
+    };
+
+    return prefix_len + try removeDotDirsSanitized(T, path[prefix_len..new_len]);
+}
+
 /// Same as `sliceToPrefixedFileW` but accepts a pointer
 /// to a null-terminated path.
 pub fn cStrToPrefixedFileW(s: [*:0]const u8) !PathSpace {
@@ -1742,26 +1874,40 @@ pub fn sliceToPrefixedFileW(s: []const u8) !PathSpace {
             else => {},
         }
     }
+    const prefix_u16 = [_]u16{ '\\', '?', '?', '\\' };
     const start_index = if (prefix_index > 0 or !std.fs.path.isAbsolute(s)) 0 else blk: {
-        const prefix_u16 = [_]u16{ '\\', '?', '?', '\\' };
         mem.copy(u16, path_space.data[0..], prefix_u16[0..]);
         break :blk prefix_u16.len;
     };
     path_space.len = start_index + try std.unicode.utf8ToUtf16Le(path_space.data[start_index..], s);
     if (path_space.len > path_space.data.len) return error.NameTooLong;
-    // > File I/O functions in the Windows API convert "/" to "\" as part of
-    // > converting the name to an NT-style name, except when using the "\\?\"
-    // > prefix as detailed in the following sections.
-    // from https://docs.microsoft.com/en-us/windows/desktop/FileIO/naming-a-file#maximum-path-length-limitation
-    // Because we want the larger maximum path length for absolute paths, we
-    // convert forward slashes to backward slashes here.
-    for (path_space.data[0..path_space.len]) |*elem| {
-        if (elem.* == '/') {
-            elem.* = '\\';
-        }
-    }
+    path_space.len = start_index + (normalizePath(u16, path_space.data[start_index..path_space.len]) catch |err| switch (err) {
+        error.TooManyParentDirs => {
+            if (!std.fs.path.isAbsolute(s)) {
+                var temp_path: PathSpace = undefined;
+                temp_path.len = try std.unicode.utf8ToUtf16Le(&temp_path.data, s);
+                std.debug.assert(temp_path.len == path_space.len);
+                temp_path.data[path_space.len] = 0;
+                path_space.len = prefix_u16.len + try getFullPathNameW(&temp_path.data, path_space.data[prefix_u16.len..]);
+                mem.copy(u16, &path_space.data, &prefix_u16);
+                std.debug.assert(path_space.data[path_space.len] == 0);
+                return path_space;
+            }
+            return error.BadPathName;
+        },
+    });
     path_space.data[path_space.len] = 0;
     return path_space;
+}
+
+fn getFullPathNameW(path: [*:0]const u16, out: []u16) !usize {
+    const result = kernel32.GetFullPathNameW(path, @intCast(u32, out.len), std.meta.assumeSentinel(out.ptr, 0), null);
+    if (result == 0) {
+        switch (kernel32.GetLastError()) {
+            else => |err| return unexpectedError(err),
+        }
+    }
+    return result;
 }
 
 /// Assumes an absolute path.
@@ -1792,7 +1938,7 @@ pub fn wToPrefixedFileW(s: []const u16) !PathSpace {
     return path_space;
 }
 
-fn MAKELANGID(p: c_ushort, s: c_ushort) callconv(.Inline) LANGID {
+inline fn MAKELANGID(p: c_ushort, s: c_ushort) LANGID {
     return (s << 10) | p;
 }
 
@@ -1833,19 +1979,19 @@ pub fn loadWinsockExtensionFunction(comptime T: type, sock: ws2_32.SOCKET, guid:
 pub fn unexpectedError(err: Win32Error) std.os.UnexpectedError {
     if (std.os.unexpected_error_tracing) {
         // 614 is the length of the longest windows error desciption
-        var buf_u16: [614]u16 = undefined;
-        var buf_u8: [614]u8 = undefined;
+        var buf_wstr: [614]WCHAR = undefined;
+        var buf_utf8: [614]u8 = undefined;
         const len = kernel32.FormatMessageW(
             FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
             null,
             err,
             MAKELANGID(LANG.NEUTRAL, SUBLANG.DEFAULT),
-            &buf_u16,
-            buf_u16.len / @sizeOf(TCHAR),
+            &buf_wstr,
+            buf_wstr.len,
             null,
         );
-        _ = std.unicode.utf16leToUtf8(&buf_u8, buf_u16[0..len]) catch unreachable;
-        std.debug.warn("error.Unexpected: GetLastError({}): {s}\n", .{ @enumToInt(err), buf_u8[0..len] });
+        _ = std.unicode.utf16leToUtf8(&buf_utf8, buf_wstr[0..len]) catch unreachable;
+        std.debug.warn("error.Unexpected: GetLastError({}): {s}\n", .{ @enumToInt(err), buf_utf8[0..len] });
         std.debug.dumpCurrentStackTrace(null);
     }
     return error.Unexpected;
@@ -1863,4 +2009,10 @@ pub fn unexpectedStatus(status: NTSTATUS) std.os.UnexpectedError {
         std.debug.dumpCurrentStackTrace(null);
     }
     return error.Unexpected;
+}
+
+test "" {
+    if (builtin.os.tag == .windows) {
+        _ = @import("windows/test.zig");
+    }
 }

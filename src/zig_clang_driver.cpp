@@ -338,7 +338,15 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV) {
 extern "C" int ZigClang_main(int argc_, const char **argv_);
 int ZigClang_main(int argc_, const char **argv_) {
   noteBottomOfStack();
-  llvm::InitLLVM X(argc_, argv_);
+
+  // ZIG MOD: On windows, InitLLVM calls GetCommandLineW(),
+  // and overwrites the args.  We don't want it to do that,
+  // and we also don't need the signal handlers it installs
+  // (we have our own already), so we just use llvm_shutdown_obj
+  // instead.
+  // llvm::InitLLVM X(argc_, argv_);
+  llvm::llvm_shutdown_obj X;
+
   llvm::setBugReportMsg("PLEASE submit a bug report to " BUG_REPORT_URL
                         " and include the crash backtrace, preprocessed "
                         "source, and associated run script.\n");
@@ -448,7 +456,9 @@ int ZigClang_main(int argc_, const char **argv_) {
     ApplyQAOverride(argv, OverrideStr, SavedStrings);
   }
 
-  std::string Path = GetExecutablePath(argv[0], CanonicalPrefixes);
+  // Pass local param `argv_[0]` as fallback.
+  // See https://github.com/ziglang/zig/pull/3292 .
+  std::string Path = GetExecutablePath(argv_[0], CanonicalPrefixes);
 
   // Whether the cc1 tool should be called inside the current process, or if we
   // should spawn a new clang subprocess (old behavior).

@@ -359,26 +359,32 @@ pub fn format(
     }
 
     if (comptime arg_state.hasUnusedArgs()) {
-        @compileError("Unused arguments");
+        const missing_count = arg_state.args_len - @popCount(ArgSetType, arg_state.used_args);
+        switch (missing_count) {
+            0 => unreachable,
+            1 => @compileError("Unused argument in '" ++ fmt ++ "'"),
+            else => @compileError((comptime comptimePrint("{d}", .{missing_count})) ++ " unused arguments in '" ++ fmt ++ "'"),
+        }
     }
 }
 
 pub fn formatAddress(value: anytype, options: FormatOptions, writer: anytype) @TypeOf(writer).Error!void {
+    _ = options;
     const T = @TypeOf(value);
 
     switch (@typeInfo(T)) {
         .Pointer => |info| {
             try writer.writeAll(@typeName(info.child) ++ "@");
             if (info.size == .Slice)
-                try formatInt(@ptrToInt(value.ptr), 16, false, FormatOptions{}, writer)
+                try formatInt(@ptrToInt(value.ptr), 16, .lower, FormatOptions{}, writer)
             else
-                try formatInt(@ptrToInt(value), 16, false, FormatOptions{}, writer);
+                try formatInt(@ptrToInt(value), 16, .lower, FormatOptions{}, writer);
             return;
         },
         .Optional => |info| {
             if (@typeInfo(info.child) == .Pointer) {
                 try writer.writeAll(@typeName(info.child) ++ "@");
-                try formatInt(@ptrToInt(value), 16, false, FormatOptions{}, writer);
+                try formatInt(@ptrToInt(value), 16, .lower, FormatOptions{}, writer);
                 return;
             }
         },
@@ -495,6 +501,22 @@ pub fn formatType(
             }
         },
         .Struct => |info| {
+            if (info.is_tuple) {
+                // Skip the type and field names when formatting tuples.
+                if (max_depth == 0) {
+                    return writer.writeAll("{ ... }");
+                }
+                try writer.writeAll("{");
+                inline for (info.fields) |f, i| {
+                    if (i == 0) {
+                        try writer.writeAll(" ");
+                    } else {
+                        try writer.writeAll(", ");
+                    }
+                    try formatType(@field(value, f.name), ANY, options, writer, max_depth - 1);
+                }
+                return writer.writeAll(" }");
+            }
             try writer.writeAll(@typeName(T));
             if (max_depth == 0) {
                 return writer.writeAll("{ ... }");
@@ -532,7 +554,7 @@ pub fn formatType(
             .Many, .C => {
                 if (actual_fmt.len == 0)
                     @compileError("cannot format pointer without a specifier (i.e. {s} or {*})");
-                if (ptr_info.sentinel) |sentinel| {
+                if (ptr_info.sentinel) |_| {
                     return formatType(mem.span(value), actual_fmt, options, writer, max_depth);
                 }
                 if (ptr_info.child == u8) {
@@ -635,7 +657,7 @@ pub fn formatIntValue(
     writer: anytype,
 ) !void {
     comptime var radix = 10;
-    comptime var uppercase = false;
+    comptime var case: Case = .lower;
 
     const int_value = if (@TypeOf(value) == comptime_int) blk: {
         const Int = math.IntFittingRange(value, value);
@@ -644,7 +666,7 @@ pub fn formatIntValue(
 
     if (fmt.len == 0 or comptime std.mem.eql(u8, fmt, "d")) {
         radix = 10;
-        uppercase = false;
+        case = .lower;
     } else if (comptime std.mem.eql(u8, fmt, "c")) {
         if (@typeInfo(@TypeOf(int_value)).Int.bits <= 8) {
             return formatAsciiChar(@as(u8, int_value), options, writer);
@@ -659,21 +681,21 @@ pub fn formatIntValue(
         }
     } else if (comptime std.mem.eql(u8, fmt, "b")) {
         radix = 2;
-        uppercase = false;
+        case = .lower;
     } else if (comptime std.mem.eql(u8, fmt, "x")) {
         radix = 16;
-        uppercase = false;
+        case = .lower;
     } else if (comptime std.mem.eql(u8, fmt, "X")) {
         radix = 16;
-        uppercase = true;
+        case = .upper;
     } else if (comptime std.mem.eql(u8, fmt, "o")) {
         radix = 8;
-        uppercase = false;
+        case = .lower;
     } else {
         @compileError("Unsupported format string '" ++ fmt ++ "' for type '" ++ @typeName(@TypeOf(value)) ++ "'");
     }
 
-    return formatInt(int_value, radix, uppercase, options, writer);
+    return formatInt(int_value, radix, case, options, writer);
 }
 
 fn formatFloatValue(
@@ -708,8 +730,10 @@ fn formatFloatValue(
     return formatBuf(buf_stream.getWritten(), options, writer);
 }
 
-fn formatSliceHexImpl(comptime uppercase: bool) type {
-    const charset = "0123456789" ++ if (uppercase) "ABCDEF" else "abcdef";
+pub const Case = enum { lower, upper };
+
+fn formatSliceHexImpl(comptime case: Case) type {
+    const charset = "0123456789" ++ if (case == .upper) "ABCDEF" else "abcdef";
 
     return struct {
         pub fn f(
@@ -718,6 +742,8 @@ fn formatSliceHexImpl(comptime uppercase: bool) type {
             options: std.fmt.FormatOptions,
             writer: anytype,
         ) !void {
+            _ = fmt;
+            _ = options;
             var buf: [2]u8 = undefined;
 
             for (bytes) |c| {
@@ -729,8 +755,8 @@ fn formatSliceHexImpl(comptime uppercase: bool) type {
     };
 }
 
-const formatSliceHexLower = formatSliceHexImpl(false).f;
-const formatSliceHexUpper = formatSliceHexImpl(true).f;
+const formatSliceHexLower = formatSliceHexImpl(.lower).f;
+const formatSliceHexUpper = formatSliceHexImpl(.upper).f;
 
 /// Return a Formatter for a []const u8 where every byte is formatted as a pair
 /// of lowercase hexadecimal digits.
@@ -738,14 +764,14 @@ pub fn fmtSliceHexLower(bytes: []const u8) std.fmt.Formatter(formatSliceHexLower
     return .{ .data = bytes };
 }
 
-/// Return a Formatter for a []const u8 where every byte is formatted as a pair
+/// Return a Formatter for a []const u8 where every byte is formatted as pair
 /// of uppercase hexadecimal digits.
 pub fn fmtSliceHexUpper(bytes: []const u8) std.fmt.Formatter(formatSliceHexUpper) {
     return .{ .data = bytes };
 }
 
-fn formatSliceEscapeImpl(comptime uppercase: bool) type {
-    const charset = "0123456789" ++ if (uppercase) "ABCDEF" else "abcdef";
+fn formatSliceEscapeImpl(comptime case: Case) type {
+    const charset = "0123456789" ++ if (case == .upper) "ABCDEF" else "abcdef";
 
     return struct {
         pub fn f(
@@ -754,6 +780,8 @@ fn formatSliceEscapeImpl(comptime uppercase: bool) type {
             options: std.fmt.FormatOptions,
             writer: anytype,
         ) !void {
+            _ = fmt;
+            _ = options;
             var buf: [4]u8 = undefined;
 
             buf[0] = '\\';
@@ -772,8 +800,8 @@ fn formatSliceEscapeImpl(comptime uppercase: bool) type {
     };
 }
 
-const formatSliceEscapeLower = formatSliceEscapeImpl(false).f;
-const formatSliceEscapeUpper = formatSliceEscapeImpl(true).f;
+const formatSliceEscapeLower = formatSliceEscapeImpl(.lower).f;
+const formatSliceEscapeUpper = formatSliceEscapeImpl(.upper).f;
 
 /// Return a Formatter for a []const u8 where every non-printable ASCII
 /// character is escaped as \xNN, where NN is the character in lowercase
@@ -797,6 +825,7 @@ fn formatSizeImpl(comptime radix: comptime_int) type {
             options: FormatOptions,
             writer: anytype,
         ) !void {
+            _ = fmt;
             if (value == 0) {
                 return writer.writeAll("0B");
             }
@@ -880,6 +909,7 @@ pub fn formatAsciiChar(
     options: FormatOptions,
     writer: anytype,
 ) !void {
+    _ = options;
     return writer.writeAll(@as(*const [1]u8, &c));
 }
 
@@ -1018,13 +1048,13 @@ pub fn formatFloatScientific(
         if (exp > -10 and exp < 10) {
             try writer.writeAll("0");
         }
-        try formatInt(exp, 10, false, FormatOptions{ .width = 0 }, writer);
+        try formatInt(exp, 10, .lower, FormatOptions{ .width = 0 }, writer);
     } else {
         try writer.writeAll("-");
         if (exp > -10 and exp < 10) {
             try writer.writeAll("0");
         }
-        try formatInt(-exp, 10, false, FormatOptions{ .width = 0 }, writer);
+        try formatInt(-exp, 10, .lower, FormatOptions{ .width = 0 }, writer);
     }
 }
 
@@ -1117,13 +1147,16 @@ pub fn formatFloatHexadecimal(
 
     // +1 for the decimal part.
     var buf: [1 + mantissa_digits]u8 = undefined;
-    const N = formatIntBuf(&buf, mantissa, 16, false, .{ .fill = '0', .width = 1 + mantissa_digits });
+    _ = formatIntBuf(&buf, mantissa, 16, .lower, .{ .fill = '0', .width = 1 + mantissa_digits });
 
     try writer.writeAll("0x");
     try writer.writeByte(buf[0]);
-    if (options.precision != @as(usize, 0))
-        try writer.writeAll(".");
     const trimmed = mem.trimRight(u8, buf[1..], "0");
+    if (options.precision) |precision| {
+        if (precision > 0) try writer.writeAll(".");
+    } else if (trimmed.len > 0) {
+        try writer.writeAll(".");
+    }
     try writer.writeAll(trimmed);
     // Add trailing zeros if explicitly requested.
     if (options.precision) |precision| if (precision > 0) {
@@ -1131,7 +1164,7 @@ pub fn formatFloatHexadecimal(
             try writer.writeByteNTimes('0', precision - trimmed.len);
     };
     try writer.writeAll("p");
-    try formatInt(exponent - exponent_bias, 10, false, .{}, writer);
+    try formatInt(exponent - exponent_bias, 10, .lower, .{}, writer);
 }
 
 /// Print a float of the format x.yyyyy where the number of y is specified by the precision argument.
@@ -1280,7 +1313,7 @@ pub fn formatFloatDecimal(
 pub fn formatInt(
     value: anytype,
     base: u8,
-    uppercase: bool,
+    case: Case,
     options: FormatOptions,
     writer: anytype,
 ) !void {
@@ -1307,7 +1340,7 @@ pub fn formatInt(
     while (true) {
         const digit = a % base;
         index -= 1;
-        buf[index] = digitToChar(@intCast(u8, digit), uppercase);
+        buf[index] = digitToChar(@intCast(u8, digit), case);
         a /= base;
         if (a == 0) break;
     }
@@ -1329,13 +1362,15 @@ pub fn formatInt(
     return formatBuf(buf[index..], options, writer);
 }
 
-pub fn formatIntBuf(out_buf: []u8, value: anytype, base: u8, uppercase: bool, options: FormatOptions) usize {
+pub fn formatIntBuf(out_buf: []u8, value: anytype, base: u8, case: Case, options: FormatOptions) usize {
     var fbs = std.io.fixedBufferStream(out_buf);
-    formatInt(value, base, uppercase, options, fbs.writer()) catch unreachable;
+    formatInt(value, base, case, options, fbs.writer()) catch unreachable;
     return fbs.pos;
 }
 
 fn formatDuration(ns: u64, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    _ = fmt;
+    _ = options;
     var ns_remaining = ns;
     inline for (.{
         .{ .ns = 365 * std.time.ns_per_day, .sep = 'y' },
@@ -1346,7 +1381,7 @@ fn formatDuration(ns: u64, comptime fmt: []const u8, options: std.fmt.FormatOpti
     }) |unit| {
         if (ns_remaining >= unit.ns) {
             const units = ns_remaining / unit.ns;
-            try formatInt(units, 10, false, .{}, writer);
+            try formatInt(units, 10, .lower, .{}, writer);
             try writer.writeByte(unit.sep);
             ns_remaining -= units * unit.ns;
             if (ns_remaining == 0) return;
@@ -1360,12 +1395,12 @@ fn formatDuration(ns: u64, comptime fmt: []const u8, options: std.fmt.FormatOpti
     }) |unit| {
         const kunits = ns_remaining * 1000 / unit.ns;
         if (kunits >= 1000) {
-            try formatInt(kunits / 1000, 10, false, .{}, writer);
+            try formatInt(kunits / 1000, 10, .lower, .{}, writer);
             const frac = kunits % 1000;
             if (frac > 0) {
                 // Write up to 3 decimal places
                 var buf = [_]u8{ '.', 0, 0, 0 };
-                _ = formatIntBuf(buf[1..], frac, 10, false, .{ .fill = '0', .width = 3 });
+                _ = formatIntBuf(buf[1..], frac, 10, .lower, .{ .fill = '0', .width = 3 });
                 var end: usize = 4;
                 while (end > 1) : (end -= 1) {
                     if (buf[end - 1] != '0') break;
@@ -1377,7 +1412,7 @@ fn formatDuration(ns: u64, comptime fmt: []const u8, options: std.fmt.FormatOpti
         }
     }
 
-    try formatInt(ns_remaining, 10, false, .{}, writer);
+    try formatInt(ns_remaining, 10, .lower, .{}, writer);
     try writer.writeAll("ns");
     return;
 }
@@ -1422,6 +1457,87 @@ test "fmtDuration" {
         .{ .s = "1y1m999ns", .d = 365 * std.time.ns_per_day + std.time.ns_per_min + 999 },
     }) |tc| {
         const slice = try bufPrint(&buf, "{}", .{fmtDuration(tc.d)});
+        try std.testing.expectEqualStrings(tc.s, slice);
+    }
+}
+
+fn formatDurationSigned(ns: i64, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    if (ns < 0) {
+        try writer.writeByte('-');
+        try formatDuration(@intCast(u64, -ns), fmt, options, writer);
+    } else {
+        try formatDuration(@intCast(u64, ns), fmt, options, writer);
+    }
+}
+
+/// Return a Formatter for number of nanoseconds according to its signed magnitude:
+/// [#y][#w][#d][#h][#m]#[.###][n|u|m]s
+pub fn fmtDurationSigned(ns: i64) Formatter(formatDurationSigned) {
+    return .{ .data = ns };
+}
+
+test "fmtDurationSigned" {
+    var buf: [24]u8 = undefined;
+    inline for (.{
+        .{ .s = "0ns", .d = 0 },
+        .{ .s = "1ns", .d = 1 },
+        .{ .s = "-1ns", .d = -(1) },
+        .{ .s = "999ns", .d = std.time.ns_per_us - 1 },
+        .{ .s = "-999ns", .d = -(std.time.ns_per_us - 1) },
+        .{ .s = "1us", .d = std.time.ns_per_us },
+        .{ .s = "-1us", .d = -(std.time.ns_per_us) },
+        .{ .s = "1.45us", .d = 1450 },
+        .{ .s = "-1.45us", .d = -(1450) },
+        .{ .s = "1.5us", .d = 3 * std.time.ns_per_us / 2 },
+        .{ .s = "-1.5us", .d = -(3 * std.time.ns_per_us / 2) },
+        .{ .s = "14.5us", .d = 14500 },
+        .{ .s = "-14.5us", .d = -(14500) },
+        .{ .s = "145us", .d = 145000 },
+        .{ .s = "-145us", .d = -(145000) },
+        .{ .s = "999.999us", .d = std.time.ns_per_ms - 1 },
+        .{ .s = "-999.999us", .d = -(std.time.ns_per_ms - 1) },
+        .{ .s = "1ms", .d = std.time.ns_per_ms + 1 },
+        .{ .s = "-1ms", .d = -(std.time.ns_per_ms + 1) },
+        .{ .s = "1.5ms", .d = 3 * std.time.ns_per_ms / 2 },
+        .{ .s = "-1.5ms", .d = -(3 * std.time.ns_per_ms / 2) },
+        .{ .s = "1.11ms", .d = 1110000 },
+        .{ .s = "-1.11ms", .d = -(1110000) },
+        .{ .s = "1.111ms", .d = 1111000 },
+        .{ .s = "-1.111ms", .d = -(1111000) },
+        .{ .s = "1.111ms", .d = 1111100 },
+        .{ .s = "-1.111ms", .d = -(1111100) },
+        .{ .s = "999.999ms", .d = std.time.ns_per_s - 1 },
+        .{ .s = "-999.999ms", .d = -(std.time.ns_per_s - 1) },
+        .{ .s = "1s", .d = std.time.ns_per_s },
+        .{ .s = "-1s", .d = -(std.time.ns_per_s) },
+        .{ .s = "59.999s", .d = std.time.ns_per_min - 1 },
+        .{ .s = "-59.999s", .d = -(std.time.ns_per_min - 1) },
+        .{ .s = "1m", .d = std.time.ns_per_min },
+        .{ .s = "-1m", .d = -(std.time.ns_per_min) },
+        .{ .s = "1h", .d = std.time.ns_per_hour },
+        .{ .s = "-1h", .d = -(std.time.ns_per_hour) },
+        .{ .s = "1d", .d = std.time.ns_per_day },
+        .{ .s = "-1d", .d = -(std.time.ns_per_day) },
+        .{ .s = "1w", .d = std.time.ns_per_week },
+        .{ .s = "-1w", .d = -(std.time.ns_per_week) },
+        .{ .s = "1y", .d = 365 * std.time.ns_per_day },
+        .{ .s = "-1y", .d = -(365 * std.time.ns_per_day) },
+        .{ .s = "1y52w23h59m59.999s", .d = 730 * std.time.ns_per_day - 1 }, // 365d = 52w1d
+        .{ .s = "-1y52w23h59m59.999s", .d = -(730 * std.time.ns_per_day - 1) }, // 365d = 52w1d
+        .{ .s = "1y1h1.001s", .d = 365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_s + std.time.ns_per_ms },
+        .{ .s = "-1y1h1.001s", .d = -(365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_s + std.time.ns_per_ms) },
+        .{ .s = "1y1h1s", .d = 365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_s + 999 * std.time.ns_per_us },
+        .{ .s = "-1y1h1s", .d = -(365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_s + 999 * std.time.ns_per_us) },
+        .{ .s = "1y1h999.999us", .d = 365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_ms - 1 },
+        .{ .s = "-1y1h999.999us", .d = -(365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_ms - 1) },
+        .{ .s = "1y1h1ms", .d = 365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_ms },
+        .{ .s = "-1y1h1ms", .d = -(365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_ms) },
+        .{ .s = "1y1h1ms", .d = 365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_ms + 1 },
+        .{ .s = "-1y1h1ms", .d = -(365 * std.time.ns_per_day + std.time.ns_per_hour + std.time.ns_per_ms + 1) },
+        .{ .s = "1y1m999ns", .d = 365 * std.time.ns_per_day + std.time.ns_per_min + 999 },
+        .{ .s = "-1y1m999ns", .d = -(365 * std.time.ns_per_day + std.time.ns_per_min + 999) },
+    }) |tc| {
+        const slice = try bufPrint(&buf, "{}", .{fmtDurationSigned(tc.d)});
         try std.testing.expectEqualStrings(tc.s, slice);
     }
 }
@@ -1654,10 +1770,10 @@ pub fn charToDigit(c: u8, radix: u8) (error{InvalidCharacter}!u8) {
     return value;
 }
 
-pub fn digitToChar(digit: u8, uppercase: bool) u8 {
+pub fn digitToChar(digit: u8, case: Case) u8 {
     return switch (digit) {
         0...9 => digit + '0',
-        10...35 => digit + ((if (uppercase) @as(u8, 'A') else @as(u8, 'a')) - 10),
+        10...35 => digit + ((if (case == .upper) @as(u8, 'A') else @as(u8, 'a')) - 10),
         else => unreachable,
     };
 }
@@ -1709,25 +1825,25 @@ test "bufPrintInt" {
     var buffer: [100]u8 = undefined;
     const buf = buffer[0..];
 
-    try std.testing.expectEqualSlices(u8, "-1", bufPrintIntToSlice(buf, @as(i1, -1), 10, false, FormatOptions{}));
+    try std.testing.expectEqualSlices(u8, "-1", bufPrintIntToSlice(buf, @as(i1, -1), 10, .lower, FormatOptions{}));
 
-    try std.testing.expectEqualSlices(u8, "-101111000110000101001110", bufPrintIntToSlice(buf, @as(i32, -12345678), 2, false, FormatOptions{}));
-    try std.testing.expectEqualSlices(u8, "-12345678", bufPrintIntToSlice(buf, @as(i32, -12345678), 10, false, FormatOptions{}));
-    try std.testing.expectEqualSlices(u8, "-bc614e", bufPrintIntToSlice(buf, @as(i32, -12345678), 16, false, FormatOptions{}));
-    try std.testing.expectEqualSlices(u8, "-BC614E", bufPrintIntToSlice(buf, @as(i32, -12345678), 16, true, FormatOptions{}));
+    try std.testing.expectEqualSlices(u8, "-101111000110000101001110", bufPrintIntToSlice(buf, @as(i32, -12345678), 2, .lower, FormatOptions{}));
+    try std.testing.expectEqualSlices(u8, "-12345678", bufPrintIntToSlice(buf, @as(i32, -12345678), 10, .lower, FormatOptions{}));
+    try std.testing.expectEqualSlices(u8, "-bc614e", bufPrintIntToSlice(buf, @as(i32, -12345678), 16, .lower, FormatOptions{}));
+    try std.testing.expectEqualSlices(u8, "-BC614E", bufPrintIntToSlice(buf, @as(i32, -12345678), 16, .upper, FormatOptions{}));
 
-    try std.testing.expectEqualSlices(u8, "12345678", bufPrintIntToSlice(buf, @as(u32, 12345678), 10, true, FormatOptions{}));
+    try std.testing.expectEqualSlices(u8, "12345678", bufPrintIntToSlice(buf, @as(u32, 12345678), 10, .upper, FormatOptions{}));
 
-    try std.testing.expectEqualSlices(u8, "   666", bufPrintIntToSlice(buf, @as(u32, 666), 10, false, FormatOptions{ .width = 6 }));
-    try std.testing.expectEqualSlices(u8, "  1234", bufPrintIntToSlice(buf, @as(u32, 0x1234), 16, false, FormatOptions{ .width = 6 }));
-    try std.testing.expectEqualSlices(u8, "1234", bufPrintIntToSlice(buf, @as(u32, 0x1234), 16, false, FormatOptions{ .width = 1 }));
+    try std.testing.expectEqualSlices(u8, "   666", bufPrintIntToSlice(buf, @as(u32, 666), 10, .lower, FormatOptions{ .width = 6 }));
+    try std.testing.expectEqualSlices(u8, "  1234", bufPrintIntToSlice(buf, @as(u32, 0x1234), 16, .lower, FormatOptions{ .width = 6 }));
+    try std.testing.expectEqualSlices(u8, "1234", bufPrintIntToSlice(buf, @as(u32, 0x1234), 16, .lower, FormatOptions{ .width = 1 }));
 
-    try std.testing.expectEqualSlices(u8, "+42", bufPrintIntToSlice(buf, @as(i32, 42), 10, false, FormatOptions{ .width = 3 }));
-    try std.testing.expectEqualSlices(u8, "-42", bufPrintIntToSlice(buf, @as(i32, -42), 10, false, FormatOptions{ .width = 3 }));
+    try std.testing.expectEqualSlices(u8, "+42", bufPrintIntToSlice(buf, @as(i32, 42), 10, .lower, FormatOptions{ .width = 3 }));
+    try std.testing.expectEqualSlices(u8, "-42", bufPrintIntToSlice(buf, @as(i32, -42), 10, .lower, FormatOptions{ .width = 3 }));
 }
 
-pub fn bufPrintIntToSlice(buf: []u8, value: anytype, base: u8, uppercase: bool, options: FormatOptions) []u8 {
-    return buf[0..formatIntBuf(buf, value, base, uppercase, options)];
+pub fn bufPrintIntToSlice(buf: []u8, value: anytype, base: u8, case: Case, options: FormatOptions) []u8 {
+    return buf[0..formatIntBuf(buf, value, base, case, options)];
 }
 
 pub fn comptimePrint(comptime fmt: []const u8, args: anytype) *const [count(fmt, args):0]u8 {
@@ -2048,10 +2164,10 @@ test "float.hexadecimal" {
     try expectFmt("f64: 0x1.5555555555555p-2", "f64: {x}", .{@as(f64, 1.0 / 3.0)});
     try expectFmt("f128: 0x1.5555555555555555555555555555p-2", "f128: {x}", .{@as(f128, 1.0 / 3.0)});
 
-    try expectFmt("f16: 0x1.p-14", "f16: {x}", .{@as(f16, math.f16_min)});
-    try expectFmt("f32: 0x1.p-126", "f32: {x}", .{@as(f32, math.f32_min)});
-    try expectFmt("f64: 0x1.p-1022", "f64: {x}", .{@as(f64, math.f64_min)});
-    try expectFmt("f128: 0x1.p-16382", "f128: {x}", .{@as(f128, math.f128_min)});
+    try expectFmt("f16: 0x1p-14", "f16: {x}", .{@as(f16, math.f16_min)});
+    try expectFmt("f32: 0x1p-126", "f32: {x}", .{@as(f32, math.f32_min)});
+    try expectFmt("f64: 0x1p-1022", "f64: {x}", .{@as(f64, math.f64_min)});
+    try expectFmt("f128: 0x1p-16382", "f128: {x}", .{@as(f128, math.f128_min)});
 
     try expectFmt("f16: 0x0.004p-14", "f16: {x}", .{@as(f16, math.f16_true_min)});
     try expectFmt("f32: 0x0.000002p-126", "f32: {x}", .{@as(f32, math.f32_true_min)});
@@ -2126,6 +2242,7 @@ test "custom" {
             options: FormatOptions,
             writer: anytype,
         ) !void {
+            _ = options;
             if (fmt.len == 0 or comptime std.mem.eql(u8, fmt, "p")) {
                 return std.fmt.format(writer, "({d:.3},{d:.3})", .{ self.x, self.y });
             } else if (comptime std.mem.eql(u8, fmt, "d")) {
@@ -2136,7 +2253,6 @@ test "custom" {
         }
     };
 
-    var buf1: [32]u8 = undefined;
     var value = Vec2{
         .x = 10.2,
         .y = 2.22,
@@ -2161,6 +2277,10 @@ test "struct" {
     };
 
     try expectFmt("S{ .a = 456, .b = error.Unused }", "{}", .{inst});
+    // Tuples
+    try expectFmt("{ }", "{}", .{.{}});
+    try expectFmt("{ -1 }", "{}", .{.{-1}});
+    try expectFmt("{ -1, 42, 2.5e+04 }", "{}", .{.{ -1, 42, 0.25e5 }});
 }
 
 test "union" {
@@ -2190,7 +2310,7 @@ test "union" {
     try std.testing.expect(mem.eql(u8, uu_result[0..3], "UU@"));
 
     const eu_result = try bufPrint(buf[0..], "{}", .{eu_inst});
-    try std.testing.expect(mem.eql(u8, uu_result[0..3], "EU@"));
+    try std.testing.expect(mem.eql(u8, eu_result[0..3], "EU@"));
 }
 
 test "enum" {
@@ -2311,6 +2431,7 @@ test "formatType max_depth" {
             options: FormatOptions,
             writer: anytype,
         ) !void {
+            _ = options;
             if (fmt.len == 0) {
                 return std.fmt.format(writer, "({d:.3},{d:.3})", .{ self.x, self.y });
             } else {
@@ -2387,10 +2508,6 @@ test "vector" {
     }
     if (builtin.target.cpu.arch == .riscv64) {
         // https://github.com/ziglang/zig/issues/4486
-        return error.SkipZigTest;
-    }
-    if (builtin.target.cpu.arch == .wasm32) {
-        // https://github.com/ziglang/zig/issues/5339
         return error.SkipZigTest;
     }
 

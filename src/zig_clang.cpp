@@ -24,6 +24,7 @@
 #include <clang/AST/APValue.h>
 #include <clang/AST/Attr.h>
 #include <clang/AST/Expr.h>
+#include <clang/AST/RecordLayout.h>
 
 #if __GNUC__ >= 8
 #pragma GCC diagnostic pop
@@ -2457,6 +2458,11 @@ enum ZigClangStorageClass ZigClangVarDecl_getStorageClass(const struct ZigClangV
     return (ZigClangStorageClass)casted->getStorageClass();
 }
 
+bool ZigClangVarDecl_isStaticLocal(const struct ZigClangVarDecl *self) {
+    auto casted = reinterpret_cast<const clang::VarDecl *>(self);
+    return casted->isStaticLocal();
+}
+
 enum ZigClangBuiltinTypeKind ZigClangBuiltinType_getKind(const struct ZigClangBuiltinType *self) {
     auto casted = reinterpret_cast<const clang::BuiltinType *>(self);
     return (ZigClangBuiltinTypeKind)casted->getKind();
@@ -2714,6 +2720,22 @@ const struct ZigClangExpr *ZigClangCStyleCastExpr_getSubExpr(const struct ZigCla
 struct ZigClangQualType ZigClangCStyleCastExpr_getType(const struct ZigClangCStyleCastExpr *self) {
     auto casted = reinterpret_cast<const clang::CStyleCastExpr *>(self);
     return bitcast(casted->getType());
+}
+
+const struct ZigClangASTRecordLayout *ZigClangRecordDecl_getASTRecordLayout(const struct ZigClangRecordDecl *self, const struct ZigClangASTContext *ctx) {
+    auto casted_self = reinterpret_cast<const clang::RecordDecl *>(self);
+    auto casted_ctx = reinterpret_cast<const clang::ASTContext *>(ctx);
+    const clang::ASTRecordLayout &layout = casted_ctx->getASTRecordLayout(casted_self);
+    return reinterpret_cast<const struct ZigClangASTRecordLayout *>(&layout);
+}
+
+uint64_t ZigClangASTRecordLayout_getFieldOffset(const struct ZigClangASTRecordLayout *self, unsigned field_no) {
+    return reinterpret_cast<const clang::ASTRecordLayout *>(self)->getFieldOffset(field_no);
+}
+
+int64_t ZigClangASTRecordLayout_getAlignment(const struct ZigClangASTRecordLayout *self) {
+    auto casted_self = reinterpret_cast<const clang::ASTRecordLayout *>(self);
+    return casted_self->getAlignment().getQuantity();
 }
 
 bool ZigClangIntegerLiteral_EvaluateAsInt(const struct ZigClangIntegerLiteral *self, struct ZigClangExprEvalResult *result, const struct ZigClangASTContext *ctx) {
@@ -3100,6 +3122,13 @@ struct ZigClangSourceLocation ZigClangMacroDefinitionRecord_getSourceRange_getEn
     return bitcast(casted->getSourceRange().getEnd());
 }
 
+struct ZigClangSourceLocation ZigClangLexer_getLocForEndOfToken(ZigClangSourceLocation loc, const ZigClangSourceManager *sm, const ZigClangASTUnit *unit) {
+    const clang::SourceManager *casted_sm = reinterpret_cast<const clang::SourceManager *>(sm);
+    const clang::ASTUnit *casted_unit = reinterpret_cast<const clang::ASTUnit *>(unit);
+    clang::SourceLocation endloc = clang::Lexer::getLocForEndOfToken(bitcast(loc), 0, *casted_sm, casted_unit->getLangOpts());
+    return bitcast(endloc);
+}
+
 ZigClangRecordDecl_field_iterator ZigClangRecordDecl_field_begin(const struct ZigClangRecordDecl *self) {
     auto casted = reinterpret_cast<const clang::RecordDecl *>(self);
     return bitcast(casted->field_begin());
@@ -3127,6 +3156,11 @@ ZigClangSourceLocation ZigClangFieldDecl_getLocation(const struct ZigClangFieldD
 const struct ZigClangRecordDecl *ZigClangFieldDecl_getParent(const struct ZigClangFieldDecl *self) {
     auto casted = reinterpret_cast<const clang::FieldDecl *>(self);
     return reinterpret_cast<const ZigClangRecordDecl *>(casted->getParent());
+}
+
+unsigned ZigClangFieldDecl_getFieldIndex(const struct ZigClangFieldDecl *self) {
+    auto casted = reinterpret_cast<const clang::FieldDecl *>(self);
+    return casted->getFieldIndex();
 }
 
 ZigClangQualType ZigClangFieldDecl_getType(const struct ZigClangFieldDecl *self) {
@@ -3192,12 +3226,6 @@ bool ZigClangEnumDecl_enumerator_iterator_neq(
     clang::EnumDecl::enumerator_iterator casted_a = bitcast(a);
     clang::EnumDecl::enumerator_iterator casted_b = bitcast(b);
     return casted_a != casted_b;
-}
-
-const struct ZigClangExpr *ZigClangEnumConstantDecl_getInitExpr(const struct ZigClangEnumConstantDecl *self) {
-    auto casted = reinterpret_cast<const clang::EnumConstantDecl *>(self);
-    const clang::Expr *result = casted->getInitExpr();
-    return reinterpret_cast<const ZigClangExpr *>(result);
 }
 
 const struct ZigClangAPSInt *ZigClangEnumConstantDecl_getInitVal(const struct ZigClangEnumConstantDecl *self) {

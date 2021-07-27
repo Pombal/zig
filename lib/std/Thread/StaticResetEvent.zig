@@ -105,6 +105,7 @@ pub const DebugEvent = struct {
     }
 
     pub fn timedWait(ev: *DebugEvent, timeout: u64) TimedWaitResult {
+        _ = timeout;
         switch (ev.state) {
             .unset => return .timed_out,
             .set => return .event_set,
@@ -174,7 +175,10 @@ pub const AtomicEvent = struct {
     };
 
     pub const SpinFutex = struct {
-        fn wake(waiters: *u32, wake_count: u32) void {}
+        fn wake(waiters: *u32, wake_count: u32) void {
+            _ = waiters;
+            _ = wake_count;
+        }
 
         fn wait(waiters: *u32, timeout: ?u64) !void {
             var timer: time.Timer = undefined;
@@ -182,7 +186,7 @@ pub const AtomicEvent = struct {
                 timer = time.Timer.start() catch return error.TimedOut;
 
             while (@atomicLoad(u32, waiters, .Acquire) != WAKE) {
-                std.os.sched_yield() catch std.Thread.spinLoopHint();
+                std.os.sched_yield() catch std.atomic.spinLoopHint();
                 if (timeout) |timeout_ns| {
                     if (timer.read() >= timeout_ns)
                         return error.TimedOut;
@@ -193,6 +197,7 @@ pub const AtomicEvent = struct {
 
     pub const LinuxFutex = struct {
         fn wake(waiters: *u32, wake_count: u32) void {
+            _ = wake_count;
             const waiting = std.math.maxInt(i32); // wake_count
             const ptr = @ptrCast(*const i32, waiters);
             const rc = linux.futex_wake(ptr, linux.FUTEX_WAKE | linux.FUTEX_PRIVATE_FLAG, waiting);
@@ -293,7 +298,7 @@ pub const AtomicEvent = struct {
                         return @intToPtr(?windows.HANDLE, handle);
                     },
                     LOADING => {
-                        std.os.sched_yield() catch std.Thread.spinLoopHint();
+                        std.os.sched_yield() catch std.atomic.spinLoopHint();
                         handle = @atomicLoad(usize, &event_handle, .Monotonic);
                     },
                     else => {
@@ -379,8 +384,8 @@ test "basic usage" {
     };
 
     var context = Context{};
-    const receiver = try std.Thread.spawn(Context.receiver, &context);
-    defer receiver.wait();
+    const receiver = try std.Thread.spawn(.{}, Context.receiver, .{&context});
+    defer receiver.join();
     try context.sender();
 
     if (false) {
@@ -388,8 +393,8 @@ test "basic usage" {
         // https://github.com/ziglang/zig/issues/7009
         var timed = Context.init();
         defer timed.deinit();
-        const sleeper = try std.Thread.spawn(Context.sleeper, &timed);
-        defer sleeper.wait();
+        const sleeper = try std.Thread.spawn(.{}, Context.sleeper, .{&timed});
+        defer sleeper.join();
         try timed.timedWaiter();
     }
 }

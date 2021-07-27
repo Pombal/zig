@@ -8,6 +8,7 @@ usingnamespace @import("bits.zig");
 pub extern "kernel32" fn AddVectoredExceptionHandler(First: c_ulong, Handler: ?VECTORED_EXCEPTION_HANDLER) callconv(WINAPI) ?*c_void;
 pub extern "kernel32" fn RemoveVectoredExceptionHandler(Handle: HANDLE) callconv(WINAPI) c_ulong;
 
+pub extern "kernel32" fn CancelIo(hFile: HANDLE) callconv(WINAPI) BOOL;
 pub extern "kernel32" fn CancelIoEx(hFile: HANDLE, lpOverlapped: ?LPOVERLAPPED) callconv(WINAPI) BOOL;
 
 pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(WINAPI) BOOL;
@@ -38,6 +39,17 @@ pub extern "kernel32" fn CreatePipe(
     lpPipeAttributes: *const SECURITY_ATTRIBUTES,
     nSize: DWORD,
 ) callconv(WINAPI) BOOL;
+
+pub extern "kernel32" fn CreateNamedPipeW(
+    lpName: LPCWSTR,
+    dwOpenMode: DWORD,
+    dwPipeMode: DWORD,
+    nMaxInstances: DWORD,
+    nOutBufferSize: DWORD,
+    nInBufferSize: DWORD,
+    nDefaultTimeOut: DWORD,
+    lpSecurityAttributes: ?*const SECURITY_ATTRIBUTES,
+) callconv(WINAPI) HANDLE;
 
 pub extern "kernel32" fn CreateProcessW(
     lpApplicationName: ?LPWSTR,
@@ -89,7 +101,8 @@ pub extern "kernel32" fn GetCommandLineW() callconv(WINAPI) LPWSTR;
 pub extern "kernel32" fn GetConsoleMode(in_hConsoleHandle: HANDLE, out_lpMode: *DWORD) callconv(WINAPI) BOOL;
 
 pub extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpConsoleScreenBufferInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(WINAPI) BOOL;
-pub extern "kernel32" fn FillConsoleOutputCharacterA(hConsoleOutput: HANDLE, cCharacter: TCHAR, nLength: DWORD, dwWriteCoord: COORD, lpNumberOfCharsWritten: LPDWORD) callconv(WINAPI) BOOL;
+pub extern "kernel32" fn FillConsoleOutputCharacterA(hConsoleOutput: HANDLE, cCharacter: CHAR, nLength: DWORD, dwWriteCoord: COORD, lpNumberOfCharsWritten: LPDWORD) callconv(WINAPI) BOOL;
+pub extern "kernel32" fn FillConsoleOutputCharacterW(hConsoleOutput: HANDLE, cCharacter: WCHAR, nLength: DWORD, dwWriteCoord: COORD, lpNumberOfCharsWritten: LPDWORD) callconv(WINAPI) BOOL;
 pub extern "kernel32" fn FillConsoleOutputAttribute(hConsoleOutput: HANDLE, wAttribute: WORD, nLength: DWORD, dwWriteCoord: COORD, lpNumberOfAttrsWritten: LPDWORD) callconv(WINAPI) BOOL;
 pub extern "kernel32" fn SetConsoleCursorPosition(hConsoleOutput: HANDLE, dwCursorPosition: COORD) callconv(WINAPI) BOOL;
 
@@ -97,6 +110,8 @@ pub extern "kernel32" fn GetCurrentDirectoryW(nBufferLength: DWORD, lpBuffer: ?[
 
 pub extern "kernel32" fn GetCurrentThread() callconv(WINAPI) HANDLE;
 pub extern "kernel32" fn GetCurrentThreadId() callconv(WINAPI) DWORD;
+
+pub extern "kernel32" fn GetCurrentProcessId() callconv(WINAPI) DWORD;
 
 pub extern "kernel32" fn GetCurrentProcess() callconv(WINAPI) HANDLE;
 
@@ -135,6 +150,13 @@ pub extern "kernel32" fn GetFinalPathNameByHandleW(
     cchFilePath: DWORD,
     dwFlags: DWORD,
 ) callconv(WINAPI) DWORD;
+
+pub extern "kernel32" fn GetFullPathNameW(
+    lpFileName: [*:0]const u16,
+    nBufferLength: u32,
+    lpBuffer: ?[*:0]u16,
+    lpFilePart: ?*?[*:0]u16,
+) callconv(@import("std").os.windows.WINAPI) u32;
 
 pub extern "kernel32" fn GetOverlappedResult(hFile: HANDLE, lpOverlapped: *OVERLAPPED, lpNumberOfBytesTransferred: *DWORD, bWait: BOOL) callconv(WINAPI) BOOL;
 

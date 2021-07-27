@@ -3,6 +3,7 @@
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
+const root = @import("root");
 const builtin = std.builtin;
 const std = @import("std.zig");
 const os = std.os;
@@ -47,7 +48,10 @@ pub const MAX_PATH_BYTES = switch (builtin.os.tag) {
     .windows => os.windows.PATH_MAX_WIDE * 3 + 1,
     // TODO work out what a reasonable value we should use here
     .wasi => 4096,
-    else => @compileError("Unsupported OS"),
+    else => if (@hasDecl(root, "os") and @hasDecl(root.os, "PATH_MAX"))
+        root.os.PATH_MAX
+    else
+        @compileError("PATH_MAX not implemented for " ++ @tagName(builtin.os.tag)),
 };
 
 pub const base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".*;
@@ -473,7 +477,7 @@ pub const Dir = struct {
                     }
 
                     var stat_info: os.libc_stat = undefined;
-                    const rc2 = os.system._kern_read_stat(
+                    _ = os.system._kern_read_stat(
                         self.dir.fd,
                         &haiku_entry.d_name,
                         false,
@@ -879,24 +883,39 @@ pub const Dir = struct {
     /// [WTF-16](https://simonsapin.github.io/wtf-8/#potentially-ill-formed-utf-16) encoded.
     pub fn openFileW(self: Dir, sub_path_w: []const u16, flags: File.OpenFlags) File.OpenError!File {
         const w = os.windows;
-        return @as(File, .{
-            .handle = try os.windows.OpenFile(sub_path_w, .{
+        const file: File = .{
+            .handle = try w.OpenFile(sub_path_w, .{
                 .dir = self.fd,
                 .access_mask = w.SYNCHRONIZE |
                     (if (flags.read) @as(u32, w.GENERIC_READ) else 0) |
                     (if (flags.write) @as(u32, w.GENERIC_WRITE) else 0),
-                .share_access = switch (flags.lock) {
-                    .None => w.FILE_SHARE_WRITE | w.FILE_SHARE_READ | w.FILE_SHARE_DELETE,
-                    .Shared => w.FILE_SHARE_READ | w.FILE_SHARE_DELETE,
-                    .Exclusive => w.FILE_SHARE_DELETE,
-                },
-                .share_access_nonblocking = flags.lock_nonblocking,
                 .creation = w.FILE_OPEN,
                 .io_mode = flags.intended_io_mode,
             }),
             .capable_io_mode = std.io.default_mode,
             .intended_io_mode = flags.intended_io_mode,
-        });
+        };
+        var io: w.IO_STATUS_BLOCK = undefined;
+        const range_off: w.LARGE_INTEGER = 0;
+        const range_len: w.LARGE_INTEGER = 1;
+        const exclusive = switch (flags.lock) {
+            .None => return file,
+            .Shared => false,
+            .Exclusive => true,
+        };
+        try w.LockFile(
+            file.handle,
+            null,
+            null,
+            null,
+            &io,
+            &range_off,
+            &range_len,
+            null,
+            @boolToInt(flags.lock_nonblocking),
+            @boolToInt(exclusive),
+        );
+        return file;
     }
 
     /// Creates, opens, or overwrites a file with write access.
@@ -1015,16 +1034,10 @@ pub const Dir = struct {
     pub fn createFileW(self: Dir, sub_path_w: []const u16, flags: File.CreateFlags) File.OpenError!File {
         const w = os.windows;
         const read_flag = if (flags.read) @as(u32, w.GENERIC_READ) else 0;
-        return @as(File, .{
+        const file: File = .{
             .handle = try os.windows.OpenFile(sub_path_w, .{
                 .dir = self.fd,
                 .access_mask = w.SYNCHRONIZE | w.GENERIC_WRITE | read_flag,
-                .share_access = switch (flags.lock) {
-                    .None => w.FILE_SHARE_WRITE | w.FILE_SHARE_READ | w.FILE_SHARE_DELETE,
-                    .Shared => w.FILE_SHARE_READ | w.FILE_SHARE_DELETE,
-                    .Exclusive => w.FILE_SHARE_DELETE,
-                },
-                .share_access_nonblocking = flags.lock_nonblocking,
                 .creation = if (flags.exclusive)
                     @as(u32, w.FILE_CREATE)
                 else if (flags.truncate)
@@ -1035,7 +1048,28 @@ pub const Dir = struct {
             }),
             .capable_io_mode = std.io.default_mode,
             .intended_io_mode = flags.intended_io_mode,
-        });
+        };
+        var io: w.IO_STATUS_BLOCK = undefined;
+        const range_off: w.LARGE_INTEGER = 0;
+        const range_len: w.LARGE_INTEGER = 1;
+        const exclusive = switch (flags.lock) {
+            .None => return file,
+            .Shared => false,
+            .Exclusive => true,
+        };
+        try w.LockFile(
+            file.handle,
+            null,
+            null,
+            null,
+            &io,
+            &range_off,
+            &range_len,
+            null,
+            @boolToInt(flags.lock_nonblocking),
+            @boolToInt(exclusive),
+        );
+        return file;
     }
 
     pub const openRead = @compileError("deprecated in favor of openFile");
@@ -1264,11 +1298,9 @@ pub const Dir = struct {
     pub fn openDirWasi(self: Dir, sub_path: []const u8, args: OpenDirOptions) OpenError!Dir {
         const w = os.wasi;
         var base: w.rights_t = w.RIGHT_FD_FILESTAT_GET | w.RIGHT_FD_FDSTAT_SET_FLAGS | w.RIGHT_FD_FILESTAT_SET_TIMES;
-        if (args.iterate) {
-            base |= w.RIGHT_FD_READDIR;
-        }
         if (args.access_sub_paths) {
-            base |= w.RIGHT_PATH_CREATE_DIRECTORY |
+            base |= w.RIGHT_FD_READDIR |
+                w.RIGHT_PATH_CREATE_DIRECTORY |
                 w.RIGHT_PATH_CREATE_FILE |
                 w.RIGHT_PATH_LINK_SOURCE |
                 w.RIGHT_PATH_LINK_TARGET |
@@ -1365,15 +1397,6 @@ pub const Dir = struct {
             .SecurityDescriptor = null,
             .SecurityQualityOfService = null,
         };
-        if (sub_path_w[0] == '.' and sub_path_w[1] == 0) {
-            // Windows does not recognize this, but it does work with empty string.
-            nt_name.Length = 0;
-        }
-        if (sub_path_w[0] == '.' and sub_path_w[1] == '.' and sub_path_w[2] == 0) {
-            // If you're looking to contribute to zig and fix this, see here for an example of how to
-            // implement this: https://git.midipix.org/ntapi/tree/src/fs/ntapi_tt_open_physical_parent_directory.c
-            @panic("TODO opening '..' with a relative directory handle is not yet implemented on Windows");
-        }
         const open_reparse_point: w.DWORD = if (no_follow) w.FILE_OPEN_REPARSE_POINT else 0x0;
         var io: w.IO_STATUS_BLOCK = undefined;
         const rc = w.ntdll.NtCreateFile(
@@ -1548,7 +1571,7 @@ pub const Dir = struct {
         self: Dir,
         target_path: []const u8,
         sym_link_path: []const u8,
-        flags: SymLinkFlags,
+        _: SymLinkFlags,
     ) !void {
         return os.symlinkatWasi(target_path, self.fd, sym_link_path);
     }
@@ -1886,6 +1909,7 @@ pub const Dir = struct {
     /// * NtDll prefixed
     /// TODO currently this ignores `flags`.
     pub fn accessW(self: Dir, sub_path_w: [*:0]const u16, flags: File.OpenFlags) AccessError!void {
+        _ = flags;
         return os.faccessatW(self.fd, sub_path_w, 0, 0);
     }
 
@@ -2445,7 +2469,7 @@ pub fn selfExePath(out_buffer: []u8) SelfExePathError![]u8 {
                     }) catch continue;
 
                     var real_path_buf: [MAX_PATH_BYTES]u8 = undefined;
-                    if (os.realpathZ(&resolved_path_buf, &real_path_buf)) |real_path| {
+                    if (os.realpathZ(resolved_path, &real_path_buf)) |real_path| {
                         // found a file, and hope it is the right file
                         if (real_path.len > out_buffer.len)
                             return error.NameTooLong;

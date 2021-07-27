@@ -83,7 +83,8 @@ pub fn IntegerBitSet(comptime size: u16) type {
         }
 
         /// Returns the number of bits in this bit set
-        pub fn capacity(self: Self) callconv(.Inline) usize {
+        pub inline fn capacity(self: Self) usize {
+            _ = self;
             return bit_length;
         }
 
@@ -310,7 +311,8 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
         }
 
         /// Returns the number of bits in this bit set
-        pub fn capacity(self: Self) callconv(.Inline) usize {
+        pub inline fn capacity(self: Self) usize {
+            _ = self;
             return bit_length;
         }
 
@@ -373,7 +375,7 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
 
         /// Flips every bit in the bit set.
         pub fn toggleAll(self: *Self) void {
-            for (self.masks) |*mask, i| {
+            for (self.masks) |*mask| {
                 mask.* = ~mask.*;
             }
 
@@ -574,7 +576,7 @@ pub const DynamicBitSetUnmanaged = struct {
     }
 
     /// Returns the number of bits in this bit set
-    pub fn capacity(self: Self) callconv(.Inline) usize {
+    pub inline fn capacity(self: Self) usize {
         return self.bit_length;
     }
 
@@ -642,7 +644,7 @@ pub const DynamicBitSetUnmanaged = struct {
         if (bit_length == 0) return;
 
         const num_masks = numMasks(self.bit_length);
-        for (self.masks[0..num_masks]) |*mask, i| {
+        for (self.masks[0..num_masks]) |*mask| {
             mask.* = ~mask.*;
         }
 
@@ -789,7 +791,7 @@ pub const DynamicBitSet = struct {
     }
 
     /// Returns the number of bits in this bit set
-    pub fn capacity(self: Self) callconv(.Inline) usize {
+    pub inline fn capacity(self: Self) usize {
         return self.unmanaged.capacity();
     }
 
@@ -969,7 +971,7 @@ fn BitSetIterator(comptime MaskInt: type, comptime options: IteratorOptions) typ
         // isn't a next word.  If the next word is the
         // last word, mask off the padding bits so we
         // don't visit them.
-        fn nextWord(self: *Self, comptime is_first_word: bool) callconv(.Inline) void {
+        inline fn nextWord(self: *Self, comptime is_first_word: bool) void {
             var word = switch (direction) {
                 .forward => self.words_remain[0],
                 .reverse => self.words_remain[self.words_remain.len - 1],

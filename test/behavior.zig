@@ -1,6 +1,6 @@
 const builtin = @import("builtin");
 
-comptime {
+test {
     // Tests that pass for both.
     {}
 
@@ -51,11 +51,11 @@ comptime {
         _ = @import("behavior/bugs/3384.zig");
         _ = @import("behavior/bugs/3586.zig");
         _ = @import("behavior/bugs/3742.zig");
+        _ = @import("behavior/bugs/3779.zig");
         _ = @import("behavior/bugs/4328.zig");
         _ = @import("behavior/bugs/4560.zig");
         _ = @import("behavior/bugs/4769_a.zig");
         _ = @import("behavior/bugs/4769_b.zig");
-        _ = @import("behavior/bugs/4769_c.zig");
         _ = @import("behavior/bugs/4954.zig");
         _ = @import("behavior/bugs/5398.zig");
         _ = @import("behavior/bugs/5413.zig");
@@ -105,6 +105,7 @@ comptime {
         _ = @import("behavior/inttoptr.zig");
         _ = @import("behavior/ir_block_deps.zig");
         _ = @import("behavior/math.zig");
+        _ = @import("behavior/maximum_minimum.zig");
         _ = @import("behavior/merge_error_sets.zig");
         _ = @import("behavior/misc.zig");
         _ = @import("behavior/muladd.zig");
@@ -118,6 +119,7 @@ comptime {
         _ = @import("behavior/ref_var_in_if_after_if_2nd_switch_prong.zig");
         _ = @import("behavior/reflection.zig");
         _ = @import("behavior/shuffle.zig");
+        _ = @import("behavior/select.zig");
         _ = @import("behavior/sizeof_and_typeof.zig");
         _ = @import("behavior/slice.zig");
         _ = @import("behavior/slice_sentinel_comptime.zig");

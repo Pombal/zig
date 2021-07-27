@@ -139,6 +139,11 @@ var failAllocator = Allocator{
     .resizeFn = Allocator.noResize,
 };
 fn failAllocatorAlloc(self: *Allocator, n: usize, alignment: u29, len_align: u29, ra: usize) Allocator.Error![]u8 {
+    _ = self;
+    _ = n;
+    _ = alignment;
+    _ = len_align;
+    _ = ra;
     return error.OutOfMemory;
 }
 
@@ -1107,7 +1112,9 @@ pub fn lastIndexOf(comptime T: type, haystack: []const T, needle: []const T) ?us
 
     var i: usize = haystack_bytes.len - needle_bytes.len;
     while (true) {
-        if (mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) return i;
+        if (i % @sizeOf(T) == 0 and mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) {
+            return @divExact(i, @sizeOf(T));
+        }
         const skip = skip_table[haystack_bytes[i]];
         if (skip > i) break;
         i -= skip;
@@ -1132,7 +1139,9 @@ pub fn indexOfPos(comptime T: type, haystack: []const T, start_index: usize, nee
 
     var i: usize = start_index * @sizeOf(T);
     while (i <= haystack_bytes.len - needle_bytes.len) {
-        if (mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) return i;
+        if (i % @sizeOf(T) == 0 and mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) {
+            return @divExact(i, @sizeOf(T));
+        }
         i += skip_table[haystack_bytes[i + needle_bytes.len - 1]];
     }
 
@@ -1162,6 +1171,34 @@ test "mem.indexOf" {
     try testing.expect(lastIndexOf(u8, "foo foo", "foo").? == 4);
     try testing.expect(lastIndexOfAny(u8, "boo, cat", "abo").? == 6);
     try testing.expect(lastIndexOfScalar(u8, "boo", 'o').? == 2);
+}
+
+test "mem.indexOf multibyte" {
+    {
+        // make haystack and needle long enough to trigger boyer-moore-horspool algorithm
+        const haystack = [1]u16{0} ** 100 ++ [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee, 0x00ff };
+        const needle = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee };
+        try testing.expectEqual(indexOfPos(u16, &haystack, 0, &needle), 100);
+
+        // check for misaligned false positives (little and big endian)
+        const needleLE = [_]u16{ 0xbbbb, 0xcccc, 0xdddd, 0xeeee, 0xffff };
+        try testing.expectEqual(indexOfPos(u16, &haystack, 0, &needleLE), null);
+        const needleBE = [_]u16{ 0xaacc, 0xbbdd, 0xccee, 0xddff, 0xee00 };
+        try testing.expectEqual(indexOfPos(u16, &haystack, 0, &needleBE), null);
+    }
+
+    {
+        // make haystack and needle long enough to trigger boyer-moore-horspool algorithm
+        const haystack = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee, 0x00ff } ++ [1]u16{0} ** 100;
+        const needle = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee };
+        try testing.expectEqual(lastIndexOf(u16, &haystack, &needle), 0);
+
+        // check for misaligned false positives (little and big endian)
+        const needleLE = [_]u16{ 0xbbbb, 0xcccc, 0xdddd, 0xeeee, 0xffff };
+        try testing.expectEqual(lastIndexOf(u16, &haystack, &needleLE), null);
+        const needleBE = [_]u16{ 0xaacc, 0xbbdd, 0xccee, 0xddff, 0xee00 };
+        try testing.expectEqual(lastIndexOf(u16, &haystack, &needleBE), null);
+    }
 }
 
 /// Returns the number of needles inside the haystack
@@ -1412,7 +1449,7 @@ pub fn writeIntSliceLittle(comptime T: type, buffer: []u8, value: T) void {
 
     // TODO I want to call writeIntLittle here but comptime eval facilities aren't good enough
     const uint = std.meta.Int(.unsigned, @typeInfo(T).Int.bits);
-    var bits = @truncate(uint, value);
+    var bits = @bitCast(uint, value);
     for (buffer) |*b| {
         b.* = @truncate(u8, bits);
         bits >>= 8;
@@ -1432,7 +1469,7 @@ pub fn writeIntSliceBig(comptime T: type, buffer: []u8, value: T) void {
 
     // TODO I want to call writeIntBig here but comptime eval facilities aren't good enough
     const uint = std.meta.Int(.unsigned, @typeInfo(T).Int.bits);
-    var bits = @truncate(uint, value);
+    var bits = @bitCast(uint, value);
     var index: usize = buffer.len;
     while (index != 0) {
         index -= 1;
@@ -1500,6 +1537,34 @@ test "writeIntBig and writeIntLittle" {
     try testing.expect(eql(u8, buf2[0..], &[_]u8{ 0xff, 0xfd }));
     writeIntLittle(i16, &buf2, -4);
     try testing.expect(eql(u8, buf2[0..], &[_]u8{ 0xfc, 0xff }));
+}
+
+/// Swap the byte order of all the members of the fields of a struct
+/// (Changing their endianess)
+pub fn bswapAllFields(comptime S: type, ptr: *S) void {
+    if (@typeInfo(S) != .Struct) @compileError("bswapAllFields expects a struct as the first argument");
+    inline for (std.meta.fields(S)) |f| {
+        @field(ptr, f.name) = @byteSwap(f.field_type, @field(ptr, f.name));
+    }
+}
+
+test "bswapAllFields" {
+    const T = extern struct {
+        f0: u8,
+        f1: u16,
+        f2: u32,
+    };
+    var s = T{
+        .f0 = 0x12,
+        .f1 = 0x1234,
+        .f2 = 0x12345678,
+    };
+    bswapAllFields(T, &s);
+    try std.testing.expectEqual(T{
+        .f0 = 0x12,
+        .f1 = 0x3412,
+        .f2 = 0x78563412,
+    }, s);
 }
 
 /// Returns an iterator that iterates over the slices of `buffer` that are not
@@ -1996,6 +2061,30 @@ fn testWriteIntImpl() !void {
         0x00,
         0x00,
     }));
+
+    writeIntSlice(i16, bytes[0..], @as(i16, -21555), Endian.Little);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0xCD,
+        0xAB,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+    }));
+
+    writeIntSlice(i16, bytes[0..], @as(i16, -21555), Endian.Big);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0xAB,
+        0xCD,
+    }));
 }
 
 /// Returns the smallest number in a slice. O(n).
@@ -2120,6 +2209,53 @@ test "replace" {
     try testing.expectEqualStrings(expected, output[0..expected.len]);
 }
 
+/// Replace all occurences of `needle` with `replacement`.
+pub fn replaceScalar(comptime T: type, slice: []T, needle: T, replacement: T) void {
+    for (slice) |e, i| {
+        if (e == needle) {
+            slice[i] = replacement;
+        }
+    }
+}
+
+/// Collapse consecutive duplicate elements into one entry.
+pub fn collapseRepeatsLen(comptime T: type, slice: []T, elem: T) usize {
+    if (slice.len == 0) return 0;
+    var write_idx: usize = 1;
+    var read_idx: usize = 1;
+    while (read_idx < slice.len) : (read_idx += 1) {
+        if (slice[read_idx - 1] != elem or slice[read_idx] != elem) {
+            slice[write_idx] = slice[read_idx];
+            write_idx += 1;
+        }
+    }
+    return write_idx;
+}
+
+/// Collapse consecutive duplicate elements into one entry.
+pub fn collapseRepeats(comptime T: type, slice: []T, elem: T) []T {
+    return slice[0..collapseRepeatsLen(T, slice, elem)];
+}
+
+fn testCollapseRepeats(str: []const u8, elem: u8, expected: []const u8) !void {
+    const mutable = try std.testing.allocator.dupe(u8, str);
+    defer std.testing.allocator.free(mutable);
+    try testing.expect(std.mem.eql(u8, collapseRepeats(u8, mutable, elem), expected));
+}
+test "collapseRepeats" {
+    try testCollapseRepeats("", '/', "");
+    try testCollapseRepeats("a", '/', "a");
+    try testCollapseRepeats("/", '/', "/");
+    try testCollapseRepeats("//", '/', "/");
+    try testCollapseRepeats("/a", '/', "/a");
+    try testCollapseRepeats("//a", '/', "/a");
+    try testCollapseRepeats("a/", '/', "a/");
+    try testCollapseRepeats("a//", '/', "a/");
+    try testCollapseRepeats("a/a", '/', "a/a");
+    try testCollapseRepeats("a//a", '/', "a/a");
+    try testCollapseRepeats("//a///a////", '/', "/a/a/");
+}
+
 /// Calculate the size needed in an output buffer to perform a replacement.
 /// The needle must not be empty.
 pub fn replacementSize(comptime T: type, input: []const T, needle: []const T, replacement: []const T) usize {
@@ -2161,14 +2297,14 @@ pub fn replaceOwned(comptime T: type, allocator: *Allocator, input: []const T, n
 }
 
 test "replaceOwned" {
-    const allocator = std.heap.page_allocator;
+    const gpa = std.testing.allocator;
 
-    const base_replace = replaceOwned(u8, allocator, "All your base are belong to us", "base", "Zig") catch unreachable;
-    defer allocator.free(base_replace);
+    const base_replace = replaceOwned(u8, gpa, "All your base are belong to us", "base", "Zig") catch @panic("out of memory");
+    defer gpa.free(base_replace);
     try testing.expect(eql(u8, base_replace, "All your Zig are belong to us"));
 
-    const zen_replace = replaceOwned(u8, allocator, "Favor reading code over writing code.", " code", "") catch unreachable;
-    defer allocator.free(zen_replace);
+    const zen_replace = replaceOwned(u8, gpa, "Favor reading code over writing code.", " code", "") catch @panic("out of memory");
+    defer gpa.free(zen_replace);
     try testing.expect(eql(u8, zen_replace, "Favor reading over writing."));
 }
 
@@ -2218,6 +2354,70 @@ pub fn nativeToBig(comptime T: type, x: T) T {
         .Little => @byteSwap(T, x),
         .Big => x,
     };
+}
+
+/// Returns the number of elements that, if added to the given pointer, align it
+/// to a multiple of the given quantity, or `null` if one of the following
+/// conditions is met:
+/// - The aligned pointer would not fit the address space,
+/// - The delta required to align the pointer is not a multiple of the pointee's
+///   type.
+pub fn alignPointerOffset(ptr: anytype, align_to: u29) ?usize {
+    assert(align_to != 0 and @popCount(u29, align_to) == 1);
+
+    const T = @TypeOf(ptr);
+    const info = @typeInfo(T);
+    if (info != .Pointer or info.Pointer.size != .Many)
+        @compileError("expected many item pointer, got " ++ @typeName(T));
+
+    // Do nothing if the pointer is already well-aligned.
+    if (align_to <= info.Pointer.alignment)
+        return 0;
+
+    // Calculate the aligned base address with an eye out for overflow.
+    const addr = @ptrToInt(ptr);
+    var new_addr: usize = undefined;
+    if (@addWithOverflow(usize, addr, align_to - 1, &new_addr)) return null;
+    new_addr &= ~@as(usize, align_to - 1);
+
+    // The delta is expressed in terms of bytes, turn it into a number of child
+    // type elements.
+    const delta = new_addr - addr;
+    const pointee_size = @sizeOf(info.Pointer.child);
+    if (delta % pointee_size != 0) return null;
+    return delta / pointee_size;
+}
+
+/// Aligns a given pointer value to a specified alignment factor.
+/// Returns an aligned pointer or null if one of the following conditions is
+/// met:
+/// - The aligned pointer would not fit the address space,
+/// - The delta required to align the pointer is not a multiple of the pointee's
+///   type.
+pub fn alignPointer(ptr: anytype, align_to: u29) ?@TypeOf(ptr) {
+    const adjust_off = alignPointerOffset(ptr, align_to) orelse return null;
+    const T = @TypeOf(ptr);
+    // Avoid the use of intToPtr to avoid losing the pointer provenance info.
+    return @alignCast(@typeInfo(T).Pointer.alignment, ptr + adjust_off);
+}
+
+test "alignPointer" {
+    const S = struct {
+        fn checkAlign(comptime T: type, base: usize, align_to: u29, expected: usize) !void {
+            var ptr = @intToPtr(T, base);
+            var aligned = alignPointer(ptr, align_to);
+            try testing.expectEqual(expected, @ptrToInt(aligned));
+        }
+    };
+
+    try S.checkAlign([*]u8, 0x123, 0x200, 0x200);
+    try S.checkAlign([*]align(4) u8, 0x10, 2, 0x10);
+    try S.checkAlign([*]u32, 0x10, 2, 0x10);
+    try S.checkAlign([*]u32, 0x4, 16, 0x10);
+    // Misaligned.
+    try S.checkAlign([*]align(1) u32, 0x3, 2, 0);
+    // Overflow.
+    try S.checkAlign([*]u32, math.maxInt(usize) - 3, 8, 0);
 }
 
 fn CopyPtrAttrs(comptime source: type, comptime size: std.builtin.TypeInfo.Pointer.Size, comptime child: type) type {

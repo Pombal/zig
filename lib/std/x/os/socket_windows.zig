@@ -16,27 +16,24 @@ const ws2_32 = windows.ws2_32;
 pub fn Mixin(comptime Socket: type) type {
     return struct {
         /// Open a new socket.
-        pub fn init(domain: u32, socket_type: u32, protocol: u32) !Socket {
-            var filtered_socket_type = socket_type & ~@as(u32, os.SOCK_CLOEXEC);
-
-            var filtered_flags: u32 = ws2_32.WSA_FLAG_OVERLAPPED;
-            if (socket_type & os.SOCK_CLOEXEC != 0) {
-                filtered_flags |= ws2_32.WSA_FLAG_NO_HANDLE_INHERIT;
-            }
+        pub fn init(domain: u32, socket_type: u32, protocol: u32, flags: std.enums.EnumFieldStruct(Socket.InitFlags, bool, false)) !Socket {
+            var raw_flags: u32 = 0;
+            const set = std.EnumSet(Socket.InitFlags).init(flags);
+            if (set.contains(.close_on_exec)) raw_flags |= ws2_32.WSA_FLAG_NO_HANDLE_INHERIT;
 
             const fd = ws2_32.WSASocketW(
                 @intCast(i32, domain),
-                @intCast(i32, filtered_socket_type),
+                @intCast(i32, socket_type),
                 @intCast(i32, protocol),
                 null,
                 0,
-                filtered_flags,
+                raw_flags,
             );
             if (fd == ws2_32.INVALID_SOCKET) {
                 return switch (ws2_32.WSAGetLastError()) {
                     .WSANOTINITIALISED => {
                         _ = try windows.WSAStartup(2, 2);
-                        return Socket.init(domain, socket_type, protocol);
+                        return Socket.init(domain, socket_type, protocol, flags);
                     },
                     .WSAEAFNOSUPPORT => error.AddressFamilyNotSupported,
                     .WSAEMFILE => error.ProcessFdQuotaExceeded,
@@ -44,6 +41,14 @@ pub fn Mixin(comptime Socket: type) type {
                     .WSAEPROTONOSUPPORT => error.ProtocolNotSupported,
                     else => |err| windows.unexpectedWSAError(err),
                 };
+            }
+
+            if (set.contains(.nonblocking)) {
+                var enabled: c_ulong = 1;
+                const rc = ws2_32.ioctlsocket(fd, ws2_32.FIONBIO, &enabled);
+                if (rc == ws2_32.SOCKET_ERROR) {
+                    return windows.unexpectedWSAError(ws2_32.WSAGetLastError());
+                }
             }
 
             return Socket{ .fd = fd };
@@ -138,12 +143,12 @@ pub fn Mixin(comptime Socket: type) type {
 
         /// Accept a pending incoming connection queued to the kernel backlog
         /// of the socket.
-        pub fn accept(self: Socket, flags: u32) !Socket.Connection {
-            var address: ws2_32.sockaddr_storage = undefined;
-            var address_len: c_int = @sizeOf(ws2_32.sockaddr_storage);
+        pub fn accept(self: Socket, flags: std.enums.EnumFieldStruct(Socket.InitFlags, bool, false)) !Socket.Connection {
+            var address: Socket.Address.Native.Storage = undefined;
+            var address_len: c_int = @sizeOf(Socket.Address.Native.Storage);
 
-            const rc = ws2_32.accept(self.fd, @ptrCast(*ws2_32.sockaddr, &address), &address_len);
-            if (rc == ws2_32.INVALID_SOCKET) {
+            const fd = ws2_32.accept(self.fd, @ptrCast(*ws2_32.sockaddr, &address), &address_len);
+            if (fd == ws2_32.INVALID_SOCKET) {
                 return switch (ws2_32.WSAGetLastError()) {
                     .WSANOTINITIALISED => unreachable,
                     .WSAECONNRESET => error.ConnectionResetByPeer,
@@ -158,8 +163,19 @@ pub fn Mixin(comptime Socket: type) type {
                 };
             }
 
-            const socket = Socket.from(rc);
+            const socket = Socket.from(fd);
+            errdefer socket.deinit();
+
             const socket_address = Socket.Address.fromNative(@ptrCast(*ws2_32.sockaddr, &address));
+
+            const set = std.EnumSet(Socket.InitFlags).init(flags);
+            if (set.contains(.nonblocking)) {
+                var enabled: c_ulong = 1;
+                const rc = ws2_32.ioctlsocket(fd, ws2_32.FIONBIO, &enabled);
+                if (rc == ws2_32.SOCKET_ERROR) {
+                    return windows.unexpectedWSAError(ws2_32.WSAGetLastError());
+                }
+            }
 
             return Socket.Connection.from(socket, socket_address);
         }
@@ -238,7 +254,7 @@ pub fn Mixin(comptime Socket: type) type {
         /// Writes multiple I/O vectors with a prepended message header to the socket
         /// with a set of flags specified. It returns the number of bytes that are
         /// written to the socket.
-        pub fn writeVectorized(self: Socket, msg: ws2_32.msghdr_const, flags: u32) !usize {
+        pub fn writeMessage(self: Socket, msg: Socket.Message, flags: u32) !usize {
             const call = try windows.loadWinsockExtensionFunction(ws2_32.LPFN_WSASENDMSG, self.fd, ws2_32.WSAID_WSASENDMSG);
 
             var num_bytes: u32 = undefined;
@@ -275,7 +291,8 @@ pub fn Mixin(comptime Socket: type) type {
         /// Read multiple I/O vectors with a prepended message header from the socket
         /// with a set of flags specified. It returns the number of bytes that were
         /// read into the buffer provided.
-        pub fn readVectorized(self: Socket, msg: *ws2_32.msghdr, flags: u32) !usize {
+        pub fn readMessage(self: Socket, msg: *Socket.Message, flags: u32) !usize {
+            _ = flags;
             const call = try windows.loadWinsockExtensionFunction(ws2_32.LPFN_WSARECVMSG, self.fd, ws2_32.WSAID_WSARECVMSG);
 
             var num_bytes: u32 = undefined;
@@ -311,8 +328,8 @@ pub fn Mixin(comptime Socket: type) type {
 
         /// Query the address that the socket is locally bounded to.
         pub fn getLocalAddress(self: Socket) !Socket.Address {
-            var address: ws2_32.sockaddr_storage = undefined;
-            var address_len: c_int = @sizeOf(ws2_32.sockaddr_storage);
+            var address: Socket.Address.Native.Storage = undefined;
+            var address_len: c_int = @sizeOf(Socket.Address.Native.Storage);
 
             const rc = ws2_32.getsockname(self.fd, @ptrCast(*ws2_32.sockaddr, &address), &address_len);
             if (rc == ws2_32.SOCKET_ERROR) {
@@ -331,8 +348,8 @@ pub fn Mixin(comptime Socket: type) type {
 
         /// Query the address that the socket is connected to.
         pub fn getRemoteAddress(self: Socket) !Socket.Address {
-            var address: ws2_32.sockaddr_storage = undefined;
-            var address_len: c_int = @sizeOf(ws2_32.sockaddr_storage);
+            var address: Socket.Address.Native.Storage = undefined;
+            var address_len: c_int = @sizeOf(Socket.Address.Native.Storage);
 
             const rc = ws2_32.getpeername(self.fd, @ptrCast(*ws2_32.sockaddr, &address), &address_len);
             if (rc == ws2_32.SOCKET_ERROR) {
@@ -351,16 +368,19 @@ pub fn Mixin(comptime Socket: type) type {
 
         /// Query and return the latest cached error on the socket.
         pub fn getError(self: Socket) !void {
+            _ = self;
             return {};
         }
 
         /// Query the read buffer size of the socket.
         pub fn getReadBufferSize(self: Socket) !u32 {
+            _ = self;
             return 0;
         }
 
         /// Query the write buffer size of the socket.
         pub fn getWriteBufferSize(self: Socket) !u32 {
+            _ = self;
             return 0;
         }
 
@@ -384,17 +404,13 @@ pub fn Mixin(comptime Socket: type) type {
         /// if the host does not support the option for a socket to linger around up until a timeout specified in
         /// seconds.
         pub fn setLinger(self: Socket, timeout_seconds: ?u16) !void {
-            const settings = ws2_32.linger{
-                .l_onoff = @as(u16, @boolToInt(timeout_seconds != null)),
-                .l_linger = if (timeout_seconds) |seconds| seconds else 0,
-            };
-
+            const settings = Socket.Linger.init(timeout_seconds);
             return self.setOption(ws2_32.SOL_SOCKET, ws2_32.SO_LINGER, mem.asBytes(&settings));
         }
 
         /// On connection-oriented sockets, have keep-alive messages be sent periodically. The timing in which keep-alive
         /// messages are sent are dependant on operating system settings. It returns `error.UnsupportedSocketOption` if
-        /// the host does not support periodically sending keep-alive messages on connection-oriented sockets. 
+        /// the host does not support periodically sending keep-alive messages on connection-oriented sockets.
         pub fn setKeepAlive(self: Socket, enabled: bool) !void {
             return self.setOption(ws2_32.SOL_SOCKET, ws2_32.SO_KEEPALIVE, mem.asBytes(&@as(u32, @boolToInt(enabled))));
         }
@@ -426,7 +442,7 @@ pub fn Mixin(comptime Socket: type) type {
 
         /// WARNING: Timeouts only affect blocking sockets. It is undefined behavior if a timeout is
         /// set on a non-blocking socket.
-        /// 
+        ///
         /// Set a timeout on the socket that is to occur if no messages are successfully written
         /// to its bound destination after a specified number of milliseconds. A subsequent write
         /// to the socket will thereafter return `error.WouldBlock` should the timeout be exceeded.
@@ -436,7 +452,7 @@ pub fn Mixin(comptime Socket: type) type {
 
         /// WARNING: Timeouts only affect blocking sockets. It is undefined behavior if a timeout is
         /// set on a non-blocking socket.
-        /// 
+        ///
         /// Set a timeout on the socket that is to occur if no messages are successfully read
         /// from its bound destination after a specified number of milliseconds. A subsequent
         /// read from the socket will thereafter return `error.WouldBlock` should the timeout be

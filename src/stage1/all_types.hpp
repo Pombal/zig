@@ -31,15 +31,14 @@ struct BuiltinFnEntry;
 struct TypeStructField;
 struct CodeGen;
 struct ZigValue;
-struct IrInst;
-struct IrInstSrc;
-struct IrInstGen;
-struct IrInstGenCast;
-struct IrInstGenAlloca;
-struct IrInstGenCall;
-struct IrInstGenAwait;
-struct IrBasicBlockSrc;
-struct IrBasicBlockGen;
+struct Stage1ZirInst;
+struct Stage1AirInst;
+struct Stage1AirInstCast;
+struct Stage1AirInstAlloca;
+struct Stage1AirInstCall;
+struct Stage1AirInstAwait;
+struct Stage1ZirBasicBlock;
+struct Stage1AirBasicBlock;
 struct ScopeDecls;
 struct ZigWindowsSDK;
 struct Tld;
@@ -51,7 +50,7 @@ struct ResultLocPeerParent;
 struct ResultLocBitCast;
 struct ResultLocCast;
 struct ResultLocReturn;
-struct IrExecutableGen;
+struct Stage1Air;
 
 enum FileExt {
     FileExtUnknown,
@@ -110,51 +109,33 @@ enum X64CABIClass {
     X64CABIClass_SSE,
 };
 
-struct IrExecutableSrc {
-    ZigList<IrBasicBlockSrc *> basic_block_list;
+struct Stage1Zir {
+    ZigList<Stage1ZirBasicBlock *> basic_block_list;
     Buf *name;
     ZigFn *name_fn;
-    size_t mem_slot_count;
-    size_t next_debug_id;
-    size_t *backward_branch_count;
-    size_t *backward_branch_quota;
-    ZigFn *fn_entry;
-    Buf *c_import_buf;
-    AstNode *source_node;
-    IrExecutableGen *parent_exec;
-    IrAnalyze *analysis;
     Scope *begin_scope;
     ErrorMsg *first_err_trace_msg;
     ZigList<Tld *> tld_list;
 
     bool is_inline;
-    bool is_generic_instantiation;
     bool need_err_code_spill;
-
-    // This is a function for use in the debugger to print
-    // the source location.
-    void src();
 };
 
-struct IrExecutableGen {
-    ZigList<IrBasicBlockGen *> basic_block_list;
+struct Stage1Air {
+    ZigList<Stage1AirBasicBlock *> basic_block_list;
     Buf *name;
     ZigFn *name_fn;
     size_t mem_slot_count;
     size_t next_debug_id;
-    size_t *backward_branch_count;
-    size_t *backward_branch_quota;
-    ZigFn *fn_entry;
     Buf *c_import_buf;
     AstNode *source_node;
-    IrExecutableGen *parent_exec;
-    IrExecutableSrc *source_exec;
+    Stage1Air *parent_exec;
+    Stage1Zir *source_exec;
     Scope *begin_scope;
     ErrorMsg *first_err_trace_msg;
     ZigList<Tld *> tld_list;
 
     bool is_inline;
-    bool is_generic_instantiation;
     bool need_err_code_spill;
 
     // This is a function for use in the debugger to print
@@ -330,8 +311,8 @@ struct ConstErrValue {
 
 struct ConstBoundFnValue {
     ZigFn *fn;
-    IrInstGen *first_arg;
-    IrInst *first_arg_src;
+    Stage1AirInst *first_arg;
+    AstNode *first_arg_src;
 };
 
 struct ConstArgTuple {
@@ -412,21 +393,21 @@ struct LazyValueTypeInfoDecls {
     IrAnalyze *ira;
 
     ScopeDecls *decls_scope;
-    IrInst *source_instr;
+    AstNode *source_node;
 };
 
 struct LazyValueAlignOf {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *target_type;
+    Stage1AirInst *target_type;
 };
 
 struct LazyValueSizeOf {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *target_type;
+    Stage1AirInst *target_type;
 
     bool bit_size;
 };
@@ -435,9 +416,9 @@ struct LazyValueSliceType {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *sentinel; // can be null
-    IrInstGen *elem_type;
-    IrInstGen *align_inst; // can be null
+    Stage1AirInst *sentinel; // can be null
+    Stage1AirInst *elem_type;
+    Stage1AirInst *align_inst; // can be null
 
     bool is_const;
     bool is_volatile;
@@ -448,8 +429,8 @@ struct LazyValueArrayType {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *sentinel; // can be null
-    IrInstGen *elem_type;
+    Stage1AirInst *sentinel; // can be null
+    Stage1AirInst *elem_type;
     uint64_t length;
 };
 
@@ -457,9 +438,9 @@ struct LazyValuePtrType {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *sentinel; // can be null
-    IrInstGen *elem_type;
-    IrInstGen *align_inst; // can be null
+    Stage1AirInst *sentinel; // can be null
+    Stage1AirInst *elem_type;
+    Stage1AirInst *align_inst; // can be null
 
     PtrLen ptr_len;
     uint32_t bit_offset_in_host;
@@ -474,14 +455,14 @@ struct LazyValuePtrTypeSimple {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *elem_type;
+    Stage1AirInst *elem_type;
 };
 
 struct LazyValueOptType {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *payload_type;
+    Stage1AirInst *payload_type;
 };
 
 struct LazyValueFnType {
@@ -489,9 +470,9 @@ struct LazyValueFnType {
 
     IrAnalyze *ira;
     AstNode *proto_node;
-    IrInstGen **param_types;
-    IrInstGen *align_inst; // can be null
-    IrInstGen *return_type;
+    Stage1AirInst **param_types;
+    Stage1AirInst *align_inst; // can be null
+    Stage1AirInst *return_type;
 
     CallingConvention cc;
     bool is_generic;
@@ -501,8 +482,8 @@ struct LazyValueErrUnionType {
     LazyValue base;
 
     IrAnalyze *ira;
-    IrInstGen *err_set_type;
-    IrInstGen *payload_type;
+    Stage1AirInst *err_set_type;
+    Stage1AirInst *payload_type;
     Buf *type_name;
 };
 
@@ -670,7 +651,7 @@ enum NodeType {
     NodeTypeIntLiteral,
     NodeTypeStringLiteral,
     NodeTypeCharLiteral,
-    NodeTypeSymbol,
+    NodeTypeIdentifier,
     NodeTypePrefixOpExpr,
     NodeTypePointerType,
     NodeTypeFnCallExpr,
@@ -710,8 +691,15 @@ enum NodeType {
     NodeTypeAwaitExpr,
     NodeTypeSuspend,
     NodeTypeAnyFrameType,
+    // main_token points to the identifier.
     NodeTypeEnumLiteral,
     NodeTypeAnyTypeField,
+};
+
+enum FnInline {
+    FnInlineAuto,
+    FnInlineAlways,
+    FnInlineNever,
 };
 
 struct AstNodeFnProto {
@@ -727,14 +715,19 @@ struct AstNodeFnProto {
     AstNode *section_expr;
     // populated if the "callconv(S)" is present
     AstNode *callconv_expr;
-    Buf doc_comments;
+
+    TokenIndex doc_comments;
+
+    // This is set based only on the existence of a noinline or inline keyword.
+    // This is then resolved to an is_noinline bool and (potentially .Inline)
+    // calling convention in resolve_decl_fn() in analyze.cpp.
+    FnInline fn_inline;
 
     VisibMod visib_mod;
     bool auto_err_set;
     bool is_var_args;
     bool is_extern;
     bool is_export;
-    bool is_noinline;
 };
 
 struct AstNodeFnDef {
@@ -745,8 +738,8 @@ struct AstNodeFnDef {
 struct AstNodeParamDecl {
     Buf *name;
     AstNode *type;
-    Token *anytype_token;
-    Buf doc_comments;
+    TokenIndex doc_comments;
+    TokenIndex anytype_token;
     bool is_noalias;
     bool is_comptime;
     bool is_var_args;
@@ -789,9 +782,9 @@ struct AstNodeVariableDeclaration {
     AstNode *align_expr;
     // populated if the "section(S)" is present
     AstNode *section_expr;
-    Token *threadlocal_tok;
-    Buf doc_comments;
+    TokenIndex doc_comments;
 
+    TokenIndex threadlocal_tok;
     VisibMod visib_mod;
     bool is_const;
     bool is_comptime;
@@ -925,13 +918,14 @@ struct AstNodePrefixOpExpr {
 };
 
 struct AstNodePointerType {
-    Token *star_token;
+    TokenIndex star_token;
+    TokenIndex allow_zero_token;
+    TokenIndex bit_offset_start;
+    TokenIndex host_int_bytes;
+
     AstNode *sentinel;
     AstNode *align_expr;
-    BigInt *bit_offset_start;
-    BigInt *host_int_bytes;
     AstNode *op_expr;
-    Token *allow_zero_token;
     bool is_const;
     bool is_volatile;
 };
@@ -946,7 +940,7 @@ struct AstNodeArrayType {
     AstNode *sentinel;
     AstNode *child_type;
     AstNode *align_expr;
-    Token *allow_zero_token;
+    TokenIndex allow_zero_token;
     bool is_const;
     bool is_volatile;
 };
@@ -964,11 +958,11 @@ struct AstNodeIfBoolExpr {
 
 struct AstNodeTryExpr {
     Buf *var_symbol;
-    bool var_is_ptr;
     AstNode *target_node;
     AstNode *then_node;
     AstNode *else_node;
     Buf *err_symbol;
+    bool var_is_ptr;
 };
 
 struct AstNodeTestExpr {
@@ -983,12 +977,12 @@ struct AstNodeWhileExpr {
     Buf *name;
     AstNode *condition;
     Buf *var_symbol;
-    bool var_is_ptr;
     AstNode *continue_expr;
     AstNode *body;
     AstNode *else_node;
     Buf *err_symbol;
     bool is_inline;
+    bool var_is_ptr;
 };
 
 struct AstNodeForExpr {
@@ -1060,7 +1054,7 @@ struct AsmToken {
 };
 
 struct AstNodeAsmExpr {
-    Token *volatile_token;
+    TokenIndex volatile_token;
     AstNode *asm_template;
     ZigList<AsmOutput*> output_list;
     ZigList<AsmInput*> input_list;
@@ -1084,7 +1078,7 @@ struct AstNodeContainerDecl {
     AstNode *init_arg_expr; // enum(T), struct(endianness), or union(T), or union(enum(T))
     ZigList<AstNode *> fields;
     ZigList<AstNode *> decls;
-    Buf doc_comments;
+    TokenIndex doc_comments;
 
     ContainerKind kind;
     ContainerLayout layout;
@@ -1093,7 +1087,7 @@ struct AstNodeContainerDecl {
 };
 
 struct AstNodeErrorSetField {
-    Buf doc_comments;
+    TokenIndex doc_comments;
     AstNode *field_name;
 };
 
@@ -1108,28 +1102,8 @@ struct AstNodeStructField {
     AstNode *value;
     // populated if the "align(A)" is present
     AstNode *align_expr;
-    Buf doc_comments;
-    Token *comptime_token;
-};
-
-struct AstNodeStringLiteral {
-    Buf *buf;
-};
-
-struct AstNodeCharLiteral {
-    uint32_t value;
-};
-
-struct AstNodeFloatLiteral {
-    BigFloat *bigfloat;
-
-    // overflow is true if when parsing the number, we discovered it would not
-    // fit without losing data in a double
-    bool overflow;
-};
-
-struct AstNodeIntLiteral {
-    BigInt *bigint;
+    TokenIndex doc_comments;
+    TokenIndex comptime_token;
 };
 
 struct AstNodeStructValueField {
@@ -1148,17 +1122,12 @@ struct AstNodeContainerInitExpr {
     ContainerInitKind kind;
 };
 
-struct AstNodeNullLiteral {
+struct AstNodeIdentifier {
+    Buf *name;
 };
 
-struct AstNodeUndefinedLiteral {
-};
-
-struct AstNodeThisLiteral {
-};
-
-struct AstNodeSymbolExpr {
-    Buf *symbol;
+struct AstNodeEnumLiteral {
+    Buf *name;
 };
 
 struct AstNodeBoolLiteral {
@@ -1178,13 +1147,6 @@ struct AstNodeContinueExpr {
     Buf *name;
 };
 
-struct AstNodeUnreachableExpr {
-};
-
-
-struct AstNodeErrorType {
-};
-
 struct AstNodeAwaitExpr {
     AstNode *expr;
 };
@@ -1197,16 +1159,10 @@ struct AstNodeAnyFrameType {
     AstNode *payload_type; // can be NULL
 };
 
-struct AstNodeEnumLiteral {
-    Token *period;
-    Token *identifier;
-};
-
 struct AstNode {
     enum NodeType type;
+    TokenIndex main_token;
     bool already_traced_this_node;
-    size_t line;
-    size_t column;
     ZigType *owner;
     union {
         AstNodeFnDef fn_def;
@@ -1242,29 +1198,24 @@ struct AstNode {
         AstNodePtrDerefExpr ptr_deref_expr;
         AstNodeContainerDecl container_decl;
         AstNodeStructField struct_field;
-        AstNodeStringLiteral string_literal;
-        AstNodeCharLiteral char_literal;
-        AstNodeFloatLiteral float_literal;
-        AstNodeIntLiteral int_literal;
         AstNodeContainerInitExpr container_init_expr;
         AstNodeStructValueField struct_val_field;
-        AstNodeNullLiteral null_literal;
-        AstNodeUndefinedLiteral undefined_literal;
-        AstNodeThisLiteral this_literal;
-        AstNodeSymbolExpr symbol_expr;
         AstNodeBoolLiteral bool_literal;
         AstNodeBreakExpr break_expr;
         AstNodeContinueExpr continue_expr;
-        AstNodeUnreachableExpr unreachable_expr;
         AstNodeArrayType array_type;
         AstNodeInferredArrayType inferred_array_type;
-        AstNodeErrorType error_type;
         AstNodeErrorSetDecl err_set_decl;
         AstNodeErrorSetField err_set_field;
         AstNodeResumeExpr resume_expr;
         AstNodeAwaitExpr await_expr;
         AstNodeSuspend suspend;
         AstNodeAnyFrameType anyframe_type;
+
+        // These are part of an astgen workaround to use less memory by
+        // memoizing into the AST. Once astgen is modified to only run once
+        // per corresponding source, this workaround can be removed.
+        AstNodeIdentifier identifier;
         AstNodeEnumLiteral enum_literal;
     } data;
 
@@ -1399,9 +1350,11 @@ struct ZigPackage {
 struct RootStruct {
     ZigPackage *package;
     Buf *path; // relative to root_package->root_src_dir
-    ZigList<size_t> *line_offsets;
     Buf *source_code;
     ZigLLVMDIFile *di_file;
+    size_t token_count;
+    TokenId *token_ids;
+    TokenLoc *token_locs;
 };
 
 enum StructSpecial {
@@ -1693,19 +1646,18 @@ struct ZigFn {
     // in the case of async functions this is the implicit return type according to the
     // zig source code, not according to zig ir
     ZigType *src_implicit_return_type;
-    IrExecutableSrc *ir_executable;
-    IrExecutableGen analyzed_executable;
-    size_t prealloc_bbc;
-    size_t prealloc_backward_branch_quota;
+    Stage1Zir *stage1_zir;
+    Stage1Air analyzed_executable;
+    size_t branch_quota;
     AstNode **param_source_nodes;
     Buf **param_names;
-    IrInstGen *err_code_spill;
+    Stage1AirInst *err_code_spill;
     AstNode *assumed_non_async;
 
     AstNode *fn_no_inline_set_node;
     AstNode *fn_static_eval_set_node;
 
-    ZigList<IrInstGenAlloca *> alloca_gen_list;
+    ZigList<Stage1AirInstAlloca *> alloca_gen_list;
     ZigList<ZigVar *> variable_list;
 
     Buf *section_name;
@@ -1717,8 +1669,8 @@ struct ZigFn {
     AstNode *non_async_node;
 
     ZigList<GlobalExport> export_list;
-    ZigList<IrInstGenCall *> call_list;
-    ZigList<IrInstGenAwait *> await_list;
+    ZigList<Stage1AirInstCall *> call_list;
+    ZigList<Stage1AirInstAwait *> await_list;
 
     LLVMValueRef valgrind_client_request_array;
 
@@ -1803,6 +1755,7 @@ enum BuiltinFnId {
     BuiltinFnIdIntToEnum,
     BuiltinFnIdVectorType,
     BuiltinFnIdShuffle,
+    BuiltinFnIdSelect,
     BuiltinFnIdSplat,
     BuiltinFnIdSetCold,
     BuiltinFnIdSetRuntimeSafety,
@@ -1815,7 +1768,7 @@ enum BuiltinFnId {
     BuiltinFnIdPtrToInt,
     BuiltinFnIdTagName,
     BuiltinFnIdFieldParentPtr,
-    BuiltinFnIdByteOffsetOf,
+    BuiltinFnIdOffsetOf,
     BuiltinFnIdBitOffsetOf,
     BuiltinFnIdAsyncCall,
     BuiltinFnIdShlExact,
@@ -1843,6 +1796,8 @@ enum BuiltinFnId {
     BuiltinFnIdWasmMemoryGrow,
     BuiltinFnIdSrc,
     BuiltinFnIdReduce,
+    BuiltinFnIdMaximum,
+    BuiltinFnIdMinimum,
 };
 
 struct BuiltinFnEntry {
@@ -1927,8 +1882,8 @@ struct TypeId {
     } data;
 };
 
-uint32_t type_id_hash(TypeId);
-bool type_id_eql(TypeId a, TypeId b);
+uint32_t type_id_hash(TypeId const *);
+bool type_id_eql(TypeId const *a, TypeId const *b);
 
 enum ZigLLVMFnId {
     ZigLLVMFnIdCtz,
@@ -1955,12 +1910,15 @@ struct ZigLLVMFnKey {
     union {
         struct {
             uint32_t bit_count;
+            uint32_t vector_len; // 0 means not a vector
         } ctz;
         struct {
             uint32_t bit_count;
+            uint32_t vector_len; // 0 means not a vector
         } clz;
         struct {
             uint32_t bit_count;
+            uint32_t vector_len; // 0 means not a vector
         } pop_count;
         struct {
             BuiltinFnId op;
@@ -1983,8 +1941,8 @@ struct ZigLLVMFnKey {
     } data;
 };
 
-uint32_t zig_llvm_fn_key_hash(ZigLLVMFnKey);
-bool zig_llvm_fn_key_eql(ZigLLVMFnKey a, ZigLLVMFnKey b);
+uint32_t zig_llvm_fn_key_hash(ZigLLVMFnKey const *);
+bool zig_llvm_fn_key_eql(ZigLLVMFnKey const *a, ZigLLVMFnKey const *b);
 
 struct TimeEvent {
     double time;
@@ -2138,15 +2096,16 @@ struct CodeGen {
     Buf h_file_output_path;
     Buf asm_file_output_path;
     Buf llvm_ir_file_output_path;
+    Buf bitcode_file_output_path;
     Buf analysis_json_output_path;
     Buf docs_output_path;
 
     Buf *builtin_zig_path;
     Buf *zig_std_special_dir; // Cannot be overridden; derived from zig_lib_dir.
 
-    IrInstSrc *invalid_inst_src;
-    IrInstGen *invalid_inst_gen;
-    IrInstGen *unreach_instruction;
+    Stage1ZirInst *invalid_inst_src;
+    Stage1AirInst *invalid_inst_gen;
+    Stage1AirInst *unreach_instruction;
 
     ZigValue panic_msg_vals[PanicMsgIdCount];
 
@@ -2168,8 +2127,6 @@ struct CodeGen {
     unsigned pointer_size_bytes;
     bool is_big_endian;
     bool have_err_ret_tracing;
-    bool verbose_tokenize;
-    bool verbose_ast;
     bool verbose_ir;
     bool verbose_llvm_ir;
     bool verbose_cimport;
@@ -2193,11 +2150,13 @@ struct CodeGen {
     bool have_pic;
     bool have_pie;
     bool have_lto;
+    bool unwind_tables;
     bool link_mode_dynamic;
     bool dll_export_fns;
     bool have_stack_probing;
     bool red_zone;
     bool function_sections;
+    bool include_compiler_rt;
     bool test_is_evented;
     bool valgrind_enabled;
     bool tsan_enabled;
@@ -2214,8 +2173,8 @@ struct ZigVar {
     ZigValue *const_value;
     ZigType *var_type;
     LLVMValueRef value_ref;
-    IrInstSrc *is_comptime;
-    IrInstGen *ptr_instruction;
+    Stage1ZirInst *is_comptime;
+    Stage1AirInst *ptr_instruction;
     // which node is the declaration of the variable
     AstNode *decl_node;
     ZigLLVMDILocalVariable *di_loc_var;
@@ -2316,11 +2275,11 @@ struct ScopeBlock {
     Scope base;
 
     Buf *name;
-    IrBasicBlockSrc *end_block;
-    IrInstSrc *is_comptime;
+    Stage1ZirBasicBlock *end_block;
+    Stage1ZirInst *is_comptime;
     ResultLocPeerParent *peer_parent;
-    ZigList<IrInstSrc *> *incoming_values;
-    ZigList<IrBasicBlockSrc *> *incoming_blocks;
+    ZigList<Stage1ZirInst *> *incoming_values;
+    ZigList<Stage1ZirBasicBlock *> *incoming_blocks;
 
     AstNode *safety_set_node;
     AstNode *fast_math_set_node;
@@ -2372,11 +2331,11 @@ struct ScopeLoop {
 
     LVal lval;
     Buf *name;
-    IrBasicBlockSrc *break_block;
-    IrBasicBlockSrc *continue_block;
-    IrInstSrc *is_comptime;
-    ZigList<IrInstSrc *> *incoming_values;
-    ZigList<IrBasicBlockSrc *> *incoming_blocks;
+    Stage1ZirBasicBlock *break_block;
+    Stage1ZirBasicBlock *continue_block;
+    Stage1ZirInst *is_comptime;
+    ZigList<Stage1ZirInst *> *incoming_values;
+    ZigList<Stage1ZirBasicBlock *> *incoming_blocks;
     ResultLocPeerParent *peer_parent;
     ScopeExpr *spill_scope;
 
@@ -2389,7 +2348,7 @@ struct ScopeLoop {
 struct ScopeRuntime {
     Scope base;
 
-    IrInstSrc *is_comptime;
+    Stage1ZirInst *is_comptime;
 };
 
 // This scope is created for a suspend block in order to have labeled
@@ -2487,12 +2446,12 @@ enum AtomicRmwOp {
 // to another basic block.
 // Phi instructions must be first in a basic block.
 // The last instruction in a basic block must be of type unreachable.
-struct IrBasicBlockSrc {
-    ZigList<IrInstSrc *> instruction_list;
-    IrBasicBlockGen *child;
+struct Stage1ZirBasicBlock {
+    ZigList<Stage1ZirInst *> instruction_list;
+    Stage1AirBasicBlock *child;
     Scope *scope;
     const char *name_hint;
-    IrInst *suspend_instruction_ref;
+    Stage1ZirInst *suspend_instruction_ref;
 
     uint32_t ref_count;
     uint32_t index; // index into the basic block list
@@ -2502,8 +2461,8 @@ struct IrBasicBlockSrc {
     bool in_resume_stack;
 };
 
-struct IrBasicBlockGen {
-    ZigList<IrInstGen *> instruction_list;
+struct Stage1AirBasicBlock {
+    ZigList<Stage1AirInst *> instruction_list;
     Scope *scope;
     const char *name_hint;
     LLVMBasicBlockRef llvm_block;
@@ -2511,11 +2470,11 @@ struct IrBasicBlockGen {
     // The instruction that referenced this basic block and caused us to
     // analyze the basic block. If the same instruction wants us to emit
     // the same basic block, then we re-generate it instead of saving it.
-    IrInst *ref_instruction;
+    Stage1ZirInst *ref_instruction;
     // When this is non-null, a branch to this basic block is only allowed
     // if the branch is comptime. The instruction points to the reason
     // the basic block must be comptime.
-    IrInst *must_be_comptime_source_instr;
+    AstNode *must_be_comptime_source_node;
 
     uint32_t debug_id;
     bool already_appended;
@@ -2524,411 +2483,400 @@ struct IrBasicBlockGen {
 // Src instructions are generated by ir_gen_* functions in ir.cpp from AST.
 // ir_analyze_* functions consume Src instructions and produce Gen instructions.
 // Src instructions do not have type information; Gen instructions do.
-enum IrInstSrcId {
-    IrInstSrcIdInvalid,
-    IrInstSrcIdDeclVar,
-    IrInstSrcIdBr,
-    IrInstSrcIdCondBr,
-    IrInstSrcIdSwitchBr,
-    IrInstSrcIdSwitchVar,
-    IrInstSrcIdSwitchElseVar,
-    IrInstSrcIdSwitchTarget,
-    IrInstSrcIdPhi,
-    IrInstSrcIdUnOp,
-    IrInstSrcIdBinOp,
-    IrInstSrcIdMergeErrSets,
-    IrInstSrcIdLoadPtr,
-    IrInstSrcIdStorePtr,
-    IrInstSrcIdFieldPtr,
-    IrInstSrcIdElemPtr,
-    IrInstSrcIdVarPtr,
-    IrInstSrcIdCall,
-    IrInstSrcIdCallArgs,
-    IrInstSrcIdCallExtra,
-    IrInstSrcIdAsyncCallExtra,
-    IrInstSrcIdConst,
-    IrInstSrcIdReturn,
-    IrInstSrcIdContainerInitList,
-    IrInstSrcIdContainerInitFields,
-    IrInstSrcIdUnreachable,
-    IrInstSrcIdTypeOf,
-    IrInstSrcIdSetCold,
-    IrInstSrcIdSetRuntimeSafety,
-    IrInstSrcIdSetFloatMode,
-    IrInstSrcIdArrayType,
-    IrInstSrcIdAnyFrameType,
-    IrInstSrcIdSliceType,
-    IrInstSrcIdAsm,
-    IrInstSrcIdSizeOf,
-    IrInstSrcIdTestNonNull,
-    IrInstSrcIdOptionalUnwrapPtr,
-    IrInstSrcIdClz,
-    IrInstSrcIdCtz,
-    IrInstSrcIdPopCount,
-    IrInstSrcIdBswap,
-    IrInstSrcIdBitReverse,
-    IrInstSrcIdImport,
-    IrInstSrcIdCImport,
-    IrInstSrcIdCInclude,
-    IrInstSrcIdCDefine,
-    IrInstSrcIdCUndef,
-    IrInstSrcIdRef,
-    IrInstSrcIdCompileErr,
-    IrInstSrcIdCompileLog,
-    IrInstSrcIdErrName,
-    IrInstSrcIdEmbedFile,
-    IrInstSrcIdCmpxchg,
-    IrInstSrcIdFence,
-    IrInstSrcIdReduce,
-    IrInstSrcIdTruncate,
-    IrInstSrcIdIntCast,
-    IrInstSrcIdFloatCast,
-    IrInstSrcIdIntToFloat,
-    IrInstSrcIdFloatToInt,
-    IrInstSrcIdBoolToInt,
-    IrInstSrcIdVectorType,
-    IrInstSrcIdShuffleVector,
-    IrInstSrcIdSplat,
-    IrInstSrcIdBoolNot,
-    IrInstSrcIdMemset,
-    IrInstSrcIdMemcpy,
-    IrInstSrcIdSlice,
-    IrInstSrcIdBreakpoint,
-    IrInstSrcIdReturnAddress,
-    IrInstSrcIdFrameAddress,
-    IrInstSrcIdFrameHandle,
-    IrInstSrcIdFrameType,
-    IrInstSrcIdFrameSize,
-    IrInstSrcIdAlignOf,
-    IrInstSrcIdOverflowOp,
-    IrInstSrcIdTestErr,
-    IrInstSrcIdMulAdd,
-    IrInstSrcIdFloatOp,
-    IrInstSrcIdUnwrapErrCode,
-    IrInstSrcIdUnwrapErrPayload,
-    IrInstSrcIdFnProto,
-    IrInstSrcIdTestComptime,
-    IrInstSrcIdPtrCast,
-    IrInstSrcIdBitCast,
-    IrInstSrcIdIntToPtr,
-    IrInstSrcIdPtrToInt,
-    IrInstSrcIdIntToEnum,
-    IrInstSrcIdEnumToInt,
-    IrInstSrcIdIntToErr,
-    IrInstSrcIdErrToInt,
-    IrInstSrcIdCheckSwitchProngsUnderYes,
-    IrInstSrcIdCheckSwitchProngsUnderNo,
-    IrInstSrcIdCheckStatementIsVoid,
-    IrInstSrcIdTypeName,
-    IrInstSrcIdDeclRef,
-    IrInstSrcIdPanic,
-    IrInstSrcIdTagName,
-    IrInstSrcIdFieldParentPtr,
-    IrInstSrcIdByteOffsetOf,
-    IrInstSrcIdBitOffsetOf,
-    IrInstSrcIdTypeInfo,
-    IrInstSrcIdType,
-    IrInstSrcIdHasField,
-    IrInstSrcIdSetEvalBranchQuota,
-    IrInstSrcIdPtrType,
-    IrInstSrcIdPtrTypeSimple,
-    IrInstSrcIdPtrTypeSimpleConst,
-    IrInstSrcIdAlignCast,
-    IrInstSrcIdImplicitCast,
-    IrInstSrcIdResolveResult,
-    IrInstSrcIdResetResult,
-    IrInstSrcIdSetAlignStack,
-    IrInstSrcIdArgTypeAllowVarFalse,
-    IrInstSrcIdArgTypeAllowVarTrue,
-    IrInstSrcIdExport,
-    IrInstSrcIdExtern,
-    IrInstSrcIdErrorReturnTrace,
-    IrInstSrcIdErrorUnion,
-    IrInstSrcIdAtomicRmw,
-    IrInstSrcIdAtomicLoad,
-    IrInstSrcIdAtomicStore,
-    IrInstSrcIdSaveErrRetAddr,
-    IrInstSrcIdAddImplicitReturnType,
-    IrInstSrcIdErrSetCast,
-    IrInstSrcIdCheckRuntimeScope,
-    IrInstSrcIdHasDecl,
-    IrInstSrcIdUndeclaredIdent,
-    IrInstSrcIdAlloca,
-    IrInstSrcIdEndExpr,
-    IrInstSrcIdUnionInitNamedField,
-    IrInstSrcIdSuspendBegin,
-    IrInstSrcIdSuspendFinish,
-    IrInstSrcIdAwait,
-    IrInstSrcIdResume,
-    IrInstSrcIdSpillBegin,
-    IrInstSrcIdSpillEnd,
-    IrInstSrcIdWasmMemorySize,
-    IrInstSrcIdWasmMemoryGrow,
-    IrInstSrcIdSrc,
+enum Stage1ZirInstId : uint8_t {
+    Stage1ZirInstIdInvalid,
+    Stage1ZirInstIdDeclVar,
+    Stage1ZirInstIdBr,
+    Stage1ZirInstIdCondBr,
+    Stage1ZirInstIdSwitchBr,
+    Stage1ZirInstIdSwitchVar,
+    Stage1ZirInstIdSwitchElseVar,
+    Stage1ZirInstIdSwitchTarget,
+    Stage1ZirInstIdPhi,
+    Stage1ZirInstIdUnOp,
+    Stage1ZirInstIdBinOp,
+    Stage1ZirInstIdMergeErrSets,
+    Stage1ZirInstIdLoadPtr,
+    Stage1ZirInstIdStorePtr,
+    Stage1ZirInstIdFieldPtr,
+    Stage1ZirInstIdElemPtr,
+    Stage1ZirInstIdVarPtr,
+    Stage1ZirInstIdCall,
+    Stage1ZirInstIdCallArgs,
+    Stage1ZirInstIdCallExtra,
+    Stage1ZirInstIdAsyncCallExtra,
+    Stage1ZirInstIdConst,
+    Stage1ZirInstIdReturn,
+    Stage1ZirInstIdContainerInitList,
+    Stage1ZirInstIdContainerInitFields,
+    Stage1ZirInstIdUnreachable,
+    Stage1ZirInstIdTypeOf,
+    Stage1ZirInstIdSetCold,
+    Stage1ZirInstIdSetRuntimeSafety,
+    Stage1ZirInstIdSetFloatMode,
+    Stage1ZirInstIdArrayType,
+    Stage1ZirInstIdAnyFrameType,
+    Stage1ZirInstIdSliceType,
+    Stage1ZirInstIdAsm,
+    Stage1ZirInstIdSizeOf,
+    Stage1ZirInstIdTestNonNull,
+    Stage1ZirInstIdOptionalUnwrapPtr,
+    Stage1ZirInstIdClz,
+    Stage1ZirInstIdCtz,
+    Stage1ZirInstIdPopCount,
+    Stage1ZirInstIdBswap,
+    Stage1ZirInstIdBitReverse,
+    Stage1ZirInstIdImport,
+    Stage1ZirInstIdCImport,
+    Stage1ZirInstIdCInclude,
+    Stage1ZirInstIdCDefine,
+    Stage1ZirInstIdCUndef,
+    Stage1ZirInstIdRef,
+    Stage1ZirInstIdCompileErr,
+    Stage1ZirInstIdCompileLog,
+    Stage1ZirInstIdErrName,
+    Stage1ZirInstIdEmbedFile,
+    Stage1ZirInstIdCmpxchg,
+    Stage1ZirInstIdFence,
+    Stage1ZirInstIdReduce,
+    Stage1ZirInstIdTruncate,
+    Stage1ZirInstIdIntCast,
+    Stage1ZirInstIdFloatCast,
+    Stage1ZirInstIdIntToFloat,
+    Stage1ZirInstIdFloatToInt,
+    Stage1ZirInstIdBoolToInt,
+    Stage1ZirInstIdVectorType,
+    Stage1ZirInstIdShuffleVector,
+    Stage1ZirInstIdSelect,
+    Stage1ZirInstIdSplat,
+    Stage1ZirInstIdBoolNot,
+    Stage1ZirInstIdMemset,
+    Stage1ZirInstIdMemcpy,
+    Stage1ZirInstIdSlice,
+    Stage1ZirInstIdBreakpoint,
+    Stage1ZirInstIdReturnAddress,
+    Stage1ZirInstIdFrameAddress,
+    Stage1ZirInstIdFrameHandle,
+    Stage1ZirInstIdFrameType,
+    Stage1ZirInstIdFrameSize,
+    Stage1ZirInstIdAlignOf,
+    Stage1ZirInstIdOverflowOp,
+    Stage1ZirInstIdTestErr,
+    Stage1ZirInstIdMulAdd,
+    Stage1ZirInstIdFloatOp,
+    Stage1ZirInstIdUnwrapErrCode,
+    Stage1ZirInstIdUnwrapErrPayload,
+    Stage1ZirInstIdFnProto,
+    Stage1ZirInstIdTestComptime,
+    Stage1ZirInstIdPtrCast,
+    Stage1ZirInstIdBitCast,
+    Stage1ZirInstIdIntToPtr,
+    Stage1ZirInstIdPtrToInt,
+    Stage1ZirInstIdIntToEnum,
+    Stage1ZirInstIdEnumToInt,
+    Stage1ZirInstIdIntToErr,
+    Stage1ZirInstIdErrToInt,
+    Stage1ZirInstIdCheckSwitchProngsUnderYes,
+    Stage1ZirInstIdCheckSwitchProngsUnderNo,
+    Stage1ZirInstIdCheckStatementIsVoid,
+    Stage1ZirInstIdTypeName,
+    Stage1ZirInstIdDeclRef,
+    Stage1ZirInstIdPanic,
+    Stage1ZirInstIdTagName,
+    Stage1ZirInstIdFieldParentPtr,
+    Stage1ZirInstIdOffsetOf,
+    Stage1ZirInstIdBitOffsetOf,
+    Stage1ZirInstIdTypeInfo,
+    Stage1ZirInstIdType,
+    Stage1ZirInstIdHasField,
+    Stage1ZirInstIdSetEvalBranchQuota,
+    Stage1ZirInstIdPtrType,
+    Stage1ZirInstIdPtrTypeSimple,
+    Stage1ZirInstIdPtrTypeSimpleConst,
+    Stage1ZirInstIdAlignCast,
+    Stage1ZirInstIdImplicitCast,
+    Stage1ZirInstIdResolveResult,
+    Stage1ZirInstIdResetResult,
+    Stage1ZirInstIdSetAlignStack,
+    Stage1ZirInstIdArgTypeAllowVarFalse,
+    Stage1ZirInstIdArgTypeAllowVarTrue,
+    Stage1ZirInstIdExport,
+    Stage1ZirInstIdExtern,
+    Stage1ZirInstIdErrorReturnTrace,
+    Stage1ZirInstIdErrorUnion,
+    Stage1ZirInstIdAtomicRmw,
+    Stage1ZirInstIdAtomicLoad,
+    Stage1ZirInstIdAtomicStore,
+    Stage1ZirInstIdSaveErrRetAddr,
+    Stage1ZirInstIdAddImplicitReturnType,
+    Stage1ZirInstIdErrSetCast,
+    Stage1ZirInstIdCheckRuntimeScope,
+    Stage1ZirInstIdHasDecl,
+    Stage1ZirInstIdUndeclaredIdent,
+    Stage1ZirInstIdAlloca,
+    Stage1ZirInstIdEndExpr,
+    Stage1ZirInstIdUnionInitNamedField,
+    Stage1ZirInstIdSuspendBegin,
+    Stage1ZirInstIdSuspendFinish,
+    Stage1ZirInstIdAwait,
+    Stage1ZirInstIdResume,
+    Stage1ZirInstIdSpillBegin,
+    Stage1ZirInstIdSpillEnd,
+    Stage1ZirInstIdWasmMemorySize,
+    Stage1ZirInstIdWasmMemoryGrow,
+    Stage1ZirInstIdSrc,
 };
 
 // ir_render_* functions in codegen.cpp consume Gen instructions and produce LLVM IR.
 // Src instructions do not have type information; Gen instructions do.
-enum IrInstGenId {
-    IrInstGenIdInvalid,
-    IrInstGenIdDeclVar,
-    IrInstGenIdBr,
-    IrInstGenIdCondBr,
-    IrInstGenIdSwitchBr,
-    IrInstGenIdPhi,
-    IrInstGenIdBinaryNot,
-    IrInstGenIdNegation,
-    IrInstGenIdBinOp,
-    IrInstGenIdLoadPtr,
-    IrInstGenIdStorePtr,
-    IrInstGenIdVectorStoreElem,
-    IrInstGenIdStructFieldPtr,
-    IrInstGenIdUnionFieldPtr,
-    IrInstGenIdElemPtr,
-    IrInstGenIdVarPtr,
-    IrInstGenIdReturnPtr,
-    IrInstGenIdCall,
-    IrInstGenIdReturn,
-    IrInstGenIdCast,
-    IrInstGenIdUnreachable,
-    IrInstGenIdAsm,
-    IrInstGenIdTestNonNull,
-    IrInstGenIdOptionalUnwrapPtr,
-    IrInstGenIdOptionalWrap,
-    IrInstGenIdUnionTag,
-    IrInstGenIdClz,
-    IrInstGenIdCtz,
-    IrInstGenIdPopCount,
-    IrInstGenIdBswap,
-    IrInstGenIdBitReverse,
-    IrInstGenIdRef,
-    IrInstGenIdErrName,
-    IrInstGenIdCmpxchg,
-    IrInstGenIdFence,
-    IrInstGenIdReduce,
-    IrInstGenIdTruncate,
-    IrInstGenIdShuffleVector,
-    IrInstGenIdSplat,
-    IrInstGenIdBoolNot,
-    IrInstGenIdMemset,
-    IrInstGenIdMemcpy,
-    IrInstGenIdSlice,
-    IrInstGenIdBreakpoint,
-    IrInstGenIdReturnAddress,
-    IrInstGenIdFrameAddress,
-    IrInstGenIdFrameHandle,
-    IrInstGenIdFrameSize,
-    IrInstGenIdOverflowOp,
-    IrInstGenIdTestErr,
-    IrInstGenIdMulAdd,
-    IrInstGenIdFloatOp,
-    IrInstGenIdUnwrapErrCode,
-    IrInstGenIdUnwrapErrPayload,
-    IrInstGenIdErrWrapCode,
-    IrInstGenIdErrWrapPayload,
-    IrInstGenIdPtrCast,
-    IrInstGenIdBitCast,
-    IrInstGenIdWidenOrShorten,
-    IrInstGenIdIntToPtr,
-    IrInstGenIdPtrToInt,
-    IrInstGenIdIntToEnum,
-    IrInstGenIdIntToErr,
-    IrInstGenIdErrToInt,
-    IrInstGenIdPanic,
-    IrInstGenIdTagName,
-    IrInstGenIdFieldParentPtr,
-    IrInstGenIdAlignCast,
-    IrInstGenIdErrorReturnTrace,
-    IrInstGenIdAtomicRmw,
-    IrInstGenIdAtomicLoad,
-    IrInstGenIdAtomicStore,
-    IrInstGenIdSaveErrRetAddr,
-    IrInstGenIdVectorToArray,
-    IrInstGenIdArrayToVector,
-    IrInstGenIdAssertZero,
-    IrInstGenIdAssertNonNull,
-    IrInstGenIdPtrOfArrayToSlice,
-    IrInstGenIdSuspendBegin,
-    IrInstGenIdSuspendFinish,
-    IrInstGenIdAwait,
-    IrInstGenIdResume,
-    IrInstGenIdSpillBegin,
-    IrInstGenIdSpillEnd,
-    IrInstGenIdVectorExtractElem,
-    IrInstGenIdAlloca,
-    IrInstGenIdConst,
-    IrInstGenIdWasmMemorySize,
-    IrInstGenIdWasmMemoryGrow,
-    IrInstGenIdExtern,
+enum Stage1AirInstId : uint8_t {
+    Stage1AirInstIdInvalid,
+    Stage1AirInstIdDeclVar,
+    Stage1AirInstIdBr,
+    Stage1AirInstIdCondBr,
+    Stage1AirInstIdSwitchBr,
+    Stage1AirInstIdPhi,
+    Stage1AirInstIdBinaryNot,
+    Stage1AirInstIdNegation,
+    Stage1AirInstIdBinOp,
+    Stage1AirInstIdLoadPtr,
+    Stage1AirInstIdStorePtr,
+    Stage1AirInstIdVectorStoreElem,
+    Stage1AirInstIdStructFieldPtr,
+    Stage1AirInstIdUnionFieldPtr,
+    Stage1AirInstIdElemPtr,
+    Stage1AirInstIdVarPtr,
+    Stage1AirInstIdReturnPtr,
+    Stage1AirInstIdCall,
+    Stage1AirInstIdReturn,
+    Stage1AirInstIdCast,
+    Stage1AirInstIdUnreachable,
+    Stage1AirInstIdAsm,
+    Stage1AirInstIdTestNonNull,
+    Stage1AirInstIdOptionalUnwrapPtr,
+    Stage1AirInstIdOptionalWrap,
+    Stage1AirInstIdUnionTag,
+    Stage1AirInstIdClz,
+    Stage1AirInstIdCtz,
+    Stage1AirInstIdPopCount,
+    Stage1AirInstIdBswap,
+    Stage1AirInstIdBitReverse,
+    Stage1AirInstIdRef,
+    Stage1AirInstIdErrName,
+    Stage1AirInstIdCmpxchg,
+    Stage1AirInstIdFence,
+    Stage1AirInstIdReduce,
+    Stage1AirInstIdTruncate,
+    Stage1AirInstIdShuffleVector,
+    Stage1AirInstIdSelect,
+    Stage1AirInstIdSplat,
+    Stage1AirInstIdBoolNot,
+    Stage1AirInstIdMemset,
+    Stage1AirInstIdMemcpy,
+    Stage1AirInstIdSlice,
+    Stage1AirInstIdBreakpoint,
+    Stage1AirInstIdReturnAddress,
+    Stage1AirInstIdFrameAddress,
+    Stage1AirInstIdFrameHandle,
+    Stage1AirInstIdFrameSize,
+    Stage1AirInstIdOverflowOp,
+    Stage1AirInstIdTestErr,
+    Stage1AirInstIdMulAdd,
+    Stage1AirInstIdFloatOp,
+    Stage1AirInstIdUnwrapErrCode,
+    Stage1AirInstIdUnwrapErrPayload,
+    Stage1AirInstIdErrWrapCode,
+    Stage1AirInstIdErrWrapPayload,
+    Stage1AirInstIdPtrCast,
+    Stage1AirInstIdBitCast,
+    Stage1AirInstIdWidenOrShorten,
+    Stage1AirInstIdIntToPtr,
+    Stage1AirInstIdPtrToInt,
+    Stage1AirInstIdIntToEnum,
+    Stage1AirInstIdIntToErr,
+    Stage1AirInstIdErrToInt,
+    Stage1AirInstIdPanic,
+    Stage1AirInstIdTagName,
+    Stage1AirInstIdFieldParentPtr,
+    Stage1AirInstIdAlignCast,
+    Stage1AirInstIdErrorReturnTrace,
+    Stage1AirInstIdAtomicRmw,
+    Stage1AirInstIdAtomicLoad,
+    Stage1AirInstIdAtomicStore,
+    Stage1AirInstIdSaveErrRetAddr,
+    Stage1AirInstIdVectorToArray,
+    Stage1AirInstIdArrayToVector,
+    Stage1AirInstIdAssertZero,
+    Stage1AirInstIdAssertNonNull,
+    Stage1AirInstIdPtrOfArrayToSlice,
+    Stage1AirInstIdSuspendBegin,
+    Stage1AirInstIdSuspendFinish,
+    Stage1AirInstIdAwait,
+    Stage1AirInstIdResume,
+    Stage1AirInstIdSpillBegin,
+    Stage1AirInstIdSpillEnd,
+    Stage1AirInstIdVectorExtractElem,
+    Stage1AirInstIdAlloca,
+    Stage1AirInstIdConst,
+    Stage1AirInstIdWasmMemorySize,
+    Stage1AirInstIdWasmMemoryGrow,
+    Stage1AirInstIdExtern,
 };
 
-// Common fields between IrInstSrc and IrInstGen. This allows future passes
-// after pass2 to be added to zig.
-struct IrInst {
-    // if ref_count is zero and the instruction has no side effects,
-    // the instruction can be omitted in codegen
-    uint32_t ref_count;
+struct Stage1ZirInst {
+    Stage1ZirInstId id;
+    uint16_t ref_count;
     uint32_t debug_id;
 
     Scope *scope;
     AstNode *source_node;
 
-    // for debugging purposes, these are useful to call to inspect the instruction
-    void dump();
-    void src();
-};
-
-struct IrInstSrc {
-    IrInst base;
-
-    IrInstSrcId id;
-    // true if this instruction was generated by zig and not from user code
-    // this matters for the "unreachable code" compile error
-    bool is_gen;
-    bool is_noreturn;
-
     // When analyzing IR, instructions that point to this instruction in the "old ir"
     // can find the instruction that corresponds to this value in the "new ir"
     // with this child field.
-    IrInstGen *child;
-    IrBasicBlockSrc *owner_bb;
+    Stage1AirInst *child;
+    Stage1ZirBasicBlock *owner_bb;
 
     // for debugging purposes, these are useful to call to inspect the instruction
     void dump();
     void src();
 };
 
-struct IrInstGen {
-    IrInst base;
+struct Stage1AirInst {
+    Stage1AirInstId id;
+    // if ref_count is zero and the instruction has no side effects,
+    // the instruction can be omitted in codegen
+    uint16_t ref_count;
+    uint32_t debug_id;
 
-    IrInstGenId id;
+    Scope *scope;
+    AstNode *source_node;
 
     LLVMValueRef llvm_value;
     ZigValue *value;
-    IrBasicBlockGen *owner_bb;
     // Nearly any instruction can have to be stored as a local variable before suspending
     // and then loaded after resuming, in case there is an expression with a suspend point
     // in it, such as: x + await y
-    IrInstGen *spill;
+    Stage1AirInst *spill;
 
     // for debugging purposes, these are useful to call to inspect the instruction
     void dump();
     void src();
 };
 
-struct IrInstSrcDeclVar {
-    IrInstSrc base;
+struct Stage1ZirInstDeclVar {
+    Stage1ZirInst base;
 
     ZigVar *var;
-    IrInstSrc *var_type;
-    IrInstSrc *align_value;
-    IrInstSrc *ptr;
+    Stage1ZirInst *var_type;
+    Stage1ZirInst *align_value;
+    Stage1ZirInst *ptr;
 };
 
-struct IrInstGenDeclVar {
-    IrInstGen base;
+struct Stage1AirInstDeclVar {
+    Stage1AirInst base;
 
     ZigVar *var;
-    IrInstGen *var_ptr;
+    Stage1AirInst *var_ptr;
 };
 
-struct IrInstSrcCondBr {
-    IrInstSrc base;
+struct Stage1ZirInstCondBr {
+    Stage1ZirInst base;
 
-    IrInstSrc *condition;
-    IrBasicBlockSrc *then_block;
-    IrBasicBlockSrc *else_block;
-    IrInstSrc *is_comptime;
+    Stage1ZirInst *condition;
+    Stage1ZirBasicBlock *then_block;
+    Stage1ZirBasicBlock *else_block;
+    Stage1ZirInst *is_comptime;
     ResultLoc *result_loc;
 };
 
-struct IrInstGenCondBr {
-    IrInstGen base;
+struct Stage1AirInstCondBr {
+    Stage1AirInst base;
 
-    IrInstGen *condition;
-    IrBasicBlockGen *then_block;
-    IrBasicBlockGen *else_block;
+    Stage1AirInst *condition;
+    Stage1AirBasicBlock *then_block;
+    Stage1AirBasicBlock *else_block;
 };
 
-struct IrInstSrcBr {
-    IrInstSrc base;
+struct Stage1ZirInstBr {
+    Stage1ZirInst base;
 
-    IrBasicBlockSrc *dest_block;
-    IrInstSrc *is_comptime;
+    Stage1ZirBasicBlock *dest_block;
+    Stage1ZirInst *is_comptime;
 };
 
-struct IrInstGenBr {
-    IrInstGen base;
+struct Stage1AirInstBr {
+    Stage1AirInst base;
 
-    IrBasicBlockGen *dest_block;
+    Stage1AirBasicBlock *dest_block;
 };
 
-struct IrInstSrcSwitchBrCase {
-    IrInstSrc *value;
-    IrBasicBlockSrc *block;
+struct Stage1ZirInstSwitchBrCase {
+    Stage1ZirInst *value;
+    Stage1ZirBasicBlock *block;
 };
 
-struct IrInstSrcSwitchBr {
-    IrInstSrc base;
+struct Stage1ZirInstSwitchBr {
+    Stage1ZirInst base;
 
-    IrInstSrc *target_value;
-    IrBasicBlockSrc *else_block;
+    Stage1ZirInst *target_value;
+    Stage1ZirBasicBlock *else_block;
     size_t case_count;
-    IrInstSrcSwitchBrCase *cases;
-    IrInstSrc *is_comptime;
-    IrInstSrc *switch_prongs_void;
+    Stage1ZirInstSwitchBrCase *cases;
+    Stage1ZirInst *is_comptime;
+    Stage1ZirInst *switch_prongs_void;
 };
 
-struct IrInstGenSwitchBrCase {
-    IrInstGen *value;
-    IrBasicBlockGen *block;
+struct Stage1AirInstSwitchBrCase {
+    Stage1AirInst *value;
+    Stage1AirBasicBlock *block;
 };
 
-struct IrInstGenSwitchBr {
-    IrInstGen base;
+struct Stage1AirInstSwitchBr {
+    Stage1AirInst base;
 
-    IrInstGen *target_value;
-    IrBasicBlockGen *else_block;
+    Stage1AirInst *target_value;
+    Stage1AirBasicBlock *else_block;
     size_t case_count;
-    IrInstGenSwitchBrCase *cases;
+    Stage1AirInstSwitchBrCase *cases;
 };
 
-struct IrInstSrcSwitchVar {
-    IrInstSrc base;
+struct Stage1ZirInstSwitchVar {
+    Stage1ZirInst base;
 
-    IrInstSrc *target_value_ptr;
-    IrInstSrc **prongs_ptr;
+    Stage1ZirInst *target_value_ptr;
+    Stage1ZirInst **prongs_ptr;
     size_t prongs_len;
 };
 
-struct IrInstSrcSwitchElseVar {
-    IrInstSrc base;
+struct Stage1ZirInstSwitchElseVar {
+    Stage1ZirInst base;
 
-    IrInstSrc *target_value_ptr;
-    IrInstSrcSwitchBr *switch_br;
+    Stage1ZirInst *target_value_ptr;
+    Stage1ZirInstSwitchBr *switch_br;
 };
 
-struct IrInstSrcSwitchTarget {
-    IrInstSrc base;
+struct Stage1ZirInstSwitchTarget {
+    Stage1ZirInst base;
 
-    IrInstSrc *target_value_ptr;
+    Stage1ZirInst *target_value_ptr;
 };
 
-struct IrInstSrcPhi {
-    IrInstSrc base;
+struct Stage1ZirInstPhi {
+    Stage1ZirInst base;
 
     size_t incoming_count;
-    IrBasicBlockSrc **incoming_blocks;
-    IrInstSrc **incoming_values;
+    Stage1ZirBasicBlock **incoming_blocks;
+    Stage1ZirInst **incoming_values;
     ResultLocPeerParent *peer_parent;
 };
 
-struct IrInstGenPhi {
-    IrInstGen base;
+struct Stage1AirInstPhi {
+    Stage1AirInst base;
 
     size_t incoming_count;
-    IrBasicBlockGen **incoming_blocks;
-    IrInstGen **incoming_values;
+    Stage1AirBasicBlock **incoming_blocks;
+    Stage1AirInst **incoming_values;
 };
 
 enum IrUnOp {
@@ -2940,23 +2888,23 @@ enum IrUnOp {
     IrUnOpOptional,
 };
 
-struct IrInstSrcUnOp {
-    IrInstSrc base;
+struct Stage1ZirInstUnOp {
+    Stage1ZirInst base;
 
     IrUnOp op_id;
     LVal lval;
-    IrInstSrc *value;
+    Stage1ZirInst *value;
     ResultLoc *result_loc;
 };
 
-struct IrInstGenBinaryNot {
-    IrInstGen base;
-    IrInstGen *operand;
+struct Stage1AirInstBinaryNot {
+    Stage1AirInst base;
+    Stage1AirInst *operand;
 };
 
-struct IrInstGenNegation {
-    IrInstGen base;
-    IrInstGen *operand;
+struct Stage1AirInstNegation {
+    Stage1AirInst base;
+    Stage1AirInst *operand;
     bool wrapping;
 };
 
@@ -2992,124 +2940,126 @@ enum IrBinOp {
     IrBinOpRemMod,
     IrBinOpArrayCat,
     IrBinOpArrayMult,
+    IrBinOpMaximum,
+    IrBinOpMinimum,
 };
 
-struct IrInstSrcBinOp {
-    IrInstSrc base;
+struct Stage1ZirInstBinOp {
+    Stage1ZirInst base;
 
-    IrInstSrc *op1;
-    IrInstSrc *op2;
+    Stage1ZirInst *op1;
+    Stage1ZirInst *op2;
     IrBinOp op_id;
     bool safety_check_on;
 };
 
-struct IrInstGenBinOp {
-    IrInstGen base;
+struct Stage1AirInstBinOp {
+    Stage1AirInst base;
 
-    IrInstGen *op1;
-    IrInstGen *op2;
+    Stage1AirInst *op1;
+    Stage1AirInst *op2;
     IrBinOp op_id;
     bool safety_check_on;
 };
 
-struct IrInstSrcMergeErrSets {
-    IrInstSrc base;
+struct Stage1ZirInstMergeErrSets {
+    Stage1ZirInst base;
 
-    IrInstSrc *op1;
-    IrInstSrc *op2;
+    Stage1ZirInst *op1;
+    Stage1ZirInst *op2;
     Buf *type_name;
 };
 
-struct IrInstSrcLoadPtr {
-    IrInstSrc base;
+struct Stage1ZirInstLoadPtr {
+    Stage1ZirInst base;
 
-    IrInstSrc *ptr;
+    Stage1ZirInst *ptr;
 };
 
-struct IrInstGenLoadPtr {
-    IrInstGen base;
+struct Stage1AirInstLoadPtr {
+    Stage1AirInst base;
 
-    IrInstGen *ptr;
-    IrInstGen *result_loc;
+    Stage1AirInst *ptr;
+    Stage1AirInst *result_loc;
 };
 
-struct IrInstSrcStorePtr {
-    IrInstSrc base;
+struct Stage1ZirInstStorePtr {
+    Stage1ZirInst base;
 
-    IrInstSrc *ptr;
-    IrInstSrc *value;
+    Stage1ZirInst *ptr;
+    Stage1ZirInst *value;
 
     bool allow_write_through_const;
 };
 
-struct IrInstGenStorePtr {
-    IrInstGen base;
+struct Stage1AirInstStorePtr {
+    Stage1AirInst base;
 
-    IrInstGen *ptr;
-    IrInstGen *value;
+    Stage1AirInst *ptr;
+    Stage1AirInst *value;
 };
 
-struct IrInstGenVectorStoreElem {
-    IrInstGen base;
+struct Stage1AirInstVectorStoreElem {
+    Stage1AirInst base;
 
-    IrInstGen *vector_ptr;
-    IrInstGen *index;
-    IrInstGen *value;
+    Stage1AirInst *vector_ptr;
+    Stage1AirInst *index;
+    Stage1AirInst *value;
 };
 
-struct IrInstSrcFieldPtr {
-    IrInstSrc base;
+struct Stage1ZirInstFieldPtr {
+    Stage1ZirInst base;
 
-    IrInstSrc *container_ptr;
+    Stage1ZirInst *container_ptr;
     Buf *field_name_buffer;
-    IrInstSrc *field_name_expr;
+    Stage1ZirInst *field_name_expr;
     bool initializing;
 };
 
-struct IrInstGenStructFieldPtr {
-    IrInstGen base;
+struct Stage1AirInstStructFieldPtr {
+    Stage1AirInst base;
 
-    IrInstGen *struct_ptr;
+    Stage1AirInst *struct_ptr;
     TypeStructField *field;
     bool is_const;
 };
 
-struct IrInstGenUnionFieldPtr {
-    IrInstGen base;
+struct Stage1AirInstUnionFieldPtr {
+    Stage1AirInst base;
 
-    IrInstGen *union_ptr;
+    Stage1AirInst *union_ptr;
     TypeUnionField *field;
     bool safety_check_on;
     bool initializing;
 };
 
-struct IrInstSrcElemPtr {
-    IrInstSrc base;
+struct Stage1ZirInstElemPtr {
+    Stage1ZirInst base;
 
-    IrInstSrc *array_ptr;
-    IrInstSrc *elem_index;
+    Stage1ZirInst *array_ptr;
+    Stage1ZirInst *elem_index;
     AstNode *init_array_type_source_node;
     PtrLen ptr_len;
     bool safety_check_on;
 };
 
-struct IrInstGenElemPtr {
-    IrInstGen base;
+struct Stage1AirInstElemPtr {
+    Stage1AirInst base;
 
-    IrInstGen *array_ptr;
-    IrInstGen *elem_index;
+    Stage1AirInst *array_ptr;
+    Stage1AirInst *elem_index;
     bool safety_check_on;
 };
 
-struct IrInstSrcVarPtr {
-    IrInstSrc base;
+struct Stage1ZirInstVarPtr {
+    Stage1ZirInst base;
 
     ZigVar *var;
     ScopeFnDef *crossed_fndef_scope;
 };
 
-struct IrInstGenVarPtr {
-    IrInstGen base;
+struct Stage1AirInstVarPtr {
+    Stage1AirInst base;
 
     ZigVar *var;
 };
@@ -3117,21 +3067,21 @@ struct IrInstGenVarPtr {
 // For functions that have a return type for which handle_is_ptr is true, a
 // result location pointer is the secret first parameter ("sret"). This
 // instruction returns that pointer.
-struct IrInstGenReturnPtr {
-    IrInstGen base;
+struct Stage1AirInstReturnPtr {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcCall {
-    IrInstSrc base;
+struct Stage1ZirInstCall {
+    Stage1ZirInst base;
 
-    IrInstSrc *fn_ref;
+    Stage1ZirInst *fn_ref;
     ZigFn *fn_entry;
     size_t arg_count;
-    IrInstSrc **args;
-    IrInstSrc *ret_ptr;
+    Stage1ZirInst **args;
+    Stage1ZirInst *ret_ptr;
     ResultLoc *result_loc;
 
-    IrInstSrc *new_stack;
+    Stage1ZirInst *new_stack;
 
     CallModifier modifier;
     bool is_async_call_builtin;
@@ -3139,12 +3089,12 @@ struct IrInstSrcCall {
 
 // This is a pass1 instruction, used by @call when the args node is
 // a tuple or struct literal.
-struct IrInstSrcCallArgs {
-    IrInstSrc base;
+struct Stage1ZirInstCallArgs {
+    Stage1ZirInst base;
 
-    IrInstSrc *options;
-    IrInstSrc *fn_ref;
-    IrInstSrc **args_ptr;
+    Stage1ZirInst *options;
+    Stage1ZirInst *fn_ref;
+    Stage1ZirInst **args_ptr;
     size_t args_len;
     ResultLoc *result_loc;
 };
@@ -3152,68 +3102,68 @@ struct IrInstSrcCallArgs {
 // This is a pass1 instruction, used by @call, when the args node
 // is not a literal.
 // `args` is expected to be either a struct or a tuple.
-struct IrInstSrcCallExtra {
-    IrInstSrc base;
+struct Stage1ZirInstCallExtra {
+    Stage1ZirInst base;
 
-    IrInstSrc *options;
-    IrInstSrc *fn_ref;
-    IrInstSrc *args;
+    Stage1ZirInst *options;
+    Stage1ZirInst *fn_ref;
+    Stage1ZirInst *args;
     ResultLoc *result_loc;
 };
 
 // This is a pass1 instruction, used by @asyncCall, when the args node
 // is not a literal.
 // `args` is expected to be either a struct or a tuple.
-struct IrInstSrcAsyncCallExtra {
-    IrInstSrc base;
+struct Stage1ZirInstAsyncCallExtra {
+    Stage1ZirInst base;
 
     CallModifier modifier;
-    IrInstSrc *fn_ref;
-    IrInstSrc *ret_ptr;
-    IrInstSrc *new_stack;
-    IrInstSrc *args;
+    Stage1ZirInst *fn_ref;
+    Stage1ZirInst *ret_ptr;
+    Stage1ZirInst *new_stack;
+    Stage1ZirInst *args;
     ResultLoc *result_loc;
 };
 
-struct IrInstGenCall {
-    IrInstGen base;
+struct Stage1AirInstCall {
+    Stage1AirInst base;
 
-    IrInstGen *fn_ref;
+    Stage1AirInst *fn_ref;
     ZigFn *fn_entry;
     size_t arg_count;
-    IrInstGen **args;
-    IrInstGen *result_loc;
-    IrInstGen *frame_result_loc;
-    IrInstGen *new_stack;
+    Stage1AirInst **args;
+    Stage1AirInst *result_loc;
+    Stage1AirInst *frame_result_loc;
+    Stage1AirInst *new_stack;
 
     CallModifier modifier;
 
     bool is_async_call_builtin;
 };
 
-struct IrInstSrcConst {
-    IrInstSrc base;
+struct Stage1ZirInstConst {
+    Stage1ZirInst base;
 
     ZigValue *value;
 };
 
-struct IrInstGenConst {
-    IrInstGen base;
+struct Stage1AirInstConst {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcReturn {
-    IrInstSrc base;
+struct Stage1ZirInstReturn {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand;
+    Stage1ZirInst *operand;
 };
 
 // When an IrExecutable is not in a function, a return instruction means that
 // the expression returns with that value, even though a return statement from
 // an AST perspective is invalid.
-struct IrInstGenReturn {
-    IrInstGen base;
+struct Stage1AirInstReturn {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
+    Stage1AirInst *operand;
 };
 
 enum CastOp {
@@ -3228,94 +3178,94 @@ enum CastOp {
 };
 
 // TODO get rid of this instruction, replace with instructions for each op code
-struct IrInstGenCast {
-    IrInstGen base;
+struct Stage1AirInstCast {
+    Stage1AirInst base;
 
-    IrInstGen *value;
+    Stage1AirInst *value;
     CastOp cast_op;
 };
 
-struct IrInstSrcContainerInitList {
-    IrInstSrc base;
+struct Stage1ZirInstContainerInitList {
+    Stage1ZirInst base;
 
-    IrInstSrc *elem_type;
+    Stage1ZirInst *elem_type;
     size_t item_count;
-    IrInstSrc **elem_result_loc_list;
-    IrInstSrc *result_loc;
+    Stage1ZirInst **elem_result_loc_list;
+    Stage1ZirInst *result_loc;
     AstNode *init_array_type_source_node;
 };
 
-struct IrInstSrcContainerInitFieldsField {
+struct Stage1ZirInstContainerInitFieldsField {
     Buf *name;
     AstNode *source_node;
-    IrInstSrc *result_loc;
+    Stage1ZirInst *result_loc;
 };
 
-struct IrInstSrcContainerInitFields {
-    IrInstSrc base;
+struct Stage1ZirInstContainerInitFields {
+    Stage1ZirInst base;
 
     size_t field_count;
-    IrInstSrcContainerInitFieldsField *fields;
-    IrInstSrc *result_loc;
+    Stage1ZirInstContainerInitFieldsField *fields;
+    Stage1ZirInst *result_loc;
 };
 
-struct IrInstSrcUnreachable {
-    IrInstSrc base;
+struct Stage1ZirInstUnreachable {
+    Stage1ZirInst base;
 };
 
-struct IrInstGenUnreachable {
-    IrInstGen base;
+struct Stage1AirInstUnreachable {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcTypeOf {
-    IrInstSrc base;
+struct Stage1ZirInstTypeOf {
+    Stage1ZirInst base;
 
     union {
-        IrInstSrc *scalar; // value_count == 1
-        IrInstSrc **list; // value_count > 1
+        Stage1ZirInst *scalar; // value_count == 1
+        Stage1ZirInst **list; // value_count > 1
     } value;
     size_t value_count;
 };
 
-struct IrInstSrcSetCold {
-    IrInstSrc base;
+struct Stage1ZirInstSetCold {
+    Stage1ZirInst base;
 
-    IrInstSrc *is_cold;
+    Stage1ZirInst *is_cold;
 };
 
-struct IrInstSrcSetRuntimeSafety {
-    IrInstSrc base;
+struct Stage1ZirInstSetRuntimeSafety {
+    Stage1ZirInst base;
 
-    IrInstSrc *safety_on;
+    Stage1ZirInst *safety_on;
 };
 
-struct IrInstSrcSetFloatMode {
-    IrInstSrc base;
+struct Stage1ZirInstSetFloatMode {
+    Stage1ZirInst base;
 
-    IrInstSrc *scope_value;
-    IrInstSrc *mode_value;
+    Stage1ZirInst *scope_value;
+    Stage1ZirInst *mode_value;
 };
 
-struct IrInstSrcArrayType {
-    IrInstSrc base;
+struct Stage1ZirInstArrayType {
+    Stage1ZirInst base;
 
-    IrInstSrc *size;
-    IrInstSrc *sentinel;
-    IrInstSrc *child_type;
+    Stage1ZirInst *size;
+    Stage1ZirInst *sentinel;
+    Stage1ZirInst *child_type;
 };
 
-struct IrInstSrcPtrTypeSimple {
-    IrInstSrc base;
+struct Stage1ZirInstPtrTypeSimple {
+    Stage1ZirInst base;
 
-    IrInstSrc *child_type;
+    Stage1ZirInst *child_type;
 };
 
-struct IrInstSrcPtrType {
-    IrInstSrc base;
+struct Stage1ZirInstPtrType {
+    Stage1ZirInst base;
 
-    IrInstSrc *sentinel;
-    IrInstSrc *align_value;
-    IrInstSrc *child_type;
+    Stage1ZirInst *sentinel;
+    Stage1ZirInst *align_value;
+    Stage1ZirInst *child_type;
     uint32_t bit_offset_start;
     uint32_t host_int_bytes;
     PtrLen ptr_len;
@@ -3324,459 +3274,459 @@ struct IrInstSrcPtrType {
     bool is_allow_zero;
 };
 
-struct IrInstSrcAnyFrameType {
-    IrInstSrc base;
+struct Stage1ZirInstAnyFrameType {
+    Stage1ZirInst base;
 
-    IrInstSrc *payload_type;
+    Stage1ZirInst *payload_type;
 };
 
-struct IrInstSrcSliceType {
-    IrInstSrc base;
+struct Stage1ZirInstSliceType {
+    Stage1ZirInst base;
 
-    IrInstSrc *sentinel;
-    IrInstSrc *align_value;
-    IrInstSrc *child_type;
+    Stage1ZirInst *sentinel;
+    Stage1ZirInst *align_value;
+    Stage1ZirInst *child_type;
     bool is_const;
     bool is_volatile;
     bool is_allow_zero;
 };
 
-struct IrInstSrcAsm {
-    IrInstSrc base;
+struct Stage1ZirInstAsm {
+    Stage1ZirInst base;
 
-    IrInstSrc *asm_template;
-    IrInstSrc **input_list;
-    IrInstSrc **output_types;
+    Stage1ZirInst *asm_template;
+    Stage1ZirInst **input_list;
+    Stage1ZirInst **output_types;
     ZigVar **output_vars;
     size_t return_count;
     bool has_side_effects;
     bool is_global;
 };
 
-struct IrInstGenAsm {
-    IrInstGen base;
+struct Stage1AirInstAsm {
+    Stage1AirInst base;
 
     Buf *asm_template;
     AsmToken *token_list;
     size_t token_list_len;
-    IrInstGen **input_list;
-    IrInstGen **output_types;
+    Stage1AirInst **input_list;
+    Stage1AirInst **output_types;
     ZigVar **output_vars;
     size_t return_count;
     bool has_side_effects;
 };
 
-struct IrInstSrcSizeOf {
-    IrInstSrc base;
+struct Stage1ZirInstSizeOf {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
+    Stage1ZirInst *type_value;
     bool bit_size;
 };
 
 // returns true if nonnull, returns false if null
-struct IrInstSrcTestNonNull {
-    IrInstSrc base;
+struct Stage1ZirInstTestNonNull {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
 };
 
-struct IrInstGenTestNonNull {
-    IrInstGen base;
+struct Stage1AirInstTestNonNull {
+    Stage1AirInst base;
 
-    IrInstGen *value;
+    Stage1AirInst *value;
 };
 
 // Takes a pointer to an optional value, returns a pointer
 // to the payload.
-struct IrInstSrcOptionalUnwrapPtr {
-    IrInstSrc base;
+struct Stage1ZirInstOptionalUnwrapPtr {
+    Stage1ZirInst base;
 
-    IrInstSrc *base_ptr;
+    Stage1ZirInst *base_ptr;
     bool safety_check_on;
 };
 
-struct IrInstGenOptionalUnwrapPtr {
-    IrInstGen base;
+struct Stage1AirInstOptionalUnwrapPtr {
+    Stage1AirInst base;
 
-    IrInstGen *base_ptr;
+    Stage1AirInst *base_ptr;
     bool safety_check_on;
     bool initializing;
 };
 
-struct IrInstSrcCtz {
-    IrInstSrc base;
+struct Stage1ZirInstCtz {
+    Stage1ZirInst base;
 
-    IrInstSrc *type;
-    IrInstSrc *op;
+    Stage1ZirInst *type;
+    Stage1ZirInst *op;
 };
 
-struct IrInstGenCtz {
-    IrInstGen base;
+struct Stage1AirInstCtz {
+    Stage1AirInst base;
 
-    IrInstGen *op;
+    Stage1AirInst *op;
 };
 
-struct IrInstSrcClz {
-    IrInstSrc base;
+struct Stage1ZirInstClz {
+    Stage1ZirInst base;
 
-    IrInstSrc *type;
-    IrInstSrc *op;
+    Stage1ZirInst *type;
+    Stage1ZirInst *op;
 };
 
-struct IrInstGenClz {
-    IrInstGen base;
+struct Stage1AirInstClz {
+    Stage1AirInst base;
 
-    IrInstGen *op;
+    Stage1AirInst *op;
 };
 
-struct IrInstSrcPopCount {
-    IrInstSrc base;
+struct Stage1ZirInstPopCount {
+    Stage1ZirInst base;
 
-    IrInstSrc *type;
-    IrInstSrc *op;
+    Stage1ZirInst *type;
+    Stage1ZirInst *op;
 };
 
-struct IrInstGenPopCount {
-    IrInstGen base;
+struct Stage1AirInstPopCount {
+    Stage1AirInst base;
 
-    IrInstGen *op;
+    Stage1AirInst *op;
 };
 
-struct IrInstGenUnionTag {
-    IrInstGen base;
+struct Stage1AirInstUnionTag {
+    Stage1AirInst base;
 
-    IrInstGen *value;
+    Stage1AirInst *value;
 };
 
-struct IrInstSrcImport {
-    IrInstSrc base;
+struct Stage1ZirInstImport {
+    Stage1ZirInst base;
 
-    IrInstSrc *name;
+    Stage1ZirInst *name;
 };
 
-struct IrInstSrcRef {
-    IrInstSrc base;
+struct Stage1ZirInstRef {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
 };
 
-struct IrInstGenRef {
-    IrInstGen base;
+struct Stage1AirInstRef {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
-    IrInstGen *result_loc;
+    Stage1AirInst *operand;
+    Stage1AirInst *result_loc;
 };
 
-struct IrInstSrcCompileErr {
-    IrInstSrc base;
+struct Stage1ZirInstCompileErr {
+    Stage1ZirInst base;
 
-    IrInstSrc *msg;
+    Stage1ZirInst *msg;
 };
 
-struct IrInstSrcCompileLog {
-    IrInstSrc base;
+struct Stage1ZirInstCompileLog {
+    Stage1ZirInst base;
 
     size_t msg_count;
-    IrInstSrc **msg_list;
+    Stage1ZirInst **msg_list;
 };
 
-struct IrInstSrcErrName {
-    IrInstSrc base;
+struct Stage1ZirInstErrName {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
 };
 
-struct IrInstGenErrName {
-    IrInstGen base;
+struct Stage1AirInstErrName {
+    Stage1AirInst base;
 
-    IrInstGen *value;
+    Stage1AirInst *value;
 };
 
-struct IrInstSrcCImport {
-    IrInstSrc base;
+struct Stage1ZirInstCImport {
+    Stage1ZirInst base;
 };
 
-struct IrInstSrcCInclude {
-    IrInstSrc base;
+struct Stage1ZirInstCInclude {
+    Stage1ZirInst base;
 
-    IrInstSrc *name;
+    Stage1ZirInst *name;
 };
 
-struct IrInstSrcCDefine {
-    IrInstSrc base;
+struct Stage1ZirInstCDefine {
+    Stage1ZirInst base;
 
-    IrInstSrc *name;
-    IrInstSrc *value;
+    Stage1ZirInst *name;
+    Stage1ZirInst *value;
 };
 
-struct IrInstSrcCUndef {
-    IrInstSrc base;
+struct Stage1ZirInstCUndef {
+    Stage1ZirInst base;
 
-    IrInstSrc *name;
+    Stage1ZirInst *name;
 };
 
-struct IrInstSrcEmbedFile {
-    IrInstSrc base;
+struct Stage1ZirInstEmbedFile {
+    Stage1ZirInst base;
 
-    IrInstSrc *name;
+    Stage1ZirInst *name;
 };
 
-struct IrInstSrcCmpxchg {
-    IrInstSrc base;
+struct Stage1ZirInstCmpxchg {
+    Stage1ZirInst base;
 
     bool is_weak;
-    IrInstSrc *type_value;
-    IrInstSrc *ptr;
-    IrInstSrc *cmp_value;
-    IrInstSrc *new_value;
-    IrInstSrc *success_order_value;
-    IrInstSrc *failure_order_value;
+    Stage1ZirInst *type_value;
+    Stage1ZirInst *ptr;
+    Stage1ZirInst *cmp_value;
+    Stage1ZirInst *new_value;
+    Stage1ZirInst *success_order_value;
+    Stage1ZirInst *failure_order_value;
     ResultLoc *result_loc;
 };
 
-struct IrInstGenCmpxchg {
-    IrInstGen base;
+struct Stage1AirInstCmpxchg {
+    Stage1AirInst base;
 
     AtomicOrder success_order;
     AtomicOrder failure_order;
-    IrInstGen *ptr;
-    IrInstGen *cmp_value;
-    IrInstGen *new_value;
-    IrInstGen *result_loc;
+    Stage1AirInst *ptr;
+    Stage1AirInst *cmp_value;
+    Stage1AirInst *new_value;
+    Stage1AirInst *result_loc;
     bool is_weak;
 };
 
-struct IrInstSrcFence {
-    IrInstSrc base;
+struct Stage1ZirInstFence {
+    Stage1ZirInst base;
 
-    IrInstSrc *order;
+    Stage1ZirInst *order;
 };
 
-struct IrInstGenFence {
-    IrInstGen base;
+struct Stage1AirInstFence {
+    Stage1AirInst base;
 
     AtomicOrder order;
 };
 
-struct IrInstSrcReduce {
-    IrInstSrc base;
+struct Stage1ZirInstReduce {
+    Stage1ZirInst base;
 
-    IrInstSrc *op;
-    IrInstSrc *value;
+    Stage1ZirInst *op;
+    Stage1ZirInst *value;
 };
 
-struct IrInstGenReduce {
-    IrInstGen base;
+struct Stage1AirInstReduce {
+    Stage1AirInst base;
 
     ReduceOp op;
-    IrInstGen *value;
+    Stage1AirInst *value;
 };
 
-struct IrInstSrcTruncate {
-    IrInstSrc base;
+struct Stage1ZirInstTruncate {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenTruncate {
-    IrInstGen base;
+struct Stage1AirInstTruncate {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcIntCast {
-    IrInstSrc base;
+struct Stage1ZirInstIntCast {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstSrcFloatCast {
-    IrInstSrc base;
+struct Stage1ZirInstFloatCast {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstSrcErrSetCast {
-    IrInstSrc base;
+struct Stage1ZirInstErrSetCast {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstSrcIntToFloat {
-    IrInstSrc base;
+struct Stage1ZirInstIntToFloat {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstSrcFloatToInt {
-    IrInstSrc base;
+struct Stage1ZirInstFloatToInt {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstSrcBoolToInt {
-    IrInstSrc base;
+struct Stage1ZirInstBoolToInt {
+    Stage1ZirInst base;
 
-    IrInstSrc *target;
+    Stage1ZirInst *target;
 };
 
-struct IrInstSrcVectorType {
-    IrInstSrc base;
+struct Stage1ZirInstVectorType {
+    Stage1ZirInst base;
 
-    IrInstSrc *len;
-    IrInstSrc *elem_type;
+    Stage1ZirInst *len;
+    Stage1ZirInst *elem_type;
 };
 
-struct IrInstSrcBoolNot {
-    IrInstSrc base;
+struct Stage1ZirInstBoolNot {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
 };
 
-struct IrInstGenBoolNot {
-    IrInstGen base;
+struct Stage1AirInstBoolNot {
+    Stage1AirInst base;
 
-    IrInstGen *value;
+    Stage1AirInst *value;
 };
 
-struct IrInstSrcMemset {
-    IrInstSrc base;
+struct Stage1ZirInstMemset {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_ptr;
-    IrInstSrc *byte;
-    IrInstSrc *count;
+    Stage1ZirInst *dest_ptr;
+    Stage1ZirInst *byte;
+    Stage1ZirInst *count;
 };
 
-struct IrInstGenMemset {
-    IrInstGen base;
+struct Stage1AirInstMemset {
+    Stage1AirInst base;
 
-    IrInstGen *dest_ptr;
-    IrInstGen *byte;
-    IrInstGen *count;
+    Stage1AirInst *dest_ptr;
+    Stage1AirInst *byte;
+    Stage1AirInst *count;
 };
 
-struct IrInstSrcMemcpy {
-    IrInstSrc base;
+struct Stage1ZirInstMemcpy {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_ptr;
-    IrInstSrc *src_ptr;
-    IrInstSrc *count;
+    Stage1ZirInst *dest_ptr;
+    Stage1ZirInst *src_ptr;
+    Stage1ZirInst *count;
 };
 
-struct IrInstGenMemcpy {
-    IrInstGen base;
+struct Stage1AirInstMemcpy {
+    Stage1AirInst base;
 
-    IrInstGen *dest_ptr;
-    IrInstGen *src_ptr;
-    IrInstGen *count;
+    Stage1AirInst *dest_ptr;
+    Stage1AirInst *src_ptr;
+    Stage1AirInst *count;
 };
 
-struct IrInstSrcWasmMemorySize {
-    IrInstSrc base;
+struct Stage1ZirInstWasmMemorySize {
+    Stage1ZirInst base;
 
-    IrInstSrc *index;
+    Stage1ZirInst *index;
 };
 
-struct IrInstGenWasmMemorySize {
-    IrInstGen base;
+struct Stage1AirInstWasmMemorySize {
+    Stage1AirInst base;
 
-    IrInstGen *index;
+    Stage1AirInst *index;
 };
 
-struct IrInstSrcWasmMemoryGrow {
-    IrInstSrc base;
+struct Stage1ZirInstWasmMemoryGrow {
+    Stage1ZirInst base;
 
-    IrInstSrc *index;
-    IrInstSrc *delta;
+    Stage1ZirInst *index;
+    Stage1ZirInst *delta;
 };
 
-struct IrInstGenWasmMemoryGrow {
-    IrInstGen base;
+struct Stage1AirInstWasmMemoryGrow {
+    Stage1AirInst base;
 
-    IrInstGen *index;
-    IrInstGen *delta;
+    Stage1AirInst *index;
+    Stage1AirInst *delta;
 };
 
-struct IrInstSrcSrc {
-    IrInstSrc base;
+struct Stage1ZirInstSrc {
+    Stage1ZirInst base;
 };
 
-struct IrInstSrcSlice {
-    IrInstSrc base;
+struct Stage1ZirInstSlice {
+    Stage1ZirInst base;
 
-    IrInstSrc *ptr;
-    IrInstSrc *start;
-    IrInstSrc *end;
-    IrInstSrc *sentinel;
+    Stage1ZirInst *ptr;
+    Stage1ZirInst *start;
+    Stage1ZirInst *end;
+    Stage1ZirInst *sentinel;
     ResultLoc *result_loc;
     bool safety_check_on;
 };
 
-struct IrInstGenSlice {
-    IrInstGen base;
+struct Stage1AirInstSlice {
+    Stage1AirInst base;
 
-    IrInstGen *ptr;
-    IrInstGen *start;
-    IrInstGen *end;
-    IrInstGen *result_loc;
+    Stage1AirInst *ptr;
+    Stage1AirInst *start;
+    Stage1AirInst *end;
+    Stage1AirInst *result_loc;
     ZigValue *sentinel;
     bool safety_check_on;
 };
 
-struct IrInstSrcBreakpoint {
-    IrInstSrc base;
+struct Stage1ZirInstBreakpoint {
+    Stage1ZirInst base;
 };
 
-struct IrInstGenBreakpoint {
-    IrInstGen base;
+struct Stage1AirInstBreakpoint {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcReturnAddress {
-    IrInstSrc base;
+struct Stage1ZirInstReturnAddress {
+    Stage1ZirInst base;
 };
 
-struct IrInstGenReturnAddress {
-    IrInstGen base;
+struct Stage1AirInstReturnAddress {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcFrameAddress {
-    IrInstSrc base;
+struct Stage1ZirInstFrameAddress {
+    Stage1ZirInst base;
 };
 
-struct IrInstGenFrameAddress {
-    IrInstGen base;
+struct Stage1AirInstFrameAddress {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcFrameHandle {
-    IrInstSrc base;
+struct Stage1ZirInstFrameHandle {
+    Stage1ZirInst base;
 };
 
-struct IrInstGenFrameHandle {
-    IrInstGen base;
+struct Stage1AirInstFrameHandle {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcFrameType {
-    IrInstSrc base;
+struct Stage1ZirInstFrameType {
+    Stage1ZirInst base;
 
-    IrInstSrc *fn;
+    Stage1ZirInst *fn;
 };
 
-struct IrInstSrcFrameSize {
-    IrInstSrc base;
+struct Stage1ZirInstFrameSize {
+    Stage1ZirInst base;
 
-    IrInstSrc *fn;
+    Stage1ZirInst *fn;
 };
 
-struct IrInstGenFrameSize {
-    IrInstGen base;
+struct Stage1AirInstFrameSize {
+    Stage1AirInst base;
 
-    IrInstGen *fn;
+    Stage1AirInst *fn;
 };
 
 enum IrOverflowOp {
@@ -3786,397 +3736,397 @@ enum IrOverflowOp {
     IrOverflowOpShl,
 };
 
-struct IrInstSrcOverflowOp {
-    IrInstSrc base;
+struct Stage1ZirInstOverflowOp {
+    Stage1ZirInst base;
 
     IrOverflowOp op;
-    IrInstSrc *type_value;
-    IrInstSrc *op1;
-    IrInstSrc *op2;
-    IrInstSrc *result_ptr;
+    Stage1ZirInst *type_value;
+    Stage1ZirInst *op1;
+    Stage1ZirInst *op2;
+    Stage1ZirInst *result_ptr;
 };
 
-struct IrInstGenOverflowOp {
-    IrInstGen base;
+struct Stage1AirInstOverflowOp {
+    Stage1AirInst base;
 
     IrOverflowOp op;
-    IrInstGen *op1;
-    IrInstGen *op2;
-    IrInstGen *result_ptr;
+    Stage1AirInst *op1;
+    Stage1AirInst *op2;
+    Stage1AirInst *result_ptr;
 
     // TODO can this field be removed?
     ZigType *result_ptr_type;
 };
 
-struct IrInstSrcMulAdd {
-    IrInstSrc base;
+struct Stage1ZirInstMulAdd {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
-    IrInstSrc *op1;
-    IrInstSrc *op2;
-    IrInstSrc *op3;
+    Stage1ZirInst *type_value;
+    Stage1ZirInst *op1;
+    Stage1ZirInst *op2;
+    Stage1ZirInst *op3;
 };
 
-struct IrInstGenMulAdd {
-    IrInstGen base;
+struct Stage1AirInstMulAdd {
+    Stage1AirInst base;
 
-    IrInstGen *op1;
-    IrInstGen *op2;
-    IrInstGen *op3;
+    Stage1AirInst *op1;
+    Stage1AirInst *op2;
+    Stage1AirInst *op3;
 };
 
-struct IrInstSrcAlignOf {
-    IrInstSrc base;
+struct Stage1ZirInstAlignOf {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
+    Stage1ZirInst *type_value;
 };
 
 // returns true if error, returns false if not error
-struct IrInstSrcTestErr {
-    IrInstSrc base;
+struct Stage1ZirInstTestErr {
+    Stage1ZirInst base;
 
-    IrInstSrc *base_ptr;
+    Stage1ZirInst *base_ptr;
     bool resolve_err_set;
     bool base_ptr_is_payload;
 };
 
-struct IrInstGenTestErr {
-    IrInstGen base;
+struct Stage1AirInstTestErr {
+    Stage1AirInst base;
 
-    IrInstGen *err_union;
+    Stage1AirInst *err_union;
 };
 
 // Takes an error union pointer, returns a pointer to the error code.
-struct IrInstSrcUnwrapErrCode {
-    IrInstSrc base;
+struct Stage1ZirInstUnwrapErrCode {
+    Stage1ZirInst base;
 
-    IrInstSrc *err_union_ptr;
+    Stage1ZirInst *err_union_ptr;
     bool initializing;
 };
 
-struct IrInstGenUnwrapErrCode {
-    IrInstGen base;
+struct Stage1AirInstUnwrapErrCode {
+    Stage1AirInst base;
 
-    IrInstGen *err_union_ptr;
+    Stage1AirInst *err_union_ptr;
     bool initializing;
 };
 
-struct IrInstSrcUnwrapErrPayload {
-    IrInstSrc base;
+struct Stage1ZirInstUnwrapErrPayload {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
     bool safety_check_on;
     bool initializing;
 };
 
-struct IrInstGenUnwrapErrPayload {
-    IrInstGen base;
+struct Stage1AirInstUnwrapErrPayload {
+    Stage1AirInst base;
 
-    IrInstGen *value;
+    Stage1AirInst *value;
     bool safety_check_on;
     bool initializing;
 };
 
-struct IrInstGenOptionalWrap {
-    IrInstGen base;
+struct Stage1AirInstOptionalWrap {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
-    IrInstGen *result_loc;
+    Stage1AirInst *operand;
+    Stage1AirInst *result_loc;
 };
 
-struct IrInstGenErrWrapPayload {
-    IrInstGen base;
+struct Stage1AirInstErrWrapPayload {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
-    IrInstGen *result_loc;
+    Stage1AirInst *operand;
+    Stage1AirInst *result_loc;
 };
 
-struct IrInstGenErrWrapCode {
-    IrInstGen base;
+struct Stage1AirInstErrWrapCode {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
-    IrInstGen *result_loc;
+    Stage1AirInst *operand;
+    Stage1AirInst *result_loc;
 };
 
-struct IrInstSrcFnProto {
-    IrInstSrc base;
+struct Stage1ZirInstFnProto {
+    Stage1ZirInst base;
 
-    IrInstSrc **param_types;
-    IrInstSrc *align_value;
-    IrInstSrc *callconv_value;
-    IrInstSrc *return_type;
+    Stage1ZirInst **param_types;
+    Stage1ZirInst *align_value;
+    Stage1ZirInst *callconv_value;
+    Stage1ZirInst *return_type;
     bool is_var_args;
 };
 
 // true if the target value is compile time known, false otherwise
-struct IrInstSrcTestComptime {
-    IrInstSrc base;
+struct Stage1ZirInstTestComptime {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
 };
 
-struct IrInstSrcPtrCast {
-    IrInstSrc base;
+struct Stage1ZirInstPtrCast {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *ptr;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *ptr;
     bool safety_check_on;
 };
 
-struct IrInstGenPtrCast {
-    IrInstGen base;
+struct Stage1AirInstPtrCast {
+    Stage1AirInst base;
 
-    IrInstGen *ptr;
+    Stage1AirInst *ptr;
     bool safety_check_on;
 };
 
-struct IrInstSrcImplicitCast {
-    IrInstSrc base;
+struct Stage1ZirInstImplicitCast {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand;
+    Stage1ZirInst *operand;
     ResultLocCast *result_loc_cast;
 };
 
-struct IrInstSrcBitCast {
-    IrInstSrc base;
+struct Stage1ZirInstBitCast {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand;
+    Stage1ZirInst *operand;
     ResultLocBitCast *result_loc_bit_cast;
 };
 
-struct IrInstGenBitCast {
-    IrInstGen base;
+struct Stage1AirInstBitCast {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
+    Stage1AirInst *operand;
 };
 
-struct IrInstGenWidenOrShorten {
-    IrInstGen base;
+struct Stage1AirInstWidenOrShorten {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcPtrToInt {
-    IrInstSrc base;
+struct Stage1ZirInstPtrToInt {
+    Stage1ZirInst base;
 
-    IrInstSrc *target;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenPtrToInt {
-    IrInstGen base;
+struct Stage1AirInstPtrToInt {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcIntToPtr {
-    IrInstSrc base;
+struct Stage1ZirInstIntToPtr {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenIntToPtr {
-    IrInstGen base;
+struct Stage1AirInstIntToPtr {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcIntToEnum {
-    IrInstSrc base;
+struct Stage1ZirInstIntToEnum {
+    Stage1ZirInst base;
 
-    IrInstSrc *dest_type;
-    IrInstSrc *target;
+    Stage1ZirInst *dest_type;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenIntToEnum {
-    IrInstGen base;
+struct Stage1AirInstIntToEnum {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcEnumToInt {
-    IrInstSrc base;
+struct Stage1ZirInstEnumToInt {
+    Stage1ZirInst base;
 
-    IrInstSrc *target;
+    Stage1ZirInst *target;
 };
 
-struct IrInstSrcIntToErr {
-    IrInstSrc base;
+struct Stage1ZirInstIntToErr {
+    Stage1ZirInst base;
 
-    IrInstSrc *target;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenIntToErr {
-    IrInstGen base;
+struct Stage1AirInstIntToErr {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcErrToInt {
-    IrInstSrc base;
+struct Stage1ZirInstErrToInt {
+    Stage1ZirInst base;
 
-    IrInstSrc *target;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenErrToInt {
-    IrInstGen base;
+struct Stage1AirInstErrToInt {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcCheckSwitchProngsRange {
-    IrInstSrc *start;
-    IrInstSrc *end;
+struct Stage1ZirInstCheckSwitchProngsRange {
+    Stage1ZirInst *start;
+    Stage1ZirInst *end;
 };
 
-struct IrInstSrcCheckSwitchProngs {
-    IrInstSrc base;
+struct Stage1ZirInstCheckSwitchProngs {
+    Stage1ZirInst base;
 
-    IrInstSrc *target_value;
-    IrInstSrcCheckSwitchProngsRange *ranges;
+    Stage1ZirInst *target_value;
+    Stage1ZirInstCheckSwitchProngsRange *ranges;
     size_t range_count;
     AstNode* else_prong;
 };
 
-struct IrInstSrcCheckStatementIsVoid {
-    IrInstSrc base;
+struct Stage1ZirInstCheckStatementIsVoid {
+    Stage1ZirInst base;
 
-    IrInstSrc *statement_value;
+    Stage1ZirInst *statement_value;
 };
 
-struct IrInstSrcTypeName {
-    IrInstSrc base;
+struct Stage1ZirInstTypeName {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
+    Stage1ZirInst *type_value;
 };
 
-struct IrInstSrcDeclRef {
-    IrInstSrc base;
+struct Stage1ZirInstDeclRef {
+    Stage1ZirInst base;
 
     LVal lval;
     Tld *tld;
 };
 
-struct IrInstSrcPanic {
-    IrInstSrc base;
+struct Stage1ZirInstPanic {
+    Stage1ZirInst base;
 
-    IrInstSrc *msg;
+    Stage1ZirInst *msg;
 };
 
-struct IrInstGenPanic {
-    IrInstGen base;
+struct Stage1AirInstPanic {
+    Stage1AirInst base;
 
-    IrInstGen *msg;
+    Stage1AirInst *msg;
 };
 
-struct IrInstSrcTagName {
-    IrInstSrc base;
+struct Stage1ZirInstTagName {
+    Stage1ZirInst base;
 
-    IrInstSrc *target;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenTagName {
-    IrInstGen base;
+struct Stage1AirInstTagName {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcFieldParentPtr {
-    IrInstSrc base;
+struct Stage1ZirInstFieldParentPtr {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
-    IrInstSrc *field_name;
-    IrInstSrc *field_ptr;
+    Stage1ZirInst *type_value;
+    Stage1ZirInst *field_name;
+    Stage1ZirInst *field_ptr;
 };
 
-struct IrInstGenFieldParentPtr {
-    IrInstGen base;
+struct Stage1AirInstFieldParentPtr {
+    Stage1AirInst base;
 
-    IrInstGen *field_ptr;
+    Stage1AirInst *field_ptr;
     TypeStructField *field;
 };
 
-struct IrInstSrcByteOffsetOf {
-    IrInstSrc base;
+struct Stage1ZirInstOffsetOf {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
-    IrInstSrc *field_name;
+    Stage1ZirInst *type_value;
+    Stage1ZirInst *field_name;
 };
 
-struct IrInstSrcBitOffsetOf {
-    IrInstSrc base;
+struct Stage1ZirInstBitOffsetOf {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
-    IrInstSrc *field_name;
+    Stage1ZirInst *type_value;
+    Stage1ZirInst *field_name;
 };
 
-struct IrInstSrcTypeInfo {
-    IrInstSrc base;
+struct Stage1ZirInstTypeInfo {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_value;
+    Stage1ZirInst *type_value;
 };
 
-struct IrInstSrcType {
-    IrInstSrc base;
+struct Stage1ZirInstType {
+    Stage1ZirInst base;
 
-    IrInstSrc *type_info;
+    Stage1ZirInst *type_info;
 };
 
-struct IrInstSrcHasField {
-    IrInstSrc base;
+struct Stage1ZirInstHasField {
+    Stage1ZirInst base;
 
-    IrInstSrc *container_type;
-    IrInstSrc *field_name;
+    Stage1ZirInst *container_type;
+    Stage1ZirInst *field_name;
 };
 
-struct IrInstSrcSetEvalBranchQuota {
-    IrInstSrc base;
+struct Stage1ZirInstSetEvalBranchQuota {
+    Stage1ZirInst base;
 
-    IrInstSrc *new_quota;
+    Stage1ZirInst *new_quota;
 };
 
-struct IrInstSrcAlignCast {
-    IrInstSrc base;
+struct Stage1ZirInstAlignCast {
+    Stage1ZirInst base;
 
-    IrInstSrc *align_bytes;
-    IrInstSrc *target;
+    Stage1ZirInst *align_bytes;
+    Stage1ZirInst *target;
 };
 
-struct IrInstGenAlignCast {
-    IrInstGen base;
+struct Stage1AirInstAlignCast {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcSetAlignStack {
-    IrInstSrc base;
+struct Stage1ZirInstSetAlignStack {
+    Stage1ZirInst base;
 
-    IrInstSrc *align_bytes;
+    Stage1ZirInst *align_bytes;
 };
 
-struct IrInstSrcArgType {
-    IrInstSrc base;
+struct Stage1ZirInstArgType {
+    Stage1ZirInst base;
 
-    IrInstSrc *fn_type;
-    IrInstSrc *arg_index;
+    Stage1ZirInst *fn_type;
+    Stage1ZirInst *arg_index;
 };
 
-struct IrInstSrcExport {
-    IrInstSrc base;
+struct Stage1ZirInstExport {
+    Stage1ZirInst base;
 
-    IrInstSrc *target;
-    IrInstSrc *options;
+    Stage1ZirInst *target;
+    Stage1ZirInst *options;
 };
 
-struct IrInstSrcExtern {
-    IrInstSrc base;
+struct Stage1ZirInstExtern {
+    Stage1ZirInst base;
 
-    IrInstSrc *type;
-    IrInstSrc *options;
+    Stage1ZirInst *type;
+    Stage1ZirInst *options;
 };
 
-struct IrInstGenExtern {
-    IrInstGen base;
+struct Stage1AirInstExtern {
+    Stage1AirInst base;
 
     Buf *name;
     GlobalLinkageId linkage;
@@ -4188,310 +4138,327 @@ enum IrInstErrorReturnTraceOptional {
     IrInstErrorReturnTraceNonNull,
 };
 
-struct IrInstSrcErrorReturnTrace {
-    IrInstSrc base;
+struct Stage1ZirInstErrorReturnTrace {
+    Stage1ZirInst base;
 
     IrInstErrorReturnTraceOptional optional;
 };
 
-struct IrInstGenErrorReturnTrace {
-    IrInstGen base;
+struct Stage1AirInstErrorReturnTrace {
+    Stage1AirInst base;
 
     IrInstErrorReturnTraceOptional optional;
 };
 
-struct IrInstSrcErrorUnion {
-    IrInstSrc base;
+struct Stage1ZirInstErrorUnion {
+    Stage1ZirInst base;
 
-    IrInstSrc *err_set;
-    IrInstSrc *payload;
+    Stage1ZirInst *err_set;
+    Stage1ZirInst *payload;
     Buf *type_name;
 };
 
-struct IrInstSrcAtomicRmw {
-    IrInstSrc base;
+struct Stage1ZirInstAtomicRmw {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand_type;
-    IrInstSrc *ptr;
-    IrInstSrc *op;
-    IrInstSrc *operand;
-    IrInstSrc *ordering;
+    Stage1ZirInst *operand_type;
+    Stage1ZirInst *ptr;
+    Stage1ZirInst *op;
+    Stage1ZirInst *operand;
+    Stage1ZirInst *ordering;
 };
 
-struct IrInstGenAtomicRmw {
-    IrInstGen base;
+struct Stage1AirInstAtomicRmw {
+    Stage1AirInst base;
 
-    IrInstGen *ptr;
-    IrInstGen *operand;
+    Stage1AirInst *ptr;
+    Stage1AirInst *operand;
     AtomicRmwOp op;
     AtomicOrder ordering;
 };
 
-struct IrInstSrcAtomicLoad {
-    IrInstSrc base;
+struct Stage1ZirInstAtomicLoad {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand_type;
-    IrInstSrc *ptr;
-    IrInstSrc *ordering;
+    Stage1ZirInst *operand_type;
+    Stage1ZirInst *ptr;
+    Stage1ZirInst *ordering;
 };
 
-struct IrInstGenAtomicLoad {
-    IrInstGen base;
+struct Stage1AirInstAtomicLoad {
+    Stage1AirInst base;
 
-    IrInstGen *ptr;
+    Stage1AirInst *ptr;
     AtomicOrder ordering;
 };
 
-struct IrInstSrcAtomicStore {
-    IrInstSrc base;
+struct Stage1ZirInstAtomicStore {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand_type;
-    IrInstSrc *ptr;
-    IrInstSrc *value;
-    IrInstSrc *ordering;
+    Stage1ZirInst *operand_type;
+    Stage1ZirInst *ptr;
+    Stage1ZirInst *value;
+    Stage1ZirInst *ordering;
 };
 
-struct IrInstGenAtomicStore {
-    IrInstGen base;
+struct Stage1AirInstAtomicStore {
+    Stage1AirInst base;
 
-    IrInstGen *ptr;
-    IrInstGen *value;
+    Stage1AirInst *ptr;
+    Stage1AirInst *value;
     AtomicOrder ordering;
 };
 
-struct IrInstSrcSaveErrRetAddr {
-    IrInstSrc base;
+struct Stage1ZirInstSaveErrRetAddr {
+    Stage1ZirInst base;
 };
 
-struct IrInstGenSaveErrRetAddr {
-    IrInstGen base;
+struct Stage1AirInstSaveErrRetAddr {
+    Stage1AirInst base;
 };
 
-struct IrInstSrcAddImplicitReturnType {
-    IrInstSrc base;
+struct Stage1ZirInstAddImplicitReturnType {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
     ResultLocReturn *result_loc_ret;
 };
 
 // For float ops that take a single argument
-struct IrInstSrcFloatOp {
-    IrInstSrc base;
+struct Stage1ZirInstFloatOp {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand;
+    Stage1ZirInst *operand;
     BuiltinFnId fn_id;
 };
 
-struct IrInstGenFloatOp {
-    IrInstGen base;
+struct Stage1AirInstFloatOp {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
+    Stage1AirInst *operand;
     BuiltinFnId fn_id;
 };
 
-struct IrInstSrcCheckRuntimeScope {
-    IrInstSrc base;
+struct Stage1ZirInstCheckRuntimeScope {
+    Stage1ZirInst base;
 
-    IrInstSrc *scope_is_comptime;
-    IrInstSrc *is_comptime;
+    Stage1ZirInst *scope_is_comptime;
+    Stage1ZirInst *is_comptime;
 };
 
-struct IrInstSrcBswap {
-    IrInstSrc base;
+struct Stage1ZirInstBswap {
+    Stage1ZirInst base;
 
-    IrInstSrc *type;
-    IrInstSrc *op;
+    Stage1ZirInst *type;
+    Stage1ZirInst *op;
 };
 
-struct IrInstGenBswap {
-    IrInstGen base;
+struct Stage1AirInstBswap {
+    Stage1AirInst base;
 
-    IrInstGen *op;
+    Stage1AirInst *op;
 };
 
-struct IrInstSrcBitReverse {
-    IrInstSrc base;
+struct Stage1ZirInstBitReverse {
+    Stage1ZirInst base;
 
-    IrInstSrc *type;
-    IrInstSrc *op;
+    Stage1ZirInst *type;
+    Stage1ZirInst *op;
 };
 
-struct IrInstGenBitReverse {
-    IrInstGen base;
+struct Stage1AirInstBitReverse {
+    Stage1AirInst base;
 
-    IrInstGen *op;
+    Stage1AirInst *op;
 };
 
-struct IrInstGenArrayToVector {
-    IrInstGen base;
+struct Stage1AirInstArrayToVector {
+    Stage1AirInst base;
 
-    IrInstGen *array;
+    Stage1AirInst *array;
 };
 
-struct IrInstGenVectorToArray {
-    IrInstGen base;
+struct Stage1AirInstVectorToArray {
+    Stage1AirInst base;
 
-    IrInstGen *vector;
-    IrInstGen *result_loc;
+    Stage1AirInst *vector;
+    Stage1AirInst *result_loc;
 };
 
-struct IrInstSrcShuffleVector {
-    IrInstSrc base;
+struct Stage1ZirInstShuffleVector {
+    Stage1ZirInst base;
 
-    IrInstSrc *scalar_type;
-    IrInstSrc *a;
-    IrInstSrc *b;
-    IrInstSrc *mask; // This is in zig-format, not llvm format
+    Stage1ZirInst *scalar_type;
+    Stage1ZirInst *a;
+    Stage1ZirInst *b;
+    Stage1ZirInst *mask; // This is in zig-format, not llvm format
 };
 
-struct IrInstGenShuffleVector {
-    IrInstGen base;
+struct Stage1AirInstShuffleVector {
+    Stage1AirInst base;
 
-    IrInstGen *a;
-    IrInstGen *b;
-    IrInstGen *mask; // This is in zig-format, not llvm format
+    Stage1AirInst *a;
+    Stage1AirInst *b;
+    Stage1AirInst *mask; // This is in zig-format, not llvm format
 };
 
-struct IrInstSrcSplat {
-    IrInstSrc base;
+struct Stage1ZirInstSelect {
+    Stage1ZirInst base;
 
-    IrInstSrc *len;
-    IrInstSrc *scalar;
+    Stage1ZirInst *scalar_type;
+    Stage1ZirInst *pred; // This is in zig-format, not llvm format
+    Stage1ZirInst *a;
+    Stage1ZirInst *b;
 };
 
-struct IrInstGenSplat {
-    IrInstGen base;
+struct Stage1AirInstSelect {
+    Stage1AirInst base;
 
-    IrInstGen *scalar;
+    Stage1AirInst *pred;  // This is in zig-format, not llvm format
+    Stage1AirInst *a;
+    Stage1AirInst *b;
 };
 
-struct IrInstGenAssertZero {
-    IrInstGen base;
+struct Stage1ZirInstSplat {
+    Stage1ZirInst base;
 
-    IrInstGen *target;
+    Stage1ZirInst *len;
+    Stage1ZirInst *scalar;
 };
 
-struct IrInstGenAssertNonNull {
-    IrInstGen base;
+struct Stage1AirInstSplat {
+    Stage1AirInst base;
 
-    IrInstGen *target;
+    Stage1AirInst *scalar;
 };
 
-struct IrInstSrcUnionInitNamedField {
-    IrInstSrc base;
+struct Stage1AirInstAssertZero {
+    Stage1AirInst base;
 
-    IrInstSrc *union_type;
-    IrInstSrc *field_name;
-    IrInstSrc *field_result_loc;
-    IrInstSrc *result_loc;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcHasDecl {
-    IrInstSrc base;
+struct Stage1AirInstAssertNonNull {
+    Stage1AirInst base;
 
-    IrInstSrc *container;
-    IrInstSrc *name;
+    Stage1AirInst *target;
 };
 
-struct IrInstSrcUndeclaredIdent {
-    IrInstSrc base;
+struct Stage1ZirInstUnionInitNamedField {
+    Stage1ZirInst base;
+
+    Stage1ZirInst *union_type;
+    Stage1ZirInst *field_name;
+    Stage1ZirInst *field_result_loc;
+    Stage1ZirInst *result_loc;
+};
+
+struct Stage1ZirInstHasDecl {
+    Stage1ZirInst base;
+
+    Stage1ZirInst *container;
+    Stage1ZirInst *name;
+};
+
+struct Stage1ZirInstUndeclaredIdent {
+    Stage1ZirInst base;
 
     Buf *name;
 };
 
-struct IrInstSrcAlloca {
-    IrInstSrc base;
+struct Stage1ZirInstAlloca {
+    Stage1ZirInst base;
 
-    IrInstSrc *align;
-    IrInstSrc *is_comptime;
+    Stage1ZirInst *align;
+    Stage1ZirInst *is_comptime;
     const char *name_hint;
 };
 
-struct IrInstGenAlloca {
-    IrInstGen base;
+struct Stage1AirInstAlloca {
+    Stage1AirInst base;
 
     uint32_t align;
     const char *name_hint;
     size_t field_index;
 };
 
-struct IrInstSrcEndExpr {
-    IrInstSrc base;
+struct Stage1ZirInstEndExpr {
+    Stage1ZirInst base;
 
-    IrInstSrc *value;
+    Stage1ZirInst *value;
     ResultLoc *result_loc;
 };
 
 // This one is for writing through the result pointer.
-struct IrInstSrcResolveResult {
-    IrInstSrc base;
+struct Stage1ZirInstResolveResult {
+    Stage1ZirInst base;
 
     ResultLoc *result_loc;
-    IrInstSrc *ty;
+    Stage1ZirInst *ty;
 };
 
-struct IrInstSrcResetResult {
-    IrInstSrc base;
+struct Stage1ZirInstResetResult {
+    Stage1ZirInst base;
 
     ResultLoc *result_loc;
 };
 
-struct IrInstGenPtrOfArrayToSlice {
-    IrInstGen base;
+struct Stage1AirInstPtrOfArrayToSlice {
+    Stage1AirInst base;
 
-    IrInstGen *operand;
-    IrInstGen *result_loc;
+    Stage1AirInst *operand;
+    Stage1AirInst *result_loc;
 };
 
-struct IrInstSrcSuspendBegin {
-    IrInstSrc base;
+struct Stage1ZirInstSuspendBegin {
+    Stage1ZirInst base;
 };
 
-struct IrInstGenSuspendBegin {
-    IrInstGen base;
+struct Stage1AirInstSuspendBegin {
+    Stage1AirInst base;
 
     LLVMBasicBlockRef resume_bb;
 };
 
-struct IrInstSrcSuspendFinish {
-    IrInstSrc base;
+struct Stage1ZirInstSuspendFinish {
+    Stage1ZirInst base;
 
-    IrInstSrcSuspendBegin *begin;
+    Stage1ZirInstSuspendBegin *begin;
 };
 
-struct IrInstGenSuspendFinish {
-    IrInstGen base;
+struct Stage1AirInstSuspendFinish {
+    Stage1AirInst base;
 
-    IrInstGenSuspendBegin *begin;
+    Stage1AirInstSuspendBegin *begin;
 };
 
-struct IrInstSrcAwait {
-    IrInstSrc base;
+struct Stage1ZirInstAwait {
+    Stage1ZirInst base;
 
-    IrInstSrc *frame;
+    Stage1ZirInst *frame;
     ResultLoc *result_loc;
     bool is_nosuspend;
 };
 
-struct IrInstGenAwait {
-    IrInstGen base;
+struct Stage1AirInstAwait {
+    Stage1AirInst base;
 
-    IrInstGen *frame;
-    IrInstGen *result_loc;
+    Stage1AirInst *frame;
+    Stage1AirInst *result_loc;
     ZigFn *target_fn;
     bool is_nosuspend;
 };
 
-struct IrInstSrcResume {
-    IrInstSrc base;
+struct Stage1ZirInstResume {
+    Stage1ZirInst base;
 
-    IrInstSrc *frame;
+    Stage1ZirInst *frame;
 };
 
-struct IrInstGenResume {
-    IrInstGen base;
+struct Stage1AirInstResume {
+    Stage1AirInst base;
 
-    IrInstGen *frame;
+    Stage1AirInst *frame;
 };
 
 enum SpillId {
@@ -4499,37 +4466,37 @@ enum SpillId {
     SpillIdRetErrCode,
 };
 
-struct IrInstSrcSpillBegin {
-    IrInstSrc base;
+struct Stage1ZirInstSpillBegin {
+    Stage1ZirInst base;
 
-    IrInstSrc *operand;
+    Stage1ZirInst *operand;
     SpillId spill_id;
 };
 
-struct IrInstGenSpillBegin {
-    IrInstGen base;
+struct Stage1AirInstSpillBegin {
+    Stage1AirInst base;
 
     SpillId spill_id;
-    IrInstGen *operand;
+    Stage1AirInst *operand;
 };
 
-struct IrInstSrcSpillEnd {
-    IrInstSrc base;
+struct Stage1ZirInstSpillEnd {
+    Stage1ZirInst base;
 
-    IrInstSrcSpillBegin *begin;
+    Stage1ZirInstSpillBegin *begin;
 };
 
-struct IrInstGenSpillEnd {
-    IrInstGen base;
+struct Stage1AirInstSpillEnd {
+    Stage1AirInst base;
 
-    IrInstGenSpillBegin *begin;
+    Stage1AirInstSpillBegin *begin;
 };
 
-struct IrInstGenVectorExtractElem {
-    IrInstGen base;
+struct Stage1AirInstVectorExtractElem {
+    Stage1AirInst base;
 
-    IrInstGen *vector;
-    IrInstGen *index;
+    Stage1AirInst *vector;
+    Stage1AirInst *index;
 };
 
 enum ResultLocId {
@@ -4550,9 +4517,9 @@ struct ResultLoc {
     ResultLocId id;
     bool written;
     bool allow_write_through_const;
-    IrInstGen *resolved_loc; // result ptr
-    IrInstSrc *source_instruction;
-    IrInstGen *gen_instruction; // value to store to the result loc
+    Stage1AirInst *resolved_loc; // result ptr
+    Stage1ZirInst *source_instruction;
+    Stage1AirInst *gen_instruction; // value to store to the result loc
     ZigType *implicit_elem_type;
 };
 
@@ -4582,18 +4549,18 @@ struct ResultLocPeerParent {
 
     bool skipped;
     bool done_resuming;
-    IrBasicBlockSrc *end_bb;
+    Stage1ZirBasicBlock *end_bb;
     ResultLoc *parent;
     ZigList<ResultLocPeer *> peers;
     ZigType *resolved_type;
-    IrInstSrc *is_comptime;
+    Stage1ZirInst *is_comptime;
 };
 
 struct ResultLocPeer {
     ResultLoc base;
 
     ResultLocPeerParent *parent;
-    IrBasicBlockSrc *next_bb;
+    Stage1ZirBasicBlock *next_bb;
     IrSuspendPosition suspend_pos;
 };
 
@@ -4664,7 +4631,7 @@ struct FnWalkAttrs {
 struct FnWalkCall {
     ZigList<LLVMValueRef> *gen_param_values;
     ZigList<ZigType *> *gen_param_types;
-    IrInstGenCall *inst;
+    Stage1AirInstCall *inst;
     bool is_var_args;
 };
 

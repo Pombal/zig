@@ -85,7 +85,7 @@ pub fn getEnvMap(allocator: *Allocator) !BufMap {
 
             i += 1; // skip over null byte
 
-            try result.setMove(key, value);
+            try result.putMove(key, value);
         }
         return result;
     } else if (builtin.os.tag == .wasi) {
@@ -112,7 +112,7 @@ pub fn getEnvMap(allocator: *Allocator) !BufMap {
             var parts = mem.split(pair, "=");
             const key = parts.next().?;
             const value = parts.next().?;
-            try result.set(key, value);
+            try result.put(key, value);
         }
         return result;
     } else if (builtin.link_libc) {
@@ -126,7 +126,7 @@ pub fn getEnvMap(allocator: *Allocator) !BufMap {
             while (line[end_i] != 0) : (end_i += 1) {}
             const value = line[line_i + 1 .. end_i];
 
-            try result.set(key, value);
+            try result.put(key, value);
         }
         return result;
     } else {
@@ -139,7 +139,7 @@ pub fn getEnvMap(allocator: *Allocator) !BufMap {
             while (line[end_i] != 0) : (end_i += 1) {}
             const value = line[line_i + 1 .. end_i];
 
-            try result.set(key, value);
+            try result.put(key, value);
         }
         return result;
     }
@@ -176,6 +176,26 @@ pub fn getEnvVarOwned(allocator: *mem.Allocator, key: []const u8) GetEnvVarOwned
     } else {
         const result = os.getenv(key) orelse return error.EnvironmentVariableNotFound;
         return allocator.dupe(u8, result);
+    }
+}
+
+pub fn hasEnvVarConstant(comptime key: []const u8) bool {
+    if (builtin.os.tag == .windows) {
+        const key_w = comptime std.unicode.utf8ToUtf16LeStringLiteral(key);
+        return std.os.getenvW(key_w) != null;
+    } else {
+        return os.getenv(key) != null;
+    }
+}
+
+pub fn hasEnvVar(allocator: *Allocator, key: []const u8) error{OutOfMemory}!bool {
+    if (builtin.os.tag == .windows) {
+        var stack_alloc = std.heap.stackFallback(256 * @sizeOf(u16), allocator);
+        const key_w = try std.unicode.utf8ToUtf16LeWithNull(&stack_alloc.allocator, key);
+        defer stack_alloc.allocator.free(key_w);
+        return std.os.getenvW(key_w) != null;
+    } else {
+        return os.getenv(key) != null;
     }
 }
 
@@ -419,6 +439,7 @@ pub const ArgIteratorWindows = struct {
         };
     }
     fn emitBackslashes(self: *ArgIteratorWindows, buf: *std.ArrayList(u16), emit_count: usize) !void {
+        _ = self;
         var i: usize = 0;
         while (i < emit_count) : (i += 1) {
             try buf.append(std.mem.nativeToLittle(u16, '\\'));
@@ -748,6 +769,7 @@ pub fn getSelfExeSharedLibPaths(allocator: *Allocator) error{OutOfMemory}![][:0]
             }
             try os.dl_iterate_phdr(&paths, error{OutOfMemory}, struct {
                 fn callback(info: *os.dl_phdr_info, size: usize, list: *List) !void {
+                    _ = size;
                     const name = info.dlpi_name orelse return;
                     if (name[0] == '/') {
                         const item = try list.allocator.dupeZ(u8, mem.spanZ(name));
@@ -800,7 +822,10 @@ pub fn getSelfExeSharedLibPaths(allocator: *Allocator) error{OutOfMemory}![][:0]
 }
 
 /// Tells whether calling the `execv` or `execve` functions will be a compile error.
-pub const can_execv = std.builtin.os.tag != .windows;
+pub const can_execv = switch (builtin.os.tag) {
+    .windows, .haiku => false,
+    else => true,
+};
 
 pub const ExecvError = std.os.ExecveError || error{OutOfMemory};
 

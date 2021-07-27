@@ -7,7 +7,7 @@ const BigIntMutable = std.math.big.int.Mutable;
 const Target = std.Target;
 const Allocator = std.mem.Allocator;
 const Module = @import("Module.zig");
-const ir = @import("ir.zig");
+const Air = @import("Air.zig");
 
 /// This is the raw data, with no bookkeeping, no memory awareness,
 /// no de-duplication, and no type system awareness.
@@ -101,6 +101,8 @@ pub const Value = extern union {
         variable,
         /// Represents a pointer to another immutable value.
         ref_val,
+        /// Represents a comptime variables storage.
+        comptime_alloc,
         /// Represents a pointer to a decl, not the value of the decl.
         decl_ref,
         elem_ptr,
@@ -223,6 +225,7 @@ pub const Value = extern union {
                 .int_i64 => Payload.I64,
                 .function => Payload.Function,
                 .variable => Payload.Variable,
+                .comptime_alloc => Payload.ComptimeAlloc,
                 .elem_ptr => Payload.ElemPtr,
                 .field_ptr => Payload.FieldPtr,
                 .float_16 => Payload.Float_16,
@@ -403,6 +406,7 @@ pub const Value = extern union {
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
+            .comptime_alloc => return self.copyPayloadShallow(allocator, Payload.ComptimeAlloc),
             .decl_ref => return self.copyPayloadShallow(allocator, Payload.Decl),
             .elem_ptr => {
                 const payload = self.castTag(.elem_ptr).?;
@@ -479,13 +483,13 @@ pub const Value = extern union {
     /// TODO this should become a debug dump() function. In order to print values in a meaningful way
     /// we also need access to the type.
     pub fn format(
-        self: Value,
+        start_val: Value,
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
         comptime assert(fmt.len == 0);
-        var val = self;
+        var val = start_val;
         while (true) switch (val.tag()) {
             .u8_type => return out_stream.writeAll("u8"),
             .i8_type => return out_stream.writeAll("i8"),
@@ -569,12 +573,17 @@ pub const Value = extern union {
             .int_i64 => return std.fmt.formatIntValue(val.castTag(.int_i64).?.data, "", options, out_stream),
             .int_big_positive => return out_stream.print("{}", .{val.castTag(.int_big_positive).?.asBigInt()}),
             .int_big_negative => return out_stream.print("{}", .{val.castTag(.int_big_negative).?.asBigInt()}),
-            .function => return out_stream.writeAll("(function)"),
+            .function => return out_stream.print("(function '{s}')", .{val.castTag(.function).?.data.owner_decl.name}),
             .extern_fn => return out_stream.writeAll("(extern function)"),
             .variable => return out_stream.writeAll("(variable)"),
             .ref_val => {
                 const ref_val = val.castTag(.ref_val).?.data;
                 try out_stream.writeAll("&const ");
+                val = ref_val;
+            },
+            .comptime_alloc => {
+                const ref_val = val.castTag(.comptime_alloc).?.data.val;
+                try out_stream.writeAll("&");
                 val = ref_val;
             },
             .decl_ref => return out_stream.writeAll("(decl ref)"),
@@ -589,9 +598,9 @@ pub const Value = extern union {
                 val = field_ptr.container_ptr;
             },
             .empty_array => return out_stream.writeAll(".{}"),
-            .enum_literal => return out_stream.print(".{}", .{std.zig.fmtId(self.castTag(.enum_literal).?.data)}),
-            .enum_field_index => return out_stream.print("(enum field {d})", .{self.castTag(.enum_field_index).?.data}),
-            .bytes => return out_stream.print("\"{}\"", .{std.zig.fmtEscapes(self.castTag(.bytes).?.data)}),
+            .enum_literal => return out_stream.print(".{}", .{std.zig.fmtId(val.castTag(.enum_literal).?.data)}),
+            .enum_field_index => return out_stream.print("(enum field {d})", .{val.castTag(.enum_field_index).?.data}),
+            .bytes => return out_stream.print("\"{}\"", .{std.zig.fmtEscapes(val.castTag(.bytes).?.data)}),
             .repeated => {
                 try out_stream.writeAll("(repeated) ");
                 val = val.castTag(.repeated).?.data;
@@ -617,6 +626,7 @@ pub const Value = extern union {
             return std.mem.dupe(allocator, u8, payload.data);
         }
         if (self.castTag(.repeated)) |payload| {
+            _ = payload;
             @panic("TODO implement toAllocatedBytes for this Value tag");
         }
         if (self.castTag(.decl_ref)) |payload| {
@@ -713,6 +723,7 @@ pub const Value = extern union {
             .extern_fn,
             .variable,
             .ref_val,
+            .comptime_alloc,
             .decl_ref,
             .elem_ptr,
             .field_ptr,
@@ -737,6 +748,7 @@ pub const Value = extern union {
 
     /// Asserts the type is an enum type.
     pub fn toEnum(val: Value, enum_ty: Type, comptime E: type) E {
+        _ = enum_ty;
         // TODO this needs to resolve other kinds of Value tags rather than
         // assuming the tag will be .enum_field_index.
         const field_index = val.castTag(.enum_field_index).?.data;
@@ -925,6 +937,7 @@ pub const Value = extern union {
     /// Converts an integer or a float to a float.
     /// Returns `error.Overflow` if the value does not fit in the new type.
     pub fn floatCast(self: Value, allocator: *Allocator, ty: Type, target: Target) !Value {
+        _ = target;
         switch (ty.tag()) {
             .f16 => {
                 @panic("TODO add __trunctfhf2 to compiler-rt");
@@ -965,6 +978,26 @@ pub const Value = extern union {
             // .float_128 => @rem(self.castTag(.float_128).?.data, 1) != 0,
             .float_128 => @panic("TODO lld: error: undefined symbol: fmodl"),
 
+            else => unreachable,
+        };
+    }
+
+    /// Asserts the value is numeric
+    pub fn isZero(self: Value) bool {
+        return switch (self.tag()) {
+            .zero => true,
+            .one => false,
+
+            .int_u64 => self.castTag(.int_u64).?.data == 0,
+            .int_i64 => self.castTag(.int_i64).?.data == 0,
+
+            .float_16 => self.castTag(.float_16).?.data == 0,
+            .float_32 => self.castTag(.float_32).?.data == 0,
+            .float_64 => self.castTag(.float_64).?.data == 0,
+            .float_128 => self.castTag(.float_128).?.data == 0,
+
+            .int_big_positive => self.castTag(.int_big_positive).?.asBigInt().eqZero(),
+            .int_big_negative => self.castTag(.int_big_negative).?.asBigInt().eqZero(),
             else => unreachable,
         };
     }
@@ -1186,6 +1219,10 @@ pub const Value = extern union {
                 const payload = self.castTag(.ref_val).?;
                 std.hash.autoHash(&hasher, payload.data.hash());
             },
+            .comptime_alloc => {
+                const payload = self.castTag(.comptime_alloc).?;
+                std.hash.autoHash(&hasher, payload.data.val.hash());
+            },
             .int_big_positive, .int_big_negative => {
                 var space: BigIntSpace = undefined;
                 const big = self.toBigInt(&space);
@@ -1256,10 +1293,32 @@ pub const Value = extern union {
         return hasher.final();
     }
 
+    pub const ArrayHashContext = struct {
+        pub fn hash(self: @This(), v: Value) u32 {
+            _ = self;
+            return v.hash_u32();
+        }
+        pub fn eql(self: @This(), a: Value, b: Value) bool {
+            _ = self;
+            return a.eql(b);
+        }
+    };
+    pub const HashContext = struct {
+        pub fn hash(self: @This(), v: Value) u64 {
+            _ = self;
+            return v.hash();
+        }
+        pub fn eql(self: @This(), a: Value, b: Value) bool {
+            _ = self;
+            return a.eql(b);
+        }
+    };
+
     /// Asserts the value is a pointer and dereferences it.
     /// Returns error.AnalysisFail if the pointer points to a Decl that failed semantic analysis.
     pub fn pointerDeref(self: Value, allocator: *Allocator) error{ AnalysisFail, OutOfMemory }!Value {
         return switch (self.tag()) {
+            .comptime_alloc => self.castTag(.comptime_alloc).?.data.val,
             .ref_val => self.castTag(.ref_val).?.data,
             .decl_ref => self.castTag(.decl_ref).?.data.value(),
             .elem_ptr => {
@@ -1273,6 +1332,23 @@ pub const Value = extern union {
                 return container_val.fieldValue(allocator, field_ptr.field_index);
             },
 
+            else => unreachable,
+        };
+    }
+
+    pub fn sliceLen(val: Value) u64 {
+        return switch (val.tag()) {
+            .empty_array => 0,
+            .bytes => val.castTag(.bytes).?.data.len,
+            .ref_val => sliceLen(val.castTag(.ref_val).?.data),
+            .decl_ref => {
+                const decl = val.castTag(.decl_ref).?.data;
+                if (decl.ty.zigTypeTag() == .Array) {
+                    return decl.ty.arrayLen();
+                } else {
+                    return 1;
+                }
+            },
             else => unreachable,
         };
     }
@@ -1293,6 +1369,7 @@ pub const Value = extern union {
     }
 
     pub fn fieldValue(val: Value, allocator: *Allocator, index: usize) error{OutOfMemory}!Value {
+        _ = allocator;
         switch (val.tag()) {
             .@"struct" => {
                 const field_values = val.castTag(.@"struct").?.data;
@@ -1445,6 +1522,7 @@ pub const Value = extern union {
             .int_big_positive,
             .int_big_negative,
             .ref_val,
+            .comptime_alloc,
             .decl_ref,
             .elem_ptr,
             .field_ptr,
@@ -1523,6 +1601,16 @@ pub const Value = extern union {
         pub const SubValue = struct {
             base: Payload,
             data: Value,
+        };
+
+        pub const ComptimeAlloc = struct {
+            pub const base_tag = Tag.comptime_alloc;
+
+            base: Payload = Payload{ .tag = base_tag },
+            data: struct {
+                val: Value,
+                runtime_index: u32,
+            },
         };
 
         pub const ElemPtr = struct {
@@ -1612,7 +1700,7 @@ pub const Value = extern union {
                 /// peer type resolution. This is stored in a separate list so that
                 /// the items are contiguous in memory and thus can be passed to
                 /// `Module.resolvePeerTypes`.
-                stored_inst_list: std.ArrayListUnmanaged(*ir.Inst) = .{},
+                stored_inst_list: std.ArrayListUnmanaged(Air.Inst.Ref) = .{},
             },
         };
 

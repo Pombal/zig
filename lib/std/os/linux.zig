@@ -34,6 +34,7 @@ pub usingnamespace switch (native_arch) {
 };
 pub usingnamespace @import("bits.zig");
 pub const tls = @import("linux/tls.zig");
+pub const pie = @import("linux/start_pie.zig");
 pub const BPF = @import("linux/bpf.zig");
 pub usingnamespace @import("linux/io_uring.zig");
 
@@ -69,6 +70,7 @@ fn splitValueLE64(val: i64) [2]u32 {
     };
 }
 fn splitValueBE64(val: i64) [2]u32 {
+    const u = @bitCast(u64, val);
     return [2]u32{
         @truncate(u32, u >> 32),
         @truncate(u32, u),
@@ -92,6 +94,10 @@ fn splitValue64(val: i64) [2]u32 {
 pub fn getErrno(r: usize) u12 {
     const signed_r = @bitCast(isize, r);
     return if (signed_r > -4096 and signed_r < 0) @intCast(u12, -signed_r) else 0;
+}
+
+pub fn dup(old: i32) usize {
+    return syscall1(.dup, @bitCast(usize, @as(isize, old)));
 }
 
 pub fn dup2(old: i32, new: i32) usize {
@@ -145,7 +151,7 @@ pub fn fork() usize {
 /// It is advised to avoid this function and use clone instead, because
 /// the compiler is not aware of how vfork affects control flow and you may
 /// see different results in optimized builds.
-pub fn vfork() callconv(.Inline) usize {
+pub inline fn vfork() usize {
     return @call(.{ .modifier = .always_inline }, syscall0, .{.vfork});
 }
 
@@ -181,7 +187,7 @@ pub fn fallocate(fd: i32, mode: i32, offset: i64, length: i64) usize {
     }
 }
 
-pub fn futex_wait(uaddr: *const i32, futex_op: u32, val: i32, timeout: ?*timespec) usize {
+pub fn futex_wait(uaddr: *const i32, futex_op: u32, val: i32, timeout: ?*const timespec) usize {
     return syscall4(.futex, @ptrToInt(uaddr), futex_op, @bitCast(u32, val), @ptrToInt(timeout));
 }
 
@@ -704,6 +710,10 @@ pub fn waitpid(pid: pid_t, status: *u32, flags: u32) usize {
     return syscall4(.wait4, @bitCast(usize, @as(isize, pid)), @ptrToInt(status), flags, 0);
 }
 
+pub fn waitid(id_type: P, id: i32, infop: *siginfo_t, flags: u32) usize {
+    return syscall5(.waitid, @enumToInt(id_type), @bitCast(usize, @as(isize, id)), @ptrToInt(infop), flags, 0);
+}
+
 pub fn fcntl(fd: fd_t, cmd: i32, arg: usize) usize {
     return syscall3(.fcntl, @bitCast(usize, @as(isize, fd)), @bitCast(usize, @as(isize, cmd)), arg);
 }
@@ -1000,11 +1010,11 @@ pub fn getsockopt(fd: i32, level: u32, optname: u32, noalias optval: [*]u8, noal
     return syscall5(.getsockopt, @bitCast(usize, @as(isize, fd)), level, optname, @ptrToInt(optval), @ptrToInt(optlen));
 }
 
-pub fn sendmsg(fd: i32, msg: *const msghdr_const, flags: u32) usize {
+pub fn sendmsg(fd: i32, msg: *const std.x.os.Socket.Message, flags: c_int) usize {
     if (native_arch == .i386) {
-        return socketcall(SC_sendmsg, &[3]usize{ @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), flags });
+        return socketcall(SC_sendmsg, &[3]usize{ @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), @bitCast(usize, @as(isize, flags)) });
     }
-    return syscall3(.sendmsg, @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), flags);
+    return syscall3(.sendmsg, @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), @bitCast(usize, @as(isize, flags)));
 }
 
 pub fn sendmmsg(fd: i32, msgvec: [*]mmsghdr_const, vlen: u32, flags: u32) usize {
@@ -1017,7 +1027,7 @@ pub fn sendmmsg(fd: i32, msgvec: [*]mmsghdr_const, vlen: u32, flags: u32) usize 
         for (msgvec[0..kvlen]) |*msg, i| {
             var size: i32 = 0;
             const msg_iovlen = @intCast(usize, msg.msg_hdr.msg_iovlen); // kernel side this is treated as unsigned
-            for (msg.msg_hdr.msg_iov[0..msg_iovlen]) |iov, j| {
+            for (msg.msg_hdr.msg_iov[0..msg_iovlen]) |iov| {
                 if (iov.iov_len > std.math.maxInt(i32) or @addWithOverflow(i32, size, @intCast(i32, iov.iov_len), &size)) {
                     // batch-send all messages up to the current message
                     if (next_unsent < i) {
@@ -1054,11 +1064,11 @@ pub fn connect(fd: i32, addr: *const c_void, len: socklen_t) usize {
     return syscall3(.connect, @bitCast(usize, @as(isize, fd)), @ptrToInt(addr), len);
 }
 
-pub fn recvmsg(fd: i32, msg: *msghdr, flags: u32) usize {
+pub fn recvmsg(fd: i32, msg: *std.x.os.Socket.Message, flags: c_int) usize {
     if (native_arch == .i386) {
-        return socketcall(SC_recvmsg, &[3]usize{ @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), flags });
+        return socketcall(SC_recvmsg, &[3]usize{ @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), @bitCast(usize, @as(isize, flags)) });
     }
-    return syscall3(.recvmsg, @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), flags);
+    return syscall3(.recvmsg, @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), @bitCast(usize, @as(isize, flags)));
 }
 
 pub fn recvfrom(fd: i32, noalias buf: [*]u8, len: usize, flags: u32, noalias addr: ?*sockaddr, noalias alen: ?*socklen_t) usize {
@@ -1452,6 +1462,65 @@ pub fn process_vm_writev(pid: pid_t, local: [*]const iovec, local_count: usize, 
         remote_count,
         flags,
     );
+}
+
+pub fn fadvise(fd: fd_t, offset: i64, len: i64, advice: usize) usize {
+    if (comptime std.Target.current.cpu.arch.isMIPS()) {
+        // MIPS requires a 7 argument syscall
+
+        const offset_halves = splitValue64(offset);
+        const length_halves = splitValue64(len);
+
+        return syscall7(
+            .fadvise64,
+            @bitCast(usize, @as(isize, fd)),
+            0,
+            offset_halves[0],
+            offset_halves[1],
+            length_halves[0],
+            length_halves[1],
+            advice,
+        );
+    } else if (comptime std.Target.current.cpu.arch.isARM()) {
+        // ARM reorders the arguments
+
+        const offset_halves = splitValue64(offset);
+        const length_halves = splitValue64(len);
+
+        return syscall6(
+            .fadvise64_64,
+            @bitCast(usize, @as(isize, fd)),
+            advice,
+            offset_halves[0],
+            offset_halves[1],
+            length_halves[0],
+            length_halves[1],
+        );
+    } else if (@hasField(SYS, "fadvise64_64") and usize_bits != 64) {
+        // The extra usize check is needed to avoid SPARC64 because it provides both
+        // fadvise64 and fadvise64_64 but the latter behaves differently than other platforms.
+
+        const offset_halves = splitValue64(offset);
+        const length_halves = splitValue64(len);
+
+        return syscall6(
+            .fadvise64_64,
+            @bitCast(usize, @as(isize, fd)),
+            offset_halves[0],
+            offset_halves[1],
+            length_halves[0],
+            length_halves[1],
+            advice,
+        );
+    } else {
+        return syscall4(
+            .fadvise64,
+            @bitCast(usize, @as(isize, fd)),
+            @bitCast(usize, offset),
+            @bitCast(usize, len),
+            advice,
+        );
+    }
 }
 
 test {

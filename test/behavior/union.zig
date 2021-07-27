@@ -107,11 +107,11 @@ test "union with specified enum tag" {
     comptime try doTest();
 }
 
-fn doTest() !void {
+fn doTest() error{TestUnexpectedResult}!void {
     try expect((try bar(Payload{ .A = 1234 })) == -10);
 }
 
-fn bar(value: Payload) !i32 {
+fn bar(value: Payload) error{TestUnexpectedResult}!i32 {
     try expect(@as(Letter, value) == Letter.A);
     return switch (value) {
         Payload.A => |x| return x - 1244,
@@ -374,7 +374,9 @@ const Attribute = union(enum) {
     B: u8,
 };
 
-fn setAttribute(attr: Attribute) void {}
+fn setAttribute(attr: Attribute) void {
+    _ = attr;
+}
 
 fn Setter(attr: Attribute) type {
     return struct {
@@ -465,7 +467,9 @@ test "union no tag with struct member" {
     const Struct = struct {};
     const Union = union {
         s: Struct,
-        pub fn foo(self: *@This()) void {}
+        pub fn foo(self: *@This()) void {
+            _ = self;
+        }
     };
     var u = Union{ .s = Struct{} };
     u.foo();
@@ -703,6 +707,7 @@ test "method call on an empty union" {
             X2: [0]u8,
 
             pub fn useIt(self: *@This()) bool {
+                _ = self;
                 return true;
             }
         };
@@ -771,16 +776,18 @@ test "@unionInit on union w/ tag but no fields" {
             no_op: void,
 
             pub fn decode(buf: []const u8) Data {
+                _ = buf;
                 return @unionInit(Data, "no_op", {});
             }
         };
 
         comptime {
-            try expect(@sizeOf(Data) != 0);
+            std.debug.assert(@sizeOf(Data) != 0);
         }
 
         fn doTheTest() !void {
             var data: Data = .{ .no_op = .{} };
+            _ = data;
             var o = Data.decode(&[_]u8{});
             try expectEqual(Type.no_op, o);
         }
@@ -803,4 +810,8 @@ test "union enum type gets a separate scope" {
     };
 
     try S.doTheTest();
+}
+test "anytype union field: issue #9233" {
+    const Baz = union(enum) { bar: anytype };
+    _ = Baz;
 }

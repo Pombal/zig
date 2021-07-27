@@ -497,7 +497,6 @@ fn add_include_dirs(comp: *Compilation, arena: *Allocator, args: *std.ArrayList(
     const target = comp.getTarget();
     const arch = target.cpu.arch;
     const opt_nptl: ?[]const u8 = if (target.os.tag == .linux) "nptl" else "htl";
-    const glibc = try lib_path(comp, arena, lib_libc ++ "glibc");
 
     const s = path.sep_str;
 
@@ -944,7 +943,7 @@ fn buildSharedLib(
         .zig_lib_directory = comp.zig_lib_directory,
         .target = comp.getTarget(),
         .root_name = lib.name,
-        .root_pkg = null,
+        .main_pkg = null,
         .output_mode = .Lib,
         .link_mode = .Dynamic,
         .thread_pool = comp.thread_pool,
@@ -963,9 +962,7 @@ fn buildSharedLib(
         .self_exe_path = comp.self_exe_path,
         .verbose_cc = comp.verbose_cc,
         .verbose_link = comp.bin_file.options.verbose_link,
-        .verbose_tokenize = comp.verbose_tokenize,
-        .verbose_ast = comp.verbose_ast,
-        .verbose_ir = comp.verbose_ir,
+        .verbose_air = comp.verbose_air,
         .verbose_llvm_ir = comp.verbose_llvm_ir,
         .verbose_cimport = comp.verbose_cimport,
         .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
