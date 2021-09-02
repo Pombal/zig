@@ -16,6 +16,7 @@ pub fn addCases(cases: *tests.StandaloneContext) void {
     cases.addBuildFile("test/standalone/link_interdependent_static_c_libs/build.zig", .{});
     cases.addBuildFile("test/standalone/link_static_lib_as_system_lib/build.zig", .{});
     cases.addBuildFile("test/standalone/link_common_symbols/build.zig", .{});
+    cases.addBuildFile("test/standalone/link_frameworks/build.zig", .{ .requires_macos_sdk = true });
     cases.addBuildFile("test/standalone/issue_339/build.zig", .{});
     cases.addBuildFile("test/standalone/issue_8550/build.zig", .{});
     cases.addBuildFile("test/standalone/issue_794/build.zig", .{});
@@ -37,6 +38,8 @@ pub fn addCases(cases: *tests.StandaloneContext) void {
     if (std.Target.current.os.tag == .linux) {
         cases.addBuildFile("test/standalone/pie/build.zig", .{});
     }
+    // Try to build and run an Objective-C executable.
+    cases.addBuildFile("test/standalone/objc/build.zig", .{ .build_modes = true, .requires_macos_sdk = true });
 
     // Ensure the development tools are buildable.
     cases.add("tools/gen_spirv_spec.zig");

@@ -582,7 +582,9 @@ static LLVMValueRef make_fn_llvm_value(CodeGen *g, ZigFn *fn) {
 
         bool want_ssp_attrs = g->build_mode != BuildModeFastRelease &&
                               g->build_mode != BuildModeSmallRelease &&
-                              g->link_libc;
+                              g->link_libc &&
+                              // WASI-libc does not support stack-protector yet.
+                              !target_is_wasm(g->zig_target);
         if (want_ssp_attrs) {
             addLLVMFnAttr(llvm_fn, "sspstrong");
             addLLVMFnAttrStr(llvm_fn, "stack-protector-buffer-size", "4");
@@ -2142,75 +2144,103 @@ static bool iter_function_params_c_abi(CodeGen *g, ZigType *fn_type, FnWalk *fn_
                 }
             }
             return true;
-        } else if (abi_class == X64CABIClass_SSE) {
-            // For now only handle structs with only floats/doubles in it.
-            if (ty->id != ZigTypeIdStruct) {
-                if (source_node != nullptr) {
-                    give_up_with_c_abi_error(g, source_node);
-                }
-                // otherwise allow codegen code to report a compile error
-                return false;
-            }
-
-            for (uint32_t i = 0; i < ty->data.structure.src_field_count; i += 1) {
-                if (ty->data.structure.fields[i]->type_entry->id != ZigTypeIdFloat) {
-                    if (source_node != nullptr) {
-                        give_up_with_c_abi_error(g, source_node);
-                    }
-                    // otherwise allow codegen code to report a compile error
-                    return false;
-                }
-            }
-
-            // The SystemV ABI says that we have to setup 1 FP register per f64.
+        } else if (abi_class == X64CABIClass_AGG) {
+            // The SystemV ABI says that we have to setup 1 register per eightbyte.
             // So two f32 can be passed in one f64, but 3 f32 have to be passed in 2 FP registers.
-            // To achieve this with LLVM API, we pass multiple f64 parameters to the LLVM function if
-            // the type is bigger than 8 bytes.
+            // Similarly, two i32 can be passed in one i64, but 3 i32 have to be passed in 2 registers.
+            // LLVM does not allow us to control registers in this way, nor to request specific
+            // ABI conventions. So we have to trick it into allocating the right registers, based
+            // on how clang does it.
+
+            // First, we get the LLVM type corresponding to the C abi for the struct, then
+            // we pass each field as an argument.
 
             // Example:
             // extern struct {
             //      x: f32,
             //      y: f32,
-            //      z: f32,
+            //      z: i32,
             // };
-            // const ptr = (*f64)*Struct;
-            // Register 1: ptr.*
-            // Register 2: (ptr + 1).*
+            // LLVM abi type: { double, i32 }
+            // const ptr = (*abi_type)*Struct;
+            // FP Register 1: abi_type[0]
+            // Register 1: abi_type[1]
 
-            // One floating point register per f64 or 2 f32's
-            size_t number_of_fp_regs = (ty_size + 7) / 8;
+            // However, if the struct fits in one register, then we'll pass it as such
+            size_t number_of_regs = (size_t)ceilf((float)ty_size / (float)8);
+
+            LLVMTypeRef abi_type = get_llvm_c_abi_type(g, ty);
+
+            assert(ty_size <= 16);
 
             switch (fn_walk->id) {
                 case FnWalkIdAttrs: {
-                    fn_walk->data.attrs.gen_i += number_of_fp_regs;
+                    fn_walk->data.attrs.gen_i += number_of_regs;
                     break;
                 }
                 case FnWalkIdCall: {
-                    LLVMValueRef f64_ptr_to_struct = LLVMBuildBitCast(g->builder, val, LLVMPointerType(LLVMDoubleType(), 0), "");
-                    for (uint32_t i = 0; i < number_of_fp_regs; i += 1) {
-                        LLVMValueRef index = LLVMConstInt(g->builtin_types.entry_usize->llvm_type, i, false);
-                        LLVMValueRef indices[] = { index };
-                        LLVMValueRef adjusted_ptr_to_struct = LLVMBuildInBoundsGEP(g->builder, f64_ptr_to_struct, indices, 1, "");
+                    LLVMValueRef abi_ptr_to_struct = LLVMBuildBitCast(g->builder, val, LLVMPointerType(abi_type, 0), "");
+                    if (number_of_regs == 1) {
+                        LLVMValueRef loaded = LLVMBuildLoad(g->builder, abi_ptr_to_struct, "");
+                        fn_walk->data.call.gen_param_values->append(loaded);
+                        break;
+                    }
+                    for (uint32_t i = 0; i < number_of_regs; i += 1) {
+                        LLVMValueRef zero = LLVMConstInt(LLVMInt32Type(), 0, false);
+                        LLVMValueRef index = LLVMConstInt(LLVMInt32Type(), i, false);
+                        LLVMValueRef indices[] = { zero, index };
+                        LLVMValueRef adjusted_ptr_to_struct = LLVMBuildInBoundsGEP(g->builder, abi_ptr_to_struct, indices, 2, "");
                         LLVMValueRef loaded = LLVMBuildLoad(g->builder, adjusted_ptr_to_struct, "");
                         fn_walk->data.call.gen_param_values->append(loaded);
                     }
                     break;
                 }
                 case FnWalkIdTypes: {
-                    for (uint32_t i = 0; i < number_of_fp_regs; i += 1) {
-                        fn_walk->data.types.gen_param_types->append(get_llvm_type(g, g->builtin_types.entry_f64));
+                    if (number_of_regs == 1) {
+                        fn_walk->data.types.gen_param_types->append(abi_type);
+                        fn_walk->data.types.param_di_types->append(get_llvm_di_type(g, g->builtin_types.entry_f64));
+                        break;
+                    }
+                    for (uint32_t i = 0; i < number_of_regs; i += 1) {
+                        fn_walk->data.types.gen_param_types->append(LLVMStructGetTypeAtIndex(abi_type, i));
                         fn_walk->data.types.param_di_types->append(get_llvm_di_type(g, g->builtin_types.entry_f64));
                     }
                     break;
                 }
-                case FnWalkIdVars:
+                case FnWalkIdVars: {
+                    var->value_ref = build_alloca(g, ty, var->name, var->align_bytes);
+                    di_arg_index = fn_walk->data.vars.gen_i;
+                    fn_walk->data.vars.gen_i += 1;
+                    dest_ty = ty;
+                    goto var_ok;
+                }
                 case FnWalkIdInits: {
-                    // TODO: Handle exporting functions
-                    if (source_node != nullptr) {
-                        give_up_with_c_abi_error(g, source_node);
+                    // since we're representing the struct differently as an arg, and potentially
+                    // splitting it, we have to do some work to put it back together.
+                    // the one reg case is straightforward, but if we used two registers we have
+                    // to iterate through the struct abi repr fields and load them one by one.
+                    if (number_of_regs == 1) {
+                        LLVMValueRef arg = LLVMGetParam(llvm_fn, fn_walk->data.inits.gen_i);
+                        LLVMTypeRef ptr_to_int_type_ref = LLVMPointerType(abi_type, 0);
+                        LLVMValueRef bitcasted = LLVMBuildBitCast(g->builder, var->value_ref, ptr_to_int_type_ref, "");
+                        gen_store_untyped(g, arg, bitcasted, var->align_bytes, false);
+                    } else {
+                        LLVMValueRef abi_ptr_to_struct = LLVMBuildBitCast(g->builder, var->value_ref, LLVMPointerType(abi_type, 0), "");
+                        for (uint32_t i = 0; i < number_of_regs; i += 1) {
+                            LLVMValueRef arg = LLVMGetParam(llvm_fn, fn_walk->data.inits.gen_i + i);
+                            LLVMValueRef zero = LLVMConstInt(LLVMInt32Type(), 0, false);
+                            LLVMValueRef index = LLVMConstInt(LLVMInt32Type(), i, false);
+                            LLVMValueRef indices[] = { zero, index };
+                            LLVMValueRef adjusted_ptr_to_struct = LLVMBuildInBoundsGEP(g->builder, abi_ptr_to_struct, indices, 2, "");
+                            LLVMBuildStore(g->builder, arg, adjusted_ptr_to_struct);
+                        }
+                        fn_walk->data.inits.gen_i += 1;
                     }
-                    // otherwise allow codegen code to report a compile error
-                    return false;
+                    if (var->decl_node) {
+                        gen_var_debug_decl(g, var);
+                    }
+                    fn_walk->data.inits.gen_i += 1;
+                    break;
                 }
             }
             return true;
@@ -2654,13 +2684,36 @@ static void gen_async_return(CodeGen *g, Stage1AirInstReturn *instruction) {
     LLVMBuildRetVoid(g->builder);
 }
 
+static LLVMValueRef gen_convert_to_c_abi(CodeGen *g, LLVMValueRef location, LLVMValueRef value) {
+    ZigType *return_type = g->cur_fn->type_entry->data.fn.gen_return_type;
+    size_t size = type_size(g, return_type);
+
+    LLVMTypeRef abi_return_type = get_llvm_c_abi_type(g, return_type);
+    LLVMTypeRef abi_return_type_pointer = LLVMPointerType(abi_return_type, 0);
+
+    if (size < 8) {
+        LLVMValueRef bitcast = LLVMBuildBitCast(g->builder, value, abi_return_type_pointer, "");
+        return LLVMBuildLoad(g->builder, bitcast, "");
+    } else {
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMValueRef bc_location = LLVMBuildBitCast(g->builder, location, i8ptr, "");
+        LLVMValueRef bc_value = LLVMBuildBitCast(g->builder, value, i8ptr, "");
+
+        LLVMValueRef len = LLVMConstInt(LLVMInt64Type(), size, false);
+        ZigLLVMBuildMemCpy(g->builder, bc_location, 8, bc_value, return_type->abi_align, len, false);
+        return LLVMBuildLoad(g->builder, location, "");
+    }
+}
+
 static LLVMValueRef ir_render_return(CodeGen *g, Stage1Air *executable, Stage1AirInstReturn *instruction) {
     if (fn_is_async(g->cur_fn)) {
         gen_async_return(g, instruction);
         return nullptr;
     }
 
-    if (want_first_arg_sret(g, &g->cur_fn->type_entry->data.fn.fn_type_id)) {
+    FnTypeId *fn_type_id = &g->cur_fn->type_entry->data.fn.fn_type_id;
+
+    if (want_first_arg_sret(g, fn_type_id)) {
         if (instruction->operand == nullptr) {
             LLVMBuildRetVoid(g->builder);
             return nullptr;
@@ -2671,6 +2724,16 @@ static LLVMValueRef ir_render_return(CodeGen *g, Stage1Air *executable, Stage1Ai
         ZigType *return_type = instruction->operand->value->type;
         gen_assign_raw(g, g->cur_ret_ptr, get_pointer_to_type(g, return_type, false), value);
         LLVMBuildRetVoid(g->builder);
+    } else if (fn_returns_c_abi_small_struct(fn_type_id)) {
+        LLVMValueRef location = g->cur_fn->abi_return_value;
+        if (instruction->operand == nullptr) {
+            LLVMValueRef converted = gen_convert_to_c_abi(g, location, g->cur_ret_ptr);
+            LLVMBuildRet(g->builder, converted);
+        } else {
+            LLVMValueRef value = ir_llvm_value(g, instruction->operand);
+            LLVMValueRef converted = gen_convert_to_c_abi(g, location, value);
+            LLVMBuildRet(g->builder, converted);
+        }
     } else if (g->cur_fn->type_entry->data.fn.fn_type_id.cc != CallingConventionAsync &&
             handle_is_ptr(g, g->cur_fn->type_entry->data.fn.fn_type_id.return_type))
     {
@@ -3272,6 +3335,46 @@ static LLVMValueRef ir_render_bin_op(CodeGen *g, Stage1Air *executable,
             } else {
                 zig_unreachable();
             }
+        case IrBinOpSatAdd:
+            if (scalar_type->id == ZigTypeIdInt) {
+                if (scalar_type->data.integral.is_signed) {
+                    return ZigLLVMBuildSAddSat(g->builder, op1_value, op2_value, "");
+                } else {
+                    return ZigLLVMBuildUAddSat(g->builder, op1_value, op2_value, "");
+                }
+            } else {
+                zig_unreachable();
+            }
+        case IrBinOpSatSub:
+            if (scalar_type->id == ZigTypeIdInt) {
+                if (scalar_type->data.integral.is_signed) {
+                    return ZigLLVMBuildSSubSat(g->builder, op1_value, op2_value, "");
+                } else {
+                    return ZigLLVMBuildUSubSat(g->builder, op1_value, op2_value, "");
+                }
+            } else {
+                zig_unreachable();
+            }
+        case IrBinOpSatMul:
+            if (scalar_type->id == ZigTypeIdInt) {
+                if (scalar_type->data.integral.is_signed) {
+                    return ZigLLVMBuildSMulFixSat(g->builder, op1_value, op2_value, "");
+                } else {
+                    return ZigLLVMBuildUMulFixSat(g->builder, op1_value, op2_value, "");
+                }
+            } else {
+                zig_unreachable();
+            }
+        case IrBinOpSatShl:
+            if (scalar_type->id == ZigTypeIdInt) {
+                if (scalar_type->data.integral.is_signed) {
+                    return ZigLLVMBuildSShlSat(g->builder, op1_value, op2_value, "");
+                } else {
+                    return ZigLLVMBuildUShlSat(g->builder, op1_value, op2_value, "");
+                }
+            } else {
+                zig_unreachable();
+            }
     }
     zig_unreachable();
 }
@@ -3768,10 +3871,14 @@ static LLVMValueRef ir_render_load_ptr(CodeGen *g, Stage1Air *executable,
     LLVMValueRef shift_amt_val = LLVMConstInt(LLVMTypeOf(containing_int), shift_amt, false);
     LLVMValueRef shifted_value = LLVMBuildLShr(g->builder, containing_int, shift_amt_val, "");
 
+    LLVMTypeRef same_size_int = LLVMIntType(size_in_bits);
+    LLVMValueRef mask = LLVMConstAllOnes(LLVMIntType(size_in_bits));
+    mask = LLVMConstZExt(mask, LLVMTypeOf(containing_int));
+    LLVMValueRef masked_value = LLVMBuildAnd(g->builder, shifted_value, mask, "");
+
     if (handle_is_ptr(g, child_type)) {
         LLVMValueRef result_loc = ir_llvm_value(g, instruction->result_loc);
-        LLVMTypeRef same_size_int = LLVMIntType(size_in_bits);
-        LLVMValueRef truncated_int = LLVMBuildTrunc(g->builder, shifted_value, same_size_int, "");
+        LLVMValueRef truncated_int = LLVMBuildTrunc(g->builder, masked_value, same_size_int, "");
         LLVMValueRef bitcasted_ptr = LLVMBuildBitCast(g->builder, result_loc,
                                                       LLVMPointerType(same_size_int, 0), "");
         LLVMBuildStore(g->builder, truncated_int, bitcasted_ptr);
@@ -3779,12 +3886,11 @@ static LLVMValueRef ir_render_load_ptr(CodeGen *g, Stage1Air *executable,
     }
 
     if (child_type->id == ZigTypeIdFloat) {
-        LLVMTypeRef same_size_int = LLVMIntType(size_in_bits);
-        LLVMValueRef truncated_int = LLVMBuildTrunc(g->builder, shifted_value, same_size_int, "");
+        LLVMValueRef truncated_int = LLVMBuildTrunc(g->builder, masked_value, same_size_int, "");
         return LLVMBuildBitCast(g->builder, truncated_int, get_llvm_type(g, child_type), "");
     }
 
-    return LLVMBuildTrunc(g->builder, shifted_value, get_llvm_type(g, child_type), "");
+    return LLVMBuildTrunc(g->builder, masked_value, get_llvm_type(g, child_type), "");
 }
 
 static bool value_is_all_undef_array(CodeGen *g, ZigValue *const_val, size_t len) {
@@ -4677,6 +4783,12 @@ static LLVMValueRef ir_render_call(CodeGen *g, Stage1Air *executable, Stage1AirI
         return nullptr;
     } else if (first_arg_ret) {
         ZigLLVMSetCallSret(result, get_llvm_type(g, src_return_type));
+        return result_loc;
+    } else if (fn_returns_c_abi_small_struct(fn_type_id)) {
+        LLVMTypeRef abi_type = get_llvm_c_abi_type(g, src_return_type);
+        LLVMTypeRef abi_type_ptr = LLVMPointerType(abi_type, 0);
+        LLVMValueRef bitcast = LLVMBuildBitCast(g->builder, result_loc, abi_type_ptr, "");
+        LLVMBuildStore(g->builder, result, bitcast);
         return result_loc;
     } else if (handle_is_ptr(g, src_return_type)) {
         LLVMValueRef store_instr = LLVMBuildStore(g->builder, result, result_loc);
@@ -8291,6 +8403,11 @@ static void do_code_gen(CodeGen *g) {
             g->cur_err_ret_trace_val_stack = nullptr;
         }
 
+        if (fn_returns_c_abi_small_struct(fn_type_id)) {
+            LLVMTypeRef abi_type = get_llvm_c_abi_type(g, fn_type_id->return_type);
+            fn_table_entry->abi_return_value = LLVMBuildAlloca(g->builder, abi_type, "");
+        }
+
         if (!is_async) {
             // allocate async frames for nosuspend calls & awaits to async functions
             ZigType *largest_call_frame_type = nullptr;
@@ -8794,6 +8911,9 @@ static void define_builtin_types(CodeGen *g) {
         case ZigLLVM_sparcv9:
             add_fp_entry(g, "c_longdouble", 128, LLVMFP128Type(), &g->builtin_types.entry_c_longdouble);
             break;
+        case ZigLLVM_systemz:
+            add_fp_entry(g, "c_longdouble", 128, LLVMDoubleType(), &g->builtin_types.entry_c_longdouble);
+            break;
         case ZigLLVM_avr:
             // It's either a float or a double, depending on a toolchain switch
             add_fp_entry(g, "c_longdouble", 64, LLVMDoubleType(), &g->builtin_types.entry_c_longdouble);
@@ -9016,6 +9136,10 @@ static void define_builtin_fns(CodeGen *g) {
     create_builtin_fn(g, BuiltinFnIdReduce, "reduce", 2);
     create_builtin_fn(g, BuiltinFnIdMaximum, "maximum", 2);
     create_builtin_fn(g, BuiltinFnIdMinimum, "minimum", 2);
+    create_builtin_fn(g, BuiltinFnIdSatAdd, "addWithSaturation", 2);
+    create_builtin_fn(g, BuiltinFnIdSatSub, "subWithSaturation", 2);
+    create_builtin_fn(g, BuiltinFnIdSatMul, "mulWithSaturation", 2);
+    create_builtin_fn(g, BuiltinFnIdSatShl, "shlWithSaturation", 2);
 }
 
 static const char *bool_to_str(bool b) {
