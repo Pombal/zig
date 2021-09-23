@@ -5,25 +5,25 @@ const assert = std.debug.assert;
 const fs = std.fs;
 const log = std.log.scoped(.dsym);
 const macho = std.macho;
+const math = std.math;
 const mem = std.mem;
 const DW = std.dwarf;
 const leb = std.leb;
 const Allocator = mem.Allocator;
 
 const build_options = @import("build_options");
+const commands = @import("commands.zig");
 const trace = @import("../../tracy.zig").trace;
+const LoadCommand = commands.LoadCommand;
 const Module = @import("../../Module.zig");
 const Type = @import("../../type.zig").Type;
 const link = @import("../../link.zig");
 const MachO = @import("../MachO.zig");
-const SrcFn = MachO.SrcFn;
 const TextBlock = MachO.TextBlock;
-const padToIdeal = MachO.padToIdeal;
-
-const commands = @import("commands.zig");
-const emptyHeader = commands.emptyHeader;
-const LoadCommand = commands.LoadCommand;
 const SegmentCommand = commands.SegmentCommand;
+const SrcFn = MachO.SrcFn;
+const makeStaticString = MachO.makeStaticString;
+const padToIdeal = MachO.padToIdeal;
 
 const page_size: u16 = 0x1000;
 
@@ -188,105 +188,84 @@ pub fn populateMissingMetadata(self: *DebugSymbols, allocator: *Allocator) !void
         log.debug("found __DWARF segment free space 0x{x} to 0x{x}", .{ off, off + needed_size });
 
         try self.load_commands.append(allocator, .{
-            .Segment = SegmentCommand.empty("__DWARF", .{
-                .vmaddr = vmaddr,
-                .vmsize = needed_size,
-                .fileoff = off,
-                .filesize = needed_size,
-            }),
+            .Segment = .{
+                .inner = .{
+                    .segname = makeStaticString("__DWARF"),
+                    .vmaddr = vmaddr,
+                    .vmsize = needed_size,
+                    .fileoff = off,
+                    .filesize = needed_size,
+                },
+            },
         });
         self.load_commands_dirty = true;
     }
     if (self.debug_str_section_index == null) {
-        const dwarf_segment = &self.load_commands.items[self.dwarf_segment_cmd_index.?].Segment;
-        self.debug_str_section_index = @intCast(u16, dwarf_segment.sections.items.len);
         assert(self.debug_string_table.items.len == 0);
-
-        try dwarf_segment.addSection(allocator, "__debug_str", .{
-            .addr = dwarf_segment.inner.vmaddr,
-            .size = @intCast(u32, self.debug_string_table.items.len),
-            .offset = @intCast(u32, dwarf_segment.inner.fileoff),
-            .@"align" = 1,
-        });
-        self.load_commands_dirty = true;
+        self.debug_str_section_index = try self.allocateSection(
+            "__debug_str",
+            @intCast(u32, self.debug_string_table.items.len),
+            0,
+        );
         self.debug_string_table_dirty = true;
     }
     if (self.debug_info_section_index == null) {
-        const dwarf_segment = &self.load_commands.items[self.dwarf_segment_cmd_index.?].Segment;
-        self.debug_info_section_index = @intCast(u16, dwarf_segment.sections.items.len);
-
-        const file_size_hint = 200;
-        const p_align = 1;
-        const off = dwarf_segment.findFreeSpace(file_size_hint, p_align, null);
-
-        log.debug("found __debug_info free space 0x{x} to 0x{x}", .{ off, off + file_size_hint });
-
-        try dwarf_segment.addSection(allocator, "__debug_info", .{
-            .addr = dwarf_segment.inner.vmaddr + off - dwarf_segment.inner.fileoff,
-            .size = file_size_hint,
-            .offset = @intCast(u32, off),
-            .@"align" = p_align,
-        });
-        self.load_commands_dirty = true;
+        self.debug_info_section_index = try self.allocateSection("__debug_info", 200, 0);
         self.debug_info_header_dirty = true;
     }
     if (self.debug_abbrev_section_index == null) {
-        const dwarf_segment = &self.load_commands.items[self.dwarf_segment_cmd_index.?].Segment;
-        self.debug_abbrev_section_index = @intCast(u16, dwarf_segment.sections.items.len);
-
-        const file_size_hint = 128;
-        const p_align = 1;
-        const off = dwarf_segment.findFreeSpace(file_size_hint, p_align, null);
-
-        log.debug("found __debug_abbrev free space 0x{x} to 0x{x}", .{ off, off + file_size_hint });
-
-        try dwarf_segment.addSection(allocator, "__debug_abbrev", .{
-            .addr = dwarf_segment.inner.vmaddr + off - dwarf_segment.inner.fileoff,
-            .size = file_size_hint,
-            .offset = @intCast(u32, off),
-            .@"align" = p_align,
-        });
-        self.load_commands_dirty = true;
+        self.debug_abbrev_section_index = try self.allocateSection("__debug_abbrev", 128, 0);
         self.debug_abbrev_section_dirty = true;
     }
     if (self.debug_aranges_section_index == null) {
-        const dwarf_segment = &self.load_commands.items[self.dwarf_segment_cmd_index.?].Segment;
-        self.debug_aranges_section_index = @intCast(u16, dwarf_segment.sections.items.len);
-
-        const file_size_hint = 160;
-        const p_align = 16;
-        const off = dwarf_segment.findFreeSpace(file_size_hint, p_align, null);
-
-        log.debug("found __debug_aranges free space 0x{x} to 0x{x}", .{ off, off + file_size_hint });
-
-        try dwarf_segment.addSection(allocator, "__debug_aranges", .{
-            .addr = dwarf_segment.inner.vmaddr + off - dwarf_segment.inner.fileoff,
-            .size = file_size_hint,
-            .offset = @intCast(u32, off),
-            .@"align" = p_align,
-        });
-        self.load_commands_dirty = true;
+        self.debug_aranges_section_index = try self.allocateSection("__debug_aranges", 160, 4);
         self.debug_aranges_section_dirty = true;
     }
     if (self.debug_line_section_index == null) {
-        const dwarf_segment = &self.load_commands.items[self.dwarf_segment_cmd_index.?].Segment;
-        self.debug_line_section_index = @intCast(u16, dwarf_segment.sections.items.len);
-
-        const file_size_hint = 250;
-        const p_align = 1;
-        const off = dwarf_segment.findFreeSpace(file_size_hint, p_align, null);
-
-        log.debug("found __debug_line free space 0x{x} to 0x{x}", .{ off, off + file_size_hint });
-
-        try dwarf_segment.addSection(allocator, "__debug_line", .{
-            .addr = dwarf_segment.inner.vmaddr + off - dwarf_segment.inner.fileoff,
-            .size = file_size_hint,
-            .offset = @intCast(u32, off),
-            .@"align" = p_align,
-        });
-        self.load_commands_dirty = true;
+        self.debug_line_section_index = try self.allocateSection("__debug_line", 250, 0);
         self.debug_line_header_dirty = true;
     }
+}
+
+fn allocateSection(self: *DebugSymbols, sectname: []const u8, size: u64, alignment: u16) !u16 {
+    const seg = &self.load_commands.items[self.dwarf_segment_cmd_index.?].Segment;
+    var sect = macho.section_64{
+        .sectname = makeStaticString(sectname),
+        .segname = seg.inner.segname,
+        .size = @intCast(u32, size),
+        .@"align" = alignment,
+    };
+    const alignment_pow_2 = try math.powi(u32, 2, alignment);
+    const off = seg.findFreeSpace(size, alignment_pow_2, null);
+
+    assert(off + size <= seg.inner.fileoff + seg.inner.filesize); // TODO expand
+
+    log.debug("found {s},{s} section free space 0x{x} to 0x{x}", .{
+        commands.segmentName(sect),
+        commands.sectionName(sect),
+        off,
+        off + size,
+    });
+
+    sect.addr = seg.inner.vmaddr + off - seg.inner.fileoff;
+    sect.offset = @intCast(u32, off);
+
+    const index = @intCast(u16, seg.sections.items.len);
+    try seg.sections.append(self.base.base.allocator, sect);
+    seg.inner.cmdsize += @sizeOf(macho.section_64);
+    seg.inner.nsects += 1;
+
+    // TODO
+    // const match = MatchingSection{
+    //     .seg = segment_id,
+    //     .sect = index,
+    // };
+    // _ = try self.section_ordinals.getOrPut(self.base.allocator, match);
+    // try self.block_free_lists.putNoClobber(self.base.allocator, match, .{});
+
+    self.load_commands_dirty = true;
+
+    return index;
 }
 
 pub fn flushModule(self: *DebugSymbols, allocator: *Allocator, options: link.Options) !void {
@@ -374,7 +353,7 @@ pub fn flushModule(self: *DebugSymbols, allocator: *Allocator, options: link.Opt
 
         // We have a function to compute the upper bound size, because it's needed
         // for determining where to put the offset of the first `LinkBlock`.
-        try di_buf.ensureCapacity(self.dbgInfoNeededHeaderBytes());
+        try di_buf.ensureTotalCapacity(self.dbgInfoNeededHeaderBytes());
 
         // initial length - length of the .debug_info contribution for this compilation unit,
         // not including the initial length itself.
@@ -429,7 +408,7 @@ pub fn flushModule(self: *DebugSymbols, allocator: *Allocator, options: link.Opt
 
         // Enough for all the data without resizing. When support for more compilation units
         // is added, the size of this section will become more variable.
-        try di_buf.ensureCapacity(100);
+        try di_buf.ensureTotalCapacity(100);
 
         // initial length - length of the .debug_aranges contribution for this compilation unit,
         // not including the initial length itself.
@@ -500,7 +479,7 @@ pub fn flushModule(self: *DebugSymbols, allocator: *Allocator, options: link.Opt
         // The size of this header is variable, depending on the number of directories,
         // files, and padding. We have a function to compute the upper bound size, however,
         // because it's needed for determining where to put the offset of the first `SrcFn`.
-        try di_buf.ensureCapacity(self.dbgLineNeededHeaderBytes(module));
+        try di_buf.ensureTotalCapacity(self.dbgLineNeededHeaderBytes(module));
 
         // initial length - length of the .debug_line contribution for this compilation unit,
         // not including the initial length itself.
@@ -614,18 +593,21 @@ pub fn deinit(self: *DebugSymbols, allocator: *Allocator) void {
 }
 
 fn copySegmentCommand(self: *DebugSymbols, allocator: *Allocator, base_cmd: SegmentCommand) !SegmentCommand {
-    var cmd = SegmentCommand.empty("", .{
-        .cmdsize = base_cmd.inner.cmdsize,
-        .vmaddr = base_cmd.inner.vmaddr,
-        .vmsize = base_cmd.inner.vmsize,
-        .maxprot = base_cmd.inner.maxprot,
-        .initprot = base_cmd.inner.initprot,
-        .nsects = base_cmd.inner.nsects,
-        .flags = base_cmd.inner.flags,
-    });
+    var cmd = SegmentCommand{
+        .inner = .{
+            .segname = undefined,
+            .cmdsize = base_cmd.inner.cmdsize,
+            .vmaddr = base_cmd.inner.vmaddr,
+            .vmsize = base_cmd.inner.vmsize,
+            .maxprot = base_cmd.inner.maxprot,
+            .initprot = base_cmd.inner.initprot,
+            .nsects = base_cmd.inner.nsects,
+            .flags = base_cmd.inner.flags,
+        },
+    };
     mem.copy(u8, &cmd.inner.segname, &base_cmd.inner.segname);
 
-    try cmd.sections.ensureCapacity(allocator, cmd.inner.nsects);
+    try cmd.sections.ensureTotalCapacity(allocator, cmd.inner.nsects);
     for (base_cmd.sections.items) |base_sect, i| {
         var sect = macho.section_64{
             .sectname = undefined,
@@ -692,7 +674,7 @@ fn writeLoadCommands(self: *DebugSymbols, allocator: *Allocator) !void {
 }
 
 fn writeHeader(self: *DebugSymbols) !void {
-    var header = emptyHeader(.{
+    var header = commands.emptyHeader(.{
         .filetype = macho.MH_DSYM,
     });
 
@@ -873,7 +855,7 @@ pub fn initDeclDebugBuffers(
     switch (decl.ty.zigTypeTag()) {
         .Fn => {
             // For functions we need to add a prologue to the debug line program.
-            try dbg_line_buffer.ensureCapacity(26);
+            try dbg_line_buffer.ensureTotalCapacity(26);
 
             const func = decl.val.castTag(.function).?.data;
             const line_off = @intCast(u28, decl.src_line + func.lbrace_line);
@@ -907,7 +889,7 @@ pub fn initDeclDebugBuffers(
 
             // .debug_info subprogram
             const decl_name_with_null = decl.name[0 .. mem.lenZ(decl.name) + 1];
-            try dbg_info_buffer.ensureCapacity(dbg_info_buffer.items.len + 27 + decl_name_with_null.len);
+            try dbg_info_buffer.ensureUnusedCapacity(27 + decl_name_with_null.len);
 
             const fn_ret_type = decl.ty.fnReturnType();
             const fn_ret_has_bits = fn_ret_type.hasCodeGenBits();
@@ -1142,7 +1124,7 @@ fn addDbgInfoType(
         },
         .Int => {
             const info = ty.intInfo(target);
-            try dbg_info_buffer.ensureCapacity(dbg_info_buffer.items.len + 12);
+            try dbg_info_buffer.ensureUnusedCapacity(12);
             dbg_info_buffer.appendAssumeCapacity(abbrev_base_type);
             // DW.AT.encoding, DW.FORM.data1
             dbg_info_buffer.appendAssumeCapacity(switch (info.signedness) {
@@ -1279,7 +1261,7 @@ fn getDebugLineProgramEnd(self: DebugSymbols) u32 {
 
 /// TODO Improve this to use a table.
 fn makeDebugString(self: *DebugSymbols, allocator: *Allocator, bytes: []const u8) !u32 {
-    try self.debug_string_table.ensureCapacity(allocator, self.debug_string_table.items.len + bytes.len + 1);
+    try self.debug_string_table.ensureUnusedCapacity(allocator, bytes.len + 1);
     const result = self.debug_string_table.items.len;
     self.debug_string_table.appendSliceAssumeCapacity(bytes);
     self.debug_string_table.appendAssumeCapacity(0);

@@ -48,6 +48,28 @@ pub const DebugInfoOutput = union(enum) {
         dbg_info: *std.ArrayList(u8),
         dbg_info_type_relocs: *link.File.DbgInfoTypeRelocsTable,
     },
+    /// the plan9 debuginfo output is a bytecode with 4 opcodes
+    /// assume all numbers/variables are bytes
+    /// 0 w x y z -> interpret w x y z as a big-endian i32, and add it to the line offset
+    /// x when x < 65 -> add x to line offset
+    /// x when x < 129 -> subtract 64 from x and subtract it from the line offset
+    /// x -> subtract 129 from x, multiply it by the quanta of the instruction size
+    /// (1 on x86_64), and add it to the pc
+    /// after every opcode, add the quanta of the instruction size to the pc
+    plan9: struct {
+        /// the actual opcodes
+        dbg_line: *std.ArrayList(u8),
+        /// what line the debuginfo starts on
+        /// this helps because the linker might have to insert some opcodes to make sure that the line count starts at the right amount for the next decl
+        start_line: *?u32,
+        /// what the line count ends on after codegen
+        /// this helps because the linker might have to insert some opcodes to make sure that the line count starts at the right amount for the next decl
+        end_line: *u32,
+        /// the last pc change op
+        /// This is very useful for adding quanta
+        /// to it if its not actually the last one.
+        pcop_change_index: *?u32,
+    },
     none,
 };
 
@@ -141,7 +163,7 @@ pub fn generateSymbol(
             // TODO populate .debug_info for the array
             if (typed_value.val.castTag(.bytes)) |payload| {
                 if (typed_value.ty.sentinel()) |sentinel| {
-                    try code.ensureCapacity(code.items.len + payload.data.len + 1);
+                    try code.ensureUnusedCapacity(payload.data.len + 1);
                     code.appendSliceAssumeCapacity(payload.data);
                     switch (try generateSymbol(bin_file, src_loc, .{
                         .ty = typed_value.ty.elemType(),
@@ -568,7 +590,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
         fn gen(self: *Self) !void {
             switch (arch) {
                 .x86_64 => {
-                    try self.code.ensureCapacity(self.code.items.len + 11);
+                    try self.code.ensureUnusedCapacity(11);
 
                     const cc = self.fn_type.fnCallingConvention();
                     if (cc != .Naked) {
@@ -607,7 +629,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         // Important to be after the possible self.code.items.len -= 5 above.
                         try self.dbgSetEpilogueBegin();
 
-                        try self.code.ensureCapacity(self.code.items.len + 9);
+                        try self.code.ensureUnusedCapacity(9);
                         // add rsp, x
                         if (aligned_stack_end > math.maxInt(i8)) {
                             // example: 48 81 c4 ff ff ff 7f  add    rsp,0x7fffffff
@@ -833,10 +855,12 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                     .block           => try self.airBlock(inst),
                     .br              => try self.airBr(inst),
                     .breakpoint      => try self.airBreakpoint(),
+                    .fence           => try self.airFence(),
                     .call            => try self.airCall(inst),
                     .cond_br         => try self.airCondBr(inst),
                     .dbg_stmt        => try self.airDbgStmt(inst),
-                    .floatcast       => try self.airFloatCast(inst),
+                    .fptrunc         => try self.airFptrunc(inst),
+                    .fpext           => try self.airFpext(inst),
                     .intcast         => try self.airIntCast(inst),
                     .trunc           => try self.airTrunc(inst),
                     .bool_to_int     => try self.airBoolToInt(inst),
@@ -856,6 +880,18 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                     .store           => try self.airStore(inst),
                     .struct_field_ptr=> try self.airStructFieldPtr(inst),
                     .struct_field_val=> try self.airStructFieldVal(inst),
+                    .array_to_slice  => try self.airArrayToSlice(inst),
+                    .int_to_float    => try self.airIntToFloat(inst),
+                    .float_to_int    => try self.airFloatToInt(inst),
+                    .cmpxchg_strong  => try self.airCmpxchg(inst),
+                    .cmpxchg_weak    => try self.airCmpxchg(inst),
+                    .atomic_rmw      => try self.airAtomicRmw(inst),
+                    .atomic_load     => try self.airAtomicLoad(inst),
+
+                    .atomic_store_unordered => try self.airAtomicStore(inst, .Unordered),
+                    .atomic_store_monotonic => try self.airAtomicStore(inst, .Monotonic),
+                    .atomic_store_release   => try self.airAtomicStore(inst, .Release),
+                    .atomic_store_seq_cst   => try self.airAtomicStore(inst, .SeqCst),
 
                     .struct_field_ptr_index_0 => try self.airStructFieldPtrIndex(inst, 0),
                     .struct_field_ptr_index_1 => try self.airStructFieldPtrIndex(inst, 1),
@@ -902,6 +938,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                     try dbg_out.dbg_line.append(DW.LNS.set_prologue_end);
                     try self.dbgAdvancePCAndLine(self.prev_di_line, self.prev_di_column);
                 },
+                .plan9 => {},
                 .none => {},
             }
         }
@@ -912,15 +949,16 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                     try dbg_out.dbg_line.append(DW.LNS.set_epilogue_begin);
                     try self.dbgAdvancePCAndLine(self.prev_di_line, self.prev_di_column);
                 },
+                .plan9 => {},
                 .none => {},
             }
         }
 
         fn dbgAdvancePCAndLine(self: *Self, line: u32, column: u32) InnerError!void {
+            const delta_line = @intCast(i32, line) - @intCast(i32, self.prev_di_line);
+            const delta_pc: usize = self.code.items.len - self.prev_di_pc;
             switch (self.debug_output) {
                 .dwarf => |dbg_out| {
-                    const delta_line = @intCast(i32, line) - @intCast(i32, self.prev_di_line);
-                    const delta_pc = self.code.items.len - self.prev_di_pc;
                     // TODO Look into using the DWARF special opcodes to compress this data.
                     // It lets you emit single-byte opcodes that add different numbers to
                     // both the PC and the line number at the same time.
@@ -932,12 +970,39 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         leb128.writeILEB128(dbg_out.dbg_line.writer(), delta_line) catch unreachable;
                     }
                     dbg_out.dbg_line.appendAssumeCapacity(DW.LNS.copy);
+                    self.prev_di_pc = self.code.items.len;
+                    self.prev_di_line = line;
+                    self.prev_di_column = column;
+                    self.prev_di_pc = self.code.items.len;
+                },
+                .plan9 => |dbg_out| {
+                    if (delta_pc <= 0) return; // only do this when the pc changes
+                    // we have already checked the target in the linker to make sure it is compatable
+                    const quant = @import("link/Plan9/aout.zig").getPCQuant(self.target.cpu.arch) catch unreachable;
+
+                    // increasing the line number
+                    try @import("link/Plan9.zig").changeLine(dbg_out.dbg_line, delta_line);
+                    // increasing the pc
+                    const d_pc_p9 = @intCast(i64, delta_pc) - quant;
+                    if (d_pc_p9 > 0) {
+                        // minus one becaue if its the last one, we want to leave space to change the line which is one quanta
+                        try dbg_out.dbg_line.append(@intCast(u8, @divExact(d_pc_p9, quant) + 128) - quant);
+                        if (dbg_out.pcop_change_index.*) |pci|
+                            dbg_out.dbg_line.items[pci] += 1;
+                        dbg_out.pcop_change_index.* = @intCast(u32, dbg_out.dbg_line.items.len - 1);
+                    } else if (d_pc_p9 == 0) {
+                        // we don't need to do anything, because adding the quant does it for us
+                    } else unreachable;
+                    if (dbg_out.start_line.* == null)
+                        dbg_out.start_line.* = self.prev_di_line;
+                    dbg_out.end_line.* = line;
+                    // only do this if the pc changed
+                    self.prev_di_line = line;
+                    self.prev_di_column = column;
+                    self.prev_di_pc = self.code.items.len;
                 },
                 .none => {},
             }
-            self.prev_di_line = line;
-            self.prev_di_column = column;
-            self.prev_di_pc = self.code.items.len;
         }
 
         /// Asserts there is already capacity to insert into top branch inst_table.
@@ -1021,6 +1086,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                     }
                     try gop.value_ptr.relocs.append(self.gpa, @intCast(u32, index));
                 },
+                .plan9 => {},
                 .none => {},
             }
         }
@@ -1107,10 +1173,18 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             return self.finishAir(inst, .{ .ptr_stack_offset = stack_offset }, .{ .none, .none, .none });
         }
 
-        fn airFloatCast(self: *Self, inst: Air.Inst.Index) !void {
+        fn airFptrunc(self: *Self, inst: Air.Inst.Index) !void {
             const ty_op = self.air.instructions.items(.data)[inst].ty_op;
             const result: MCValue = if (self.liveness.isUnused(inst)) .dead else switch (arch) {
-                else => return self.fail("TODO implement floatCast for {}", .{self.target.cpu.arch}),
+                else => return self.fail("TODO implement airFptrunc for {}", .{self.target.cpu.arch}),
+            };
+            return self.finishAir(inst, result, .{ ty_op.operand, .none, .none });
+        }
+
+        fn airFpext(self: *Self, inst: Air.Inst.Index) !void {
+            const ty_op = self.air.instructions.items(.data)[inst].ty_op;
+            const result: MCValue = if (self.liveness.isUnused(inst)) .dead else switch (arch) {
+                else => return self.fail("TODO implement airFpext for {}", .{self.target.cpu.arch}),
             };
             return self.finishAir(inst, result, .{ ty_op.operand, .none, .none });
         }
@@ -1949,7 +2023,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             //
             // TODO: make this algorithm less bad
 
-            try self.code.ensureCapacity(self.code.items.len + 8);
+            try self.code.ensureUnusedCapacity(8);
 
             const lhs = try self.resolveInst(op_lhs);
             const rhs = try self.resolveInst(op_rhs);
@@ -2436,16 +2510,17 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                 .register => |reg| {
                     switch (self.debug_output) {
                         .dwarf => |dbg_out| {
-                            try dbg_out.dbg_info.ensureCapacity(dbg_out.dbg_info.items.len + 3);
+                            try dbg_out.dbg_info.ensureUnusedCapacity(3);
                             dbg_out.dbg_info.appendAssumeCapacity(link.File.Elf.abbrev_parameter);
                             dbg_out.dbg_info.appendSliceAssumeCapacity(&[2]u8{ // DW.AT.location, DW.FORM.exprloc
                                 1, // ULEB128 dwarf expression length
                                 reg.dwarfLocOp(),
                             });
-                            try dbg_out.dbg_info.ensureCapacity(dbg_out.dbg_info.items.len + 5 + name_with_null.len);
+                            try dbg_out.dbg_info.ensureUnusedCapacity(5 + name_with_null.len);
                             try self.addDbgInfoTypeReloc(ty); // DW.AT.type,  DW.FORM.ref4
                             dbg_out.dbg_info.appendSliceAssumeCapacity(name_with_null); // DW.AT.name, DW.FORM.string
                         },
+                        .plan9 => {},
                         .none => {},
                     }
                 },
@@ -2473,13 +2548,14 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                                     try dbg_out.dbg_info.append(DW.OP.breg11);
                                     try leb128.writeILEB128(dbg_out.dbg_info.writer(), adjusted_stack_offset);
 
-                                    try dbg_out.dbg_info.ensureCapacity(dbg_out.dbg_info.items.len + 5 + name_with_null.len);
+                                    try dbg_out.dbg_info.ensureUnusedCapacity(5 + name_with_null.len);
                                     try self.addDbgInfoTypeReloc(ty); // DW.AT.type,  DW.FORM.ref4
                                     dbg_out.dbg_info.appendSliceAssumeCapacity(name_with_null); // DW.AT.name, DW.FORM.string
                                 },
                                 else => {},
                             }
                         },
+                        .plan9 => {},
                         .none => {},
                     }
                 },
@@ -2546,6 +2622,11 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             return self.finishAirBookkeeping();
         }
 
+        fn airFence(self: *Self) !void {
+            return self.fail("TODO implement fence() for {}", .{self.target.cpu.arch});
+            //return self.finishAirBookkeeping();
+        }
+
         fn airCall(self: *Self, inst: Air.Inst.Index) !void {
             const pl_op = self.air.instructions.items(.data)[inst].pl_op;
             const fn_ty = self.air.typeOf(pl_op.operand);
@@ -2610,7 +2691,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                                     unreachable;
 
                                 // ff 14 25 xx xx xx xx    call [addr]
-                                try self.code.ensureCapacity(self.code.items.len + 7);
+                                try self.code.ensureUnusedCapacity(7);
                                 self.code.appendSliceAssumeCapacity(&[3]u8{ 0xff, 0x14, 0x25 });
                                 mem.writeIntLittle(u32, self.code.addManyAsArrayAssumeCapacity(4), got_addr);
                             } else if (func_value.castTag(.extern_fn)) |_| {
@@ -2815,24 +2896,21 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                 if (self.air.value(callee)) |func_value| {
                     if (func_value.castTag(.function)) |func_payload| {
                         const func = func_payload.data;
-                        const got_addr = blk: {
-                            const seg = macho_file.load_commands.items[macho_file.data_const_segment_cmd_index.?].Segment;
-                            const got = seg.sections.items[macho_file.got_section_index.?];
-                            const got_index = macho_file.got_entries_map.get(.{
-                                .where = .local,
-                                .where_index = func.owner_decl.link.macho.local_sym_index,
-                            }) orelse unreachable;
-                            break :blk got.addr + got_index * @sizeOf(u64);
-                        };
+                        // TODO I'm hacking my way through here by repurposing .memory for storing
+                        // index to the GOT target symbol index.
                         switch (arch) {
                             .x86_64 => {
-                                try self.genSetReg(Type.initTag(.u64), .rax, .{ .memory = got_addr });
+                                try self.genSetReg(Type.initTag(.u64), .rax, .{
+                                    .memory = func.owner_decl.link.macho.local_sym_index,
+                                });
                                 // callq *%rax
-                                try self.code.ensureCapacity(self.code.items.len + 2);
+                                try self.code.ensureUnusedCapacity(2);
                                 self.code.appendSliceAssumeCapacity(&[2]u8{ 0xff, 0xd0 });
                             },
                             .aarch64 => {
-                                try self.genSetReg(Type.initTag(.u64), .x30, .{ .memory = got_addr });
+                                try self.genSetReg(Type.initTag(.u64), .x30, .{
+                                    .memory = func.owner_decl.link.macho.local_sym_index,
+                                });
                                 // blr x30
                                 writeInt(u32, try self.code.addManyAsArray(4), Instruction.blr(.x30).toU32());
                             },
@@ -2840,12 +2918,12 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         }
                     } else if (func_value.castTag(.extern_fn)) |func_payload| {
                         const decl = func_payload.data;
-                        const where_index = try macho_file.addExternFn(mem.spanZ(decl.name));
+                        const resolv = try macho_file.addExternFn(mem.spanZ(decl.name));
                         const offset = blk: {
                             switch (arch) {
                                 .x86_64 => {
                                     // callq
-                                    try self.code.ensureCapacity(self.code.items.len + 5);
+                                    try self.code.ensureUnusedCapacity(5);
                                     self.code.appendSliceAssumeCapacity(&[5]u8{ 0xe8, 0x0, 0x0, 0x0, 0x0 });
                                     break :blk @intCast(u32, self.code.items.len) - 4;
                                 },
@@ -2861,8 +2939,11 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         // Add relocation to the decl.
                         try macho_file.active_decl.?.link.macho.relocs.append(self.bin_file.allocator, .{
                             .offset = offset,
-                            .where = .undef,
-                            .where_index = where_index,
+                            .where = switch (resolv.where) {
+                                .local => .local,
+                                .undef => .undef,
+                            },
+                            .where_index = resolv.where_index,
                             .payload = .{ .branch = .{
                                 .arch = arch,
                             } },
@@ -2911,12 +2992,13 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         }
                         if (self.air.value(callee)) |func_value| {
                             if (func_value.castTag(.function)) |func_payload| {
+                                try p9.seeDecl(func_payload.data.owner_decl);
                                 const ptr_bits = self.target.cpu.arch.ptrBitWidth();
                                 const ptr_bytes: u64 = @divExact(ptr_bits, 8);
                                 const got_addr = p9.bases.data;
                                 const got_index = func_payload.data.owner_decl.link.plan9.got_index.?;
                                 // ff 14 25 xx xx xx xx    call [addr]
-                                try self.code.ensureCapacity(self.code.items.len + 7);
+                                try self.code.ensureUnusedCapacity(7);
                                 self.code.appendSliceAssumeCapacity(&[3]u8{ 0xff, 0x14, 0x25 });
                                 const fn_got_addr = got_addr + got_index * ptr_bytes;
                                 mem.writeIntLittle(u32, self.code.addManyAsArrayAssumeCapacity(4), @intCast(u32, fn_got_addr));
@@ -2958,6 +3040,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         }
                         if (self.air.value(callee)) |func_value| {
                             if (func_value.castTag(.function)) |func_payload| {
+                                try p9.seeDecl(func_payload.data.owner_decl);
                                 const ptr_bits = self.target.cpu.arch.ptrBitWidth();
                                 const ptr_bytes: u64 = @divExact(ptr_bits, 8);
                                 const got_addr = p9.bases.data;
@@ -3059,7 +3142,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             const rhs = try self.resolveInst(bin_op.rhs);
             const result: MCValue = switch (arch) {
                 .x86_64 => result: {
-                    try self.code.ensureCapacity(self.code.items.len + 8);
+                    try self.code.ensureUnusedCapacity(8);
 
                     // There are 2 operands, destination and source.
                     // Either one, but not both, can be a memory operand.
@@ -3143,7 +3226,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
 
             const reloc: Reloc = switch (arch) {
                 .i386, .x86_64 => reloc: {
-                    try self.code.ensureCapacity(self.code.items.len + 6);
+                    try self.code.ensureUnusedCapacity(6);
 
                     const opcode: u8 = switch (cond) {
                         .compare_flags_signed => |cmp_op| blk: {
@@ -3503,7 +3586,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
         fn jump(self: *Self, index: usize) !void {
             switch (arch) {
                 .i386, .x86_64 => {
-                    try self.code.ensureCapacity(self.code.items.len + 5);
+                    try self.code.ensureUnusedCapacity(5);
                     if (math.cast(i8, @intCast(i32, index) - (@intCast(i32, self.code.items.len + 2)))) |delta| {
                         self.code.appendAssumeCapacity(0xeb); // jmp rel8
                         self.code.appendAssumeCapacity(@bitCast(u8, delta));
@@ -3641,7 +3724,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             const block_data = self.blocks.getPtr(block).?;
 
             // Emit a jump with a relocation. It will be patched up after the block ends.
-            try block_data.relocs.ensureCapacity(self.gpa, block_data.relocs.items.len + 1);
+            try block_data.relocs.ensureUnusedCapacity(self.gpa, 1);
 
             switch (arch) {
                 .i386, .x86_64 => {
@@ -4025,7 +4108,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         if (adj_off > 128) {
                             return self.fail("TODO implement set stack variable with large stack offset", .{});
                         }
-                        try self.code.ensureCapacity(self.code.items.len + 8);
+                        try self.code.ensureUnusedCapacity(8);
                         switch (abi_size) {
                             1 => {
                                 return self.fail("TODO implement set abi_size=1 stack variable with immediate", .{});
@@ -4051,7 +4134,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
 
                                 // 64 bit write to memory would take two mov's anyways so we
                                 // insted just use two 32 bit writes to avoid register allocation
-                                try self.code.ensureCapacity(self.code.items.len + 14);
+                                try self.code.ensureUnusedCapacity(14);
                                 var buf: [8]u8 = undefined;
                                 mem.writeIntLittle(u64, &buf, x_big);
 
@@ -4344,29 +4427,20 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                             }).toU32());
 
                             if (self.bin_file.cast(link.File.MachO)) |macho_file| {
-                                // TODO this is super awkward. We are reversing the address of the GOT entry here.
-                                // We should probably have it cached or move the reloc adding somewhere else.
-                                const got_addr = blk: {
-                                    const seg = macho_file.load_commands.items[macho_file.data_const_segment_cmd_index.?].Segment;
-                                    const got = seg.sections.items[macho_file.got_section_index.?];
-                                    break :blk got.addr;
-                                };
-                                const where_index = blk: for (macho_file.got_entries.items) |key, id| {
-                                    if (got_addr + id * @sizeOf(u64) == addr) break :blk key.where_index;
-                                } else unreachable;
+                                // TODO I think the reloc might be in the wrong place.
                                 const decl = macho_file.active_decl.?;
                                 // Page reloc for adrp instruction.
                                 try decl.link.macho.relocs.append(self.bin_file.allocator, .{
                                     .offset = offset,
                                     .where = .local,
-                                    .where_index = where_index,
+                                    .where_index = @intCast(u32, addr),
                                     .payload = .{ .page = .{ .kind = .got } },
                                 });
                                 // Pageoff reloc for adrp instruction.
                                 try decl.link.macho.relocs.append(self.bin_file.allocator, .{
                                     .offset = offset + 4,
                                     .where = .local,
-                                    .where_index = where_index,
+                                    .where_index = @intCast(u32, addr),
                                     .payload = .{ .page_off = .{ .kind = .got } },
                                 });
                             } else {
@@ -4627,22 +4701,13 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                             const offset = @intCast(u32, self.code.items.len);
 
                             if (self.bin_file.cast(link.File.MachO)) |macho_file| {
-                                // TODO this is super awkward. We are reversing the address of the GOT entry here.
-                                // We should probably have it cached or move the reloc adding somewhere else.
-                                const got_addr = blk: {
-                                    const seg = macho_file.load_commands.items[macho_file.data_const_segment_cmd_index.?].Segment;
-                                    const got = seg.sections.items[macho_file.got_section_index.?];
-                                    break :blk got.addr;
-                                };
-                                const where_index = blk: for (macho_file.got_entries.items) |key, id| {
-                                    if (got_addr + id * @sizeOf(u64) == x) break :blk key.where_index;
-                                } else unreachable;
+                                // TODO I think the reloc might be in the wrong place.
                                 const decl = macho_file.active_decl.?;
                                 // Load reloc for LEA instruction.
                                 try decl.link.macho.relocs.append(self.bin_file.allocator, .{
                                     .offset = offset - 4,
                                     .where = .local,
-                                    .where_index = where_index,
+                                    .where_index = @intCast(u32, x),
                                     .payload = .{ .load = .{ .kind = .got } },
                                 });
                             } else {
@@ -4761,6 +4826,63 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             return self.finishAir(inst, result, .{ ty_op.operand, .none, .none });
         }
 
+        fn airArrayToSlice(self: *Self, inst: Air.Inst.Index) !void {
+            const ty_op = self.air.instructions.items(.data)[inst].ty_op;
+            const result: MCValue = if (self.liveness.isUnused(inst)) .dead else switch (arch) {
+                else => return self.fail("TODO implement airArrayToSlice for {}", .{
+                    self.target.cpu.arch,
+                }),
+            };
+            return self.finishAir(inst, result, .{ ty_op.operand, .none, .none });
+        }
+
+        fn airIntToFloat(self: *Self, inst: Air.Inst.Index) !void {
+            const ty_op = self.air.instructions.items(.data)[inst].ty_op;
+            const result: MCValue = if (self.liveness.isUnused(inst)) .dead else switch (arch) {
+                else => return self.fail("TODO implement airIntToFloat for {}", .{
+                    self.target.cpu.arch,
+                }),
+            };
+            return self.finishAir(inst, result, .{ ty_op.operand, .none, .none });
+        }
+
+        fn airFloatToInt(self: *Self, inst: Air.Inst.Index) !void {
+            const ty_op = self.air.instructions.items(.data)[inst].ty_op;
+            const result: MCValue = if (self.liveness.isUnused(inst)) .dead else switch (arch) {
+                else => return self.fail("TODO implement airFloatToInt for {}", .{
+                    self.target.cpu.arch,
+                }),
+            };
+            return self.finishAir(inst, result, .{ ty_op.operand, .none, .none });
+        }
+
+        fn airCmpxchg(self: *Self, inst: Air.Inst.Index) !void {
+            const ty_pl = self.air.instructions.items(.data)[inst].ty_pl;
+            const extra = self.air.extraData(Air.Block, ty_pl.payload);
+            const result: MCValue = switch (arch) {
+                else => return self.fail("TODO implement airCmpxchg for {}", .{
+                    self.target.cpu.arch,
+                }),
+            };
+            return self.finishAir(inst, result, .{ extra.ptr, extra.expected_value, extra.new_value });
+        }
+
+        fn airAtomicRmw(self: *Self, inst: Air.Inst.Index) !void {
+            _ = inst;
+            return self.fail("TODO implement airCmpxchg for {}", .{self.target.cpu.arch});
+        }
+
+        fn airAtomicLoad(self: *Self, inst: Air.Inst.Index) !void {
+            _ = inst;
+            return self.fail("TODO implement airAtomicLoad for {}", .{self.target.cpu.arch});
+        }
+
+        fn airAtomicStore(self: *Self, inst: Air.Inst.Index, order: std.builtin.AtomicOrder) !void {
+            _ = inst;
+            _ = order;
+            return self.fail("TODO implement airAtomicStore for {}", .{self.target.cpu.arch});
+        }
+
         fn resolveInst(self: *Self, inst: Air.Inst.Ref) InnerError!MCValue {
             // First section of indexes correspond to a set number of constant values.
             const ref_int = @enumToInt(inst);
@@ -4838,7 +4960,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             switch (typed_value.ty.zigTypeTag()) {
                 .Pointer => switch (typed_value.ty.ptrSize()) {
                     .Slice => {
-                        var buf: Type.Payload.ElemType = undefined;
+                        var buf: Type.SlicePtrFieldTypeBuffer = undefined;
                         const ptr_type = typed_value.ty.slicePtrFieldType(&buf);
                         const ptr_mcv = try self.genTypedValue(.{ .ty = ptr_type, .val = typed_value.val });
                         const slice_len = typed_value.val.sliceLen();
@@ -4858,21 +4980,15 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                                 const got = &elf_file.program_headers.items[elf_file.phdr_got_index.?];
                                 const got_addr = got.p_vaddr + decl.link.elf.offset_table_index * ptr_bytes;
                                 return MCValue{ .memory = got_addr };
-                            } else if (self.bin_file.cast(link.File.MachO)) |macho_file| {
-                                const got_addr = blk: {
-                                    const seg = macho_file.load_commands.items[macho_file.data_const_segment_cmd_index.?].Segment;
-                                    const got = seg.sections.items[macho_file.got_section_index.?];
-                                    const got_index = macho_file.got_entries_map.get(.{
-                                        .where = .local,
-                                        .where_index = decl.link.macho.local_sym_index,
-                                    }) orelse unreachable;
-                                    break :blk got.addr + got_index * ptr_bytes;
-                                };
-                                return MCValue{ .memory = got_addr };
+                            } else if (self.bin_file.cast(link.File.MachO)) |_| {
+                                // TODO I'm hacking my way through here by repurposing .memory for storing
+                                // index to the GOT target symbol index.
+                                return MCValue{ .memory = decl.link.macho.local_sym_index };
                             } else if (self.bin_file.cast(link.File.Coff)) |coff_file| {
                                 const got_addr = coff_file.offset_table_virtual_address + decl.link.coff.offset_table_index * ptr_bytes;
                                 return MCValue{ .memory = got_addr };
                             } else if (self.bin_file.cast(link.File.Plan9)) |p9| {
+                                try p9.seeDecl(decl);
                                 const got_addr = p9.bases.data + decl.link.plan9.got_index.? * ptr_bytes;
                                 return MCValue{ .memory = got_addr };
                             } else {

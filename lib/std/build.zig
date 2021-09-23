@@ -684,7 +684,11 @@ pub const Builder = struct {
         );
         const mcpu = self.option([]const u8, "cpu", "Target CPU features to add or subtract");
 
-        const triple = maybe_triple orelse return args.default_target;
+        if (maybe_triple == null and mcpu == null) {
+            return args.default_target;
+        }
+
+        const triple = maybe_triple orelse "native";
 
         var diags: CrossTarget.ParseOptions.Diagnostics = .{};
         const selected_target = CrossTarget.parse(.{
@@ -989,8 +993,13 @@ pub const Builder = struct {
         self.getInstallStep().dependOn(&self.addInstallFileWithDir(.{ .path = src_path }, .lib, dest_rel_path).step);
     }
 
+    /// Output format (BIN vs Intel HEX) determined by filename
     pub fn installRaw(self: *Builder, artifact: *LibExeObjStep, dest_filename: []const u8) void {
         self.getInstallStep().dependOn(&self.addInstallRaw(artifact, dest_filename).step);
+    }
+
+    pub fn installRawWithFormat(self: *Builder, artifact: *LibExeObjStep, dest_filename: []const u8, format: InstallRawStep.RawFormat) void {
+        self.getInstallStep().dependOn(&self.addInstallRawWithFormat(artifact, dest_filename, format).step);
     }
 
     ///`dest_rel_path` is relative to install prefix path
@@ -1009,7 +1018,11 @@ pub const Builder = struct {
     }
 
     pub fn addInstallRaw(self: *Builder, artifact: *LibExeObjStep, dest_filename: []const u8) *InstallRawStep {
-        return InstallRawStep.create(self, artifact, dest_filename);
+        return InstallRawStep.create(self, artifact, dest_filename, null);
+    }
+
+    pub fn addInstallRawWithFormat(self: *Builder, artifact: *LibExeObjStep, dest_filename: []const u8, format: InstallRawStep.RawFormat) *InstallRawStep {
+        return InstallRawStep.create(self, artifact, dest_filename, format);
     }
 
     pub fn addInstallFileWithDir(
@@ -1707,6 +1720,10 @@ pub const LibExeObjStep = struct {
 
     pub fn installRaw(self: *LibExeObjStep, dest_filename: []const u8) void {
         self.builder.installRaw(self, dest_filename);
+    }
+
+    pub fn installRawWithFormat(self: *LibExeObjStep, dest_filename: []const u8, format: InstallRawStep.RawFormat) void {
+        self.builder.installRawWithFormat(self, dest_filename, format);
     }
 
     /// Creates a `RunStep` with an executable built with `addExecutable`.
@@ -2419,11 +2436,8 @@ pub const LibExeObjStep = struct {
 
             if (populated_cpu_features.eql(cross.cpu.features)) {
                 // The CPU name alone is sufficient.
-                // If it is the baseline CPU, no command line args are required.
-                if (cross.cpu.model != std.Target.Cpu.baseline(cross.cpu.arch).model) {
-                    try zig_args.append("-mcpu");
-                    try zig_args.append(cross.cpu.model.name);
-                }
+                try zig_args.append("-mcpu");
+                try zig_args.append(cross.cpu.model.name);
             } else {
                 var mcpu_buffer = std.ArrayList(u8).init(builder.allocator);
 
@@ -2536,7 +2550,22 @@ pub const LibExeObjStep = struct {
                     } else {
                         try zig_args.append("-isystem");
                     }
-                    try zig_args.append(self.builder.pathFromRoot(include_path));
+
+                    const resolved_include_path = self.builder.pathFromRoot(include_path);
+
+                    const common_include_path = if (std.Target.current.os.tag == .windows and builder.sysroot != null and fs.path.isAbsolute(resolved_include_path)) blk: {
+                        // We need to check for disk designator and strip it out from dir path so
+                        // that zig/clang can concat resolved_include_path with sysroot.
+                        const disk_designator = fs.path.diskDesignatorWindows(resolved_include_path);
+
+                        if (mem.indexOf(u8, resolved_include_path, disk_designator)) |where| {
+                            break :blk resolved_include_path[where + disk_designator.len ..];
+                        }
+
+                        break :blk resolved_include_path;
+                    } else resolved_include_path;
+
+                    try zig_args.append(common_include_path);
                 },
                 .other_step => |other| if (other.emit_h) {
                     const h_path = other.getOutputHSource().getPath(self.builder);

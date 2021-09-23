@@ -17,10 +17,10 @@ const Air = @import("Air.zig");
 pub const Value = extern union {
     /// If the tag value is less than Tag.no_payload_count, then no pointer
     /// dereference is needed.
-    tag_if_small_enough: usize,
+    tag_if_small_enough: Tag,
     ptr_otherwise: *Payload,
 
-    pub const Tag = enum {
+    pub const Tag = enum(usize) {
         // The first section of this enum are tags that require no payload.
         u1_type,
         u8_type,
@@ -60,9 +60,10 @@ pub const Value = extern union {
         null_type,
         undefined_type,
         enum_literal_type,
-        atomic_ordering_type,
+        atomic_order_type,
         atomic_rmw_op_type,
         calling_convention_type,
+        address_space_type,
         float_mode_type,
         reduce_op_type,
         call_options_type,
@@ -223,9 +224,10 @@ pub const Value = extern union {
                 .abi_align_default,
                 .manyptr_u8_type,
                 .manyptr_const_u8_type,
-                .atomic_ordering_type,
+                .atomic_order_type,
                 .atomic_rmw_op_type,
                 .calling_convention_type,
+                .address_space_type,
                 .float_mode_type,
                 .reduce_op_type,
                 .call_options_type,
@@ -296,7 +298,7 @@ pub const Value = extern union {
 
     pub fn initTag(small_tag: Tag) Value {
         assert(@enumToInt(small_tag) < Tag.no_payload_count);
-        return .{ .tag_if_small_enough = @enumToInt(small_tag) };
+        return .{ .tag_if_small_enough = small_tag };
     }
 
     pub fn initPayload(payload: *Payload) Value {
@@ -305,8 +307,8 @@ pub const Value = extern union {
     }
 
     pub fn tag(self: Value) Tag {
-        if (self.tag_if_small_enough < Tag.no_payload_count) {
-            return @intToEnum(Tag, @intCast(std.meta.Tag(Tag), self.tag_if_small_enough));
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count) {
+            return self.tag_if_small_enough;
         } else {
             return self.ptr_otherwise.tag;
         }
@@ -317,7 +319,7 @@ pub const Value = extern union {
         if (@hasField(T, "base_tag")) {
             return self.castTag(T.base_tag);
         }
-        if (self.tag_if_small_enough < Tag.no_payload_count) {
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count) {
             return null;
         }
         inline for (@typeInfo(Tag).Enum.fields) |field| {
@@ -335,7 +337,7 @@ pub const Value = extern union {
     }
 
     pub fn castTag(self: Value, comptime t: Tag) ?*t.Type() {
-        if (self.tag_if_small_enough < Tag.no_payload_count)
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count)
             return null;
 
         if (self.ptr_otherwise.tag == t)
@@ -344,8 +346,10 @@ pub const Value = extern union {
         return null;
     }
 
-    pub fn copy(self: Value, allocator: *Allocator) error{OutOfMemory}!Value {
-        if (self.tag_if_small_enough < Tag.no_payload_count) {
+    /// It's intentional that this function is not passed a corresponding Type, so that
+    /// a Value can be copied from a Sema to a Decl prior to resolving struct/union field types.
+    pub fn copy(self: Value, arena: *Allocator) error{OutOfMemory}!Value {
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count) {
             return Value{ .tag_if_small_enough = self.tag_if_small_enough };
         } else switch (self.ptr_otherwise.tag) {
             .u1_type,
@@ -407,9 +411,10 @@ pub const Value = extern union {
             .abi_align_default,
             .manyptr_u8_type,
             .manyptr_const_u8_type,
-            .atomic_ordering_type,
+            .atomic_order_type,
             .atomic_rmw_op_type,
             .calling_convention_type,
+            .address_space_type,
             .float_mode_type,
             .reduce_op_type,
             .call_options_type,
@@ -421,37 +426,37 @@ pub const Value = extern union {
 
             .ty => {
                 const payload = self.castTag(.ty).?;
-                const new_payload = try allocator.create(Payload.Ty);
+                const new_payload = try arena.create(Payload.Ty);
                 new_payload.* = .{
                     .base = payload.base,
-                    .data = try payload.data.copy(allocator),
+                    .data = try payload.data.copy(arena),
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
-            .int_type => return self.copyPayloadShallow(allocator, Payload.IntType),
-            .int_u64 => return self.copyPayloadShallow(allocator, Payload.U64),
-            .int_i64 => return self.copyPayloadShallow(allocator, Payload.I64),
+            .int_type => return self.copyPayloadShallow(arena, Payload.IntType),
+            .int_u64 => return self.copyPayloadShallow(arena, Payload.U64),
+            .int_i64 => return self.copyPayloadShallow(arena, Payload.I64),
             .int_big_positive, .int_big_negative => {
                 const old_payload = self.cast(Payload.BigInt).?;
-                const new_payload = try allocator.create(Payload.BigInt);
+                const new_payload = try arena.create(Payload.BigInt);
                 new_payload.* = .{
                     .base = .{ .tag = self.ptr_otherwise.tag },
-                    .data = try allocator.dupe(std.math.big.Limb, old_payload.data),
+                    .data = try arena.dupe(std.math.big.Limb, old_payload.data),
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
-            .function => return self.copyPayloadShallow(allocator, Payload.Function),
-            .extern_fn => return self.copyPayloadShallow(allocator, Payload.Decl),
-            .variable => return self.copyPayloadShallow(allocator, Payload.Variable),
-            .decl_ref => return self.copyPayloadShallow(allocator, Payload.Decl),
-            .decl_ref_mut => return self.copyPayloadShallow(allocator, Payload.DeclRefMut),
+            .function => return self.copyPayloadShallow(arena, Payload.Function),
+            .extern_fn => return self.copyPayloadShallow(arena, Payload.Decl),
+            .variable => return self.copyPayloadShallow(arena, Payload.Variable),
+            .decl_ref => return self.copyPayloadShallow(arena, Payload.Decl),
+            .decl_ref_mut => return self.copyPayloadShallow(arena, Payload.DeclRefMut),
             .elem_ptr => {
                 const payload = self.castTag(.elem_ptr).?;
-                const new_payload = try allocator.create(Payload.ElemPtr);
+                const new_payload = try arena.create(Payload.ElemPtr);
                 new_payload.* = .{
                     .base = payload.base,
                     .data = .{
-                        .array_ptr = try payload.data.array_ptr.copy(allocator),
+                        .array_ptr = try payload.data.array_ptr.copy(arena),
                         .index = payload.data.index,
                     },
                 };
@@ -459,17 +464,17 @@ pub const Value = extern union {
             },
             .field_ptr => {
                 const payload = self.castTag(.field_ptr).?;
-                const new_payload = try allocator.create(Payload.FieldPtr);
+                const new_payload = try arena.create(Payload.FieldPtr);
                 new_payload.* = .{
                     .base = payload.base,
                     .data = .{
-                        .container_ptr = try payload.data.container_ptr.copy(allocator),
+                        .container_ptr = try payload.data.container_ptr.copy(arena),
                         .field_index = payload.data.field_index,
                     },
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
-            .bytes => return self.copyPayloadShallow(allocator, Payload.Bytes),
+            .bytes => return self.copyPayloadShallow(arena, Payload.Bytes),
             .repeated,
             .eu_payload,
             .eu_payload_ptr,
@@ -477,61 +482,85 @@ pub const Value = extern union {
             .opt_payload_ptr,
             => {
                 const payload = self.cast(Payload.SubValue).?;
-                const new_payload = try allocator.create(Payload.SubValue);
+                const new_payload = try arena.create(Payload.SubValue);
                 new_payload.* = .{
                     .base = payload.base,
-                    .data = try payload.data.copy(allocator),
+                    .data = try payload.data.copy(arena),
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
             .array => {
                 const payload = self.castTag(.array).?;
-                const new_payload = try allocator.create(Payload.Array);
+                const new_payload = try arena.create(Payload.Array);
                 new_payload.* = .{
                     .base = payload.base,
-                    .data = try allocator.alloc(Value, payload.data.len),
+                    .data = try arena.alloc(Value, payload.data.len),
                 };
                 std.mem.copy(Value, new_payload.data, payload.data);
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
             .slice => {
                 const payload = self.castTag(.slice).?;
-                const new_payload = try allocator.create(Payload.Slice);
+                const new_payload = try arena.create(Payload.Slice);
                 new_payload.* = .{
                     .base = payload.base,
                     .data = .{
-                        .ptr = try payload.data.ptr.copy(allocator),
-                        .len = try payload.data.len.copy(allocator),
+                        .ptr = try payload.data.ptr.copy(arena),
+                        .len = try payload.data.len.copy(arena),
                     },
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
-            .float_16 => return self.copyPayloadShallow(allocator, Payload.Float_16),
-            .float_32 => return self.copyPayloadShallow(allocator, Payload.Float_32),
-            .float_64 => return self.copyPayloadShallow(allocator, Payload.Float_64),
-            .float_128 => return self.copyPayloadShallow(allocator, Payload.Float_128),
+            .float_16 => return self.copyPayloadShallow(arena, Payload.Float_16),
+            .float_32 => return self.copyPayloadShallow(arena, Payload.Float_32),
+            .float_64 => return self.copyPayloadShallow(arena, Payload.Float_64),
+            .float_128 => return self.copyPayloadShallow(arena, Payload.Float_128),
             .enum_literal => {
                 const payload = self.castTag(.enum_literal).?;
-                const new_payload = try allocator.create(Payload.Bytes);
+                const new_payload = try arena.create(Payload.Bytes);
                 new_payload.* = .{
                     .base = payload.base,
-                    .data = try allocator.dupe(u8, payload.data),
+                    .data = try arena.dupe(u8, payload.data),
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
-            .enum_field_index => return self.copyPayloadShallow(allocator, Payload.U32),
-            .@"error" => return self.copyPayloadShallow(allocator, Payload.Error),
-            .@"struct" => @panic("TODO can't copy struct value without knowing the type"),
-            .@"union" => @panic("TODO can't copy union value without knowing the type"),
+            .enum_field_index => return self.copyPayloadShallow(arena, Payload.U32),
+            .@"error" => return self.copyPayloadShallow(arena, Payload.Error),
+
+            .@"struct" => {
+                const old_field_values = self.castTag(.@"struct").?.data;
+                const new_payload = try arena.create(Payload.Struct);
+                new_payload.* = .{
+                    .base = .{ .tag = .@"struct" },
+                    .data = try arena.alloc(Value, old_field_values.len),
+                };
+                for (old_field_values) |old_field_val, i| {
+                    new_payload.data[i] = try old_field_val.copy(arena);
+                }
+                return Value{ .ptr_otherwise = &new_payload.base };
+            },
+
+            .@"union" => {
+                const tag_and_val = self.castTag(.@"union").?.data;
+                const new_payload = try arena.create(Payload.Union);
+                new_payload.* = .{
+                    .base = .{ .tag = .@"union" },
+                    .data = .{
+                        .tag = try tag_and_val.tag.copy(arena),
+                        .val = try tag_and_val.val.copy(arena),
+                    },
+                };
+                return Value{ .ptr_otherwise = &new_payload.base };
+            },
 
             .inferred_alloc => unreachable,
             .inferred_alloc_comptime => unreachable,
         }
     }
 
-    fn copyPayloadShallow(self: Value, allocator: *Allocator, comptime T: type) error{OutOfMemory}!Value {
+    fn copyPayloadShallow(self: Value, arena: *Allocator, comptime T: type) error{OutOfMemory}!Value {
         const payload = self.cast(T).?;
-        const new_payload = try allocator.create(T);
+        const new_payload = try arena.create(T);
         new_payload.* = payload.*;
         return Value{ .ptr_otherwise = &new_payload.base };
     }
@@ -596,9 +625,10 @@ pub const Value = extern union {
             .enum_literal_type => return out_stream.writeAll("@Type(.EnumLiteral)"),
             .manyptr_u8_type => return out_stream.writeAll("[*]u8"),
             .manyptr_const_u8_type => return out_stream.writeAll("[*]const u8"),
-            .atomic_ordering_type => return out_stream.writeAll("std.builtin.AtomicOrdering"),
+            .atomic_order_type => return out_stream.writeAll("std.builtin.AtomicOrder"),
             .atomic_rmw_op_type => return out_stream.writeAll("std.builtin.AtomicRmwOp"),
             .calling_convention_type => return out_stream.writeAll("std.builtin.CallingConvention"),
+            .address_space_type => return out_stream.writeAll("std.builtin.AddressSpace"),
             .float_mode_type => return out_stream.writeAll("std.builtin.FloatMode"),
             .reduce_op_type => return out_stream.writeAll("std.builtin.ReduceOp"),
             .call_options_type => return out_stream.writeAll("std.builtin.CallOptions"),
@@ -763,9 +793,10 @@ pub const Value = extern union {
             .enum_literal_type => Type.initTag(.enum_literal),
             .manyptr_u8_type => Type.initTag(.manyptr_u8),
             .manyptr_const_u8_type => Type.initTag(.manyptr_const_u8),
-            .atomic_ordering_type => Type.initTag(.atomic_ordering),
+            .atomic_order_type => Type.initTag(.atomic_order),
             .atomic_rmw_op_type => Type.initTag(.atomic_rmw_op),
             .calling_convention_type => Type.initTag(.calling_convention),
+            .address_space_type => Type.initTag(.address_space),
             .float_mode_type => Type.initTag(.float_mode),
             .reduce_op_type => Type.initTag(.reduce_op),
             .call_options_type => Type.initTag(.call_options),
@@ -906,7 +937,7 @@ pub const Value = extern union {
     /// Asserts that the value is a float or an integer.
     pub fn toFloat(self: Value, comptime T: type) T {
         return switch (self.tag()) {
-            .float_16 => @panic("TODO soft float"),
+            .float_16 => @floatCast(T, self.castTag(.float_16).?.data),
             .float_32 => @floatCast(T, self.castTag(.float_32).?.data),
             .float_64 => @floatCast(T, self.castTag(.float_64).?.data),
             .float_128 => @floatCast(T, self.castTag(.float_128).?.data),
@@ -1010,31 +1041,15 @@ pub const Value = extern union {
         }
     }
 
-    /// Converts an integer or a float to a float.
-    /// Returns `error.Overflow` if the value does not fit in the new type.
-    pub fn floatCast(self: Value, allocator: *Allocator, dest_ty: Type) !Value {
+    /// Converts an integer or a float to a float. May result in a loss of information.
+    /// Caller can find out by equality checking the result against the operand.
+    pub fn floatCast(self: Value, arena: *Allocator, dest_ty: Type) !Value {
         switch (dest_ty.tag()) {
-            .f16 => {
-                @panic("TODO add __trunctfhf2 to compiler-rt");
-                //const res = try Value.Tag.float_16.create(allocator, self.toFloat(f16));
-                //if (!self.eql(res))
-                //    return error.Overflow;
-                //return res;
-            },
-            .f32 => {
-                const res = try Value.Tag.float_32.create(allocator, self.toFloat(f32));
-                if (!self.eql(res, dest_ty))
-                    return error.Overflow;
-                return res;
-            },
-            .f64 => {
-                const res = try Value.Tag.float_64.create(allocator, self.toFloat(f64));
-                if (!self.eql(res, dest_ty))
-                    return error.Overflow;
-                return res;
-            },
+            .f16 => return Value.Tag.float_16.create(arena, self.toFloat(f16)),
+            .f32 => return Value.Tag.float_32.create(arena, self.toFloat(f32)),
+            .f64 => return Value.Tag.float_64.create(arena, self.toFloat(f64)),
             .f128, .comptime_float, .c_longdouble => {
-                return Value.Tag.float_128.create(allocator, self.toFloat(f128));
+                return Value.Tag.float_128.create(arena, self.toFloat(f128));
             },
             else => unreachable,
         }
@@ -1498,6 +1513,235 @@ pub const Value = extern union {
         };
     }
 
+    pub fn intToFloat(val: Value, allocator: *Allocator, dest_ty: Type, target: Target) !Value {
+        switch (val.tag()) {
+            .undef, .zero, .one => return val,
+            .int_u64 => {
+                return intToFloatInner(val.castTag(.int_u64).?.data, allocator, dest_ty, target);
+            },
+            .int_i64 => {
+                return intToFloatInner(val.castTag(.int_i64).?.data, allocator, dest_ty, target);
+            },
+            .int_big_positive, .int_big_negative => @panic("big int to float"),
+            else => unreachable,
+        }
+    }
+
+    fn intToFloatInner(x: anytype, arena: *Allocator, dest_ty: Type, target: Target) !Value {
+        switch (dest_ty.floatBits(target)) {
+            16 => return Value.Tag.float_16.create(arena, @intToFloat(f16, x)),
+            32 => return Value.Tag.float_32.create(arena, @intToFloat(f32, x)),
+            64 => return Value.Tag.float_64.create(arena, @intToFloat(f64, x)),
+            128 => return Value.Tag.float_128.create(arena, @intToFloat(f128, x)),
+            else => unreachable,
+        }
+    }
+
+    /// Supports both floats and ints; handles undefined.
+    pub fn numberAddWrap(
+        lhs: Value,
+        rhs: Value,
+        ty: Type,
+        arena: *Allocator,
+        target: Target,
+    ) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        if (ty.isAnyFloat()) {
+            return floatAdd(lhs, rhs, ty, arena);
+        }
+        const result = try intAdd(lhs, rhs, arena);
+
+        const max = try ty.maxInt(arena, target);
+        if (compare(result, .gt, max, ty)) {
+            @panic("TODO comptime wrapping integer addition");
+        }
+
+        const min = try ty.minInt(arena, target);
+        if (compare(result, .lt, min, ty)) {
+            @panic("TODO comptime wrapping integer addition");
+        }
+
+        return result;
+    }
+
+    /// Supports both floats and ints; handles undefined.
+    pub fn numberSubWrap(
+        lhs: Value,
+        rhs: Value,
+        ty: Type,
+        arena: *Allocator,
+        target: Target,
+    ) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        if (ty.isAnyFloat()) {
+            return floatSub(lhs, rhs, ty, arena);
+        }
+        const result = try intSub(lhs, rhs, arena);
+
+        const max = try ty.maxInt(arena, target);
+        if (compare(result, .gt, max, ty)) {
+            @panic("TODO comptime wrapping integer subtraction");
+        }
+
+        const min = try ty.minInt(arena, target);
+        if (compare(result, .lt, min, ty)) {
+            @panic("TODO comptime wrapping integer subtraction");
+        }
+
+        return result;
+    }
+
+    /// Supports both floats and ints; handles undefined.
+    pub fn numberMax(lhs: Value, rhs: Value, arena: *Allocator) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        // TODO is this a performance issue? maybe we should try the operation without
+        // resorting to BigInt first.
+        var lhs_space: Value.BigIntSpace = undefined;
+        var rhs_space: Value.BigIntSpace = undefined;
+        const lhs_bigint = lhs.toBigInt(&lhs_space);
+        const rhs_bigint = rhs.toBigInt(&rhs_space);
+        const limbs = try arena.alloc(
+            std.math.big.Limb,
+            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len),
+        );
+        var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
+
+        switch (lhs_bigint.order(rhs_bigint)) {
+            .lt => result_bigint.copy(rhs_bigint),
+            .gt, .eq => result_bigint.copy(lhs_bigint),
+        }
+
+        const result_limbs = result_bigint.limbs[0..result_bigint.len];
+
+        if (result_bigint.positive) {
+            return Value.Tag.int_big_positive.create(arena, result_limbs);
+        } else {
+            return Value.Tag.int_big_negative.create(arena, result_limbs);
+        }
+    }
+
+    /// Supports both floats and ints; handles undefined.
+    pub fn numberMin(lhs: Value, rhs: Value, arena: *Allocator) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        // TODO is this a performance issue? maybe we should try the operation without
+        // resorting to BigInt first.
+        var lhs_space: Value.BigIntSpace = undefined;
+        var rhs_space: Value.BigIntSpace = undefined;
+        const lhs_bigint = lhs.toBigInt(&lhs_space);
+        const rhs_bigint = rhs.toBigInt(&rhs_space);
+        const limbs = try arena.alloc(
+            std.math.big.Limb,
+            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len),
+        );
+        var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
+
+        switch (lhs_bigint.order(rhs_bigint)) {
+            .lt => result_bigint.copy(lhs_bigint),
+            .gt, .eq => result_bigint.copy(rhs_bigint),
+        }
+
+        const result_limbs = result_bigint.limbs[0..result_bigint.len];
+
+        if (result_bigint.positive) {
+            return Value.Tag.int_big_positive.create(arena, result_limbs);
+        } else {
+            return Value.Tag.int_big_negative.create(arena, result_limbs);
+        }
+    }
+
+    /// operands must be integers; handles undefined. 
+    pub fn bitwiseAnd(lhs: Value, rhs: Value, arena: *Allocator) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        // TODO is this a performance issue? maybe we should try the operation without
+        // resorting to BigInt first.
+        var lhs_space: Value.BigIntSpace = undefined;
+        var rhs_space: Value.BigIntSpace = undefined;
+        const lhs_bigint = lhs.toBigInt(&lhs_space);
+        const rhs_bigint = rhs.toBigInt(&rhs_space);
+        const limbs = try arena.alloc(
+            std.math.big.Limb,
+            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len),
+        );
+        var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
+        result_bigint.bitAnd(lhs_bigint, rhs_bigint);
+        const result_limbs = result_bigint.limbs[0..result_bigint.len];
+
+        if (result_bigint.positive) {
+            return Value.Tag.int_big_positive.create(arena, result_limbs);
+        } else {
+            return Value.Tag.int_big_negative.create(arena, result_limbs);
+        }
+    }
+
+    /// operands must be integers; handles undefined. 
+    pub fn bitwiseNand(lhs: Value, rhs: Value, ty: Type, arena: *Allocator, target: Target) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        const anded = try bitwiseAnd(lhs, rhs, arena);
+
+        const all_ones = if (ty.isSignedInt())
+            try Value.Tag.int_i64.create(arena, -1)
+        else
+            try ty.maxInt(arena, target);
+
+        return bitwiseXor(anded, all_ones, arena);
+    }
+
+    /// operands must be integers; handles undefined. 
+    pub fn bitwiseOr(lhs: Value, rhs: Value, arena: *Allocator) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        // TODO is this a performance issue? maybe we should try the operation without
+        // resorting to BigInt first.
+        var lhs_space: Value.BigIntSpace = undefined;
+        var rhs_space: Value.BigIntSpace = undefined;
+        const lhs_bigint = lhs.toBigInt(&lhs_space);
+        const rhs_bigint = rhs.toBigInt(&rhs_space);
+        const limbs = try arena.alloc(
+            std.math.big.Limb,
+            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len),
+        );
+        var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
+        result_bigint.bitOr(lhs_bigint, rhs_bigint);
+        const result_limbs = result_bigint.limbs[0..result_bigint.len];
+
+        if (result_bigint.positive) {
+            return Value.Tag.int_big_positive.create(arena, result_limbs);
+        } else {
+            return Value.Tag.int_big_negative.create(arena, result_limbs);
+        }
+    }
+
+    /// operands must be integers; handles undefined. 
+    pub fn bitwiseXor(lhs: Value, rhs: Value, arena: *Allocator) !Value {
+        if (lhs.isUndef() or rhs.isUndef()) return Value.initTag(.undef);
+
+        // TODO is this a performance issue? maybe we should try the operation without
+        // resorting to BigInt first.
+        var lhs_space: Value.BigIntSpace = undefined;
+        var rhs_space: Value.BigIntSpace = undefined;
+        const lhs_bigint = lhs.toBigInt(&lhs_space);
+        const rhs_bigint = rhs.toBigInt(&rhs_space);
+        const limbs = try arena.alloc(
+            std.math.big.Limb,
+            std.math.max(lhs_bigint.limbs.len, rhs_bigint.limbs.len),
+        );
+        var result_bigint = BigIntMutable{ .limbs = limbs, .positive = undefined, .len = undefined };
+        result_bigint.bitXor(lhs_bigint, rhs_bigint);
+        const result_limbs = result_bigint.limbs[0..result_bigint.len];
+
+        if (result_bigint.positive) {
+            return Value.Tag.int_big_positive.create(arena, result_limbs);
+        } else {
+            return Value.Tag.int_big_negative.create(arena, result_limbs);
+        }
+    }
+
     pub fn intAdd(lhs: Value, rhs: Value, allocator: *Allocator) !Value {
         // TODO is this a performance issue? maybe we should try the operation without
         // resorting to BigInt first.
@@ -1641,10 +1885,9 @@ pub const Value = extern union {
     ) !Value {
         switch (float_type.tag()) {
             .f16 => {
-                @panic("TODO add __trunctfhf2 to compiler-rt");
-                //const lhs_val = lhs.toFloat(f16);
-                //const rhs_val = rhs.toFloat(f16);
-                //return Value.Tag.float_16.create(arena, lhs_val + rhs_val);
+                const lhs_val = lhs.toFloat(f16);
+                const rhs_val = rhs.toFloat(f16);
+                return Value.Tag.float_16.create(arena, lhs_val + rhs_val);
             },
             .f32 => {
                 const lhs_val = lhs.toFloat(f32);
@@ -1673,10 +1916,9 @@ pub const Value = extern union {
     ) !Value {
         switch (float_type.tag()) {
             .f16 => {
-                @panic("TODO add __trunctfhf2 to compiler-rt");
-                //const lhs_val = lhs.toFloat(f16);
-                //const rhs_val = rhs.toFloat(f16);
-                //return Value.Tag.float_16.create(arena, lhs_val - rhs_val);
+                const lhs_val = lhs.toFloat(f16);
+                const rhs_val = rhs.toFloat(f16);
+                return Value.Tag.float_16.create(arena, lhs_val - rhs_val);
             },
             .f32 => {
                 const lhs_val = lhs.toFloat(f32);
@@ -1705,10 +1947,9 @@ pub const Value = extern union {
     ) !Value {
         switch (float_type.tag()) {
             .f16 => {
-                @panic("TODO add __trunctfhf2 to compiler-rt");
-                //const lhs_val = lhs.toFloat(f16);
-                //const rhs_val = rhs.toFloat(f16);
-                //return Value.Tag.float_16.create(arena, lhs_val / rhs_val);
+                const lhs_val = lhs.toFloat(f16);
+                const rhs_val = rhs.toFloat(f16);
+                return Value.Tag.float_16.create(arena, lhs_val / rhs_val);
             },
             .f32 => {
                 const lhs_val = lhs.toFloat(f32);
@@ -1737,10 +1978,9 @@ pub const Value = extern union {
     ) !Value {
         switch (float_type.tag()) {
             .f16 => {
-                @panic("TODO add __trunctfhf2 to compiler-rt");
-                //const lhs_val = lhs.toFloat(f16);
-                //const rhs_val = rhs.toFloat(f16);
-                //return Value.Tag.float_16.create(arena, lhs_val * rhs_val);
+                const lhs_val = lhs.toFloat(f16);
+                const rhs_val = rhs.toFloat(f16);
+                return Value.Tag.float_16.create(arena, lhs_val * rhs_val);
             },
             .f32 => {
                 const lhs_val = lhs.toFloat(f32);
@@ -1932,8 +2172,9 @@ pub const Value = extern union {
             pub const base_tag = Tag.@"struct";
 
             base: Payload = .{ .tag = base_tag },
-            /// Field values. The number and type are according to the struct type.
-            data: [*]Value,
+            /// Field values. The types are according to the struct type.
+            /// The length is provided here so that copying a Value does not depend on the Type.
+            data: []Value,
         };
 
         pub const Union = struct {

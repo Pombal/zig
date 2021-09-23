@@ -252,6 +252,10 @@ fn analyzeInst(
         .ptr_ptr_elem_val,
         .shl,
         .shr,
+        .atomic_store_unordered,
+        .atomic_store_monotonic,
+        .atomic_store_release,
+        .atomic_store_seq_cst,
         => {
             const o = inst_datas[inst].bin_op;
             return trackOperands(a, new_set, inst, main_tomb, .{ o.lhs, o.rhs, .none });
@@ -264,12 +268,14 @@ fn analyzeInst(
         .breakpoint,
         .dbg_stmt,
         .unreach,
+        .fence,
         => return trackOperands(a, new_set, inst, main_tomb, .{ .none, .none, .none }),
 
         .not,
         .bitcast,
         .load,
-        .floatcast,
+        .fpext,
+        .fptrunc,
         .intcast,
         .trunc,
         .optional_payload,
@@ -287,6 +293,9 @@ fn analyzeInst(
         .struct_field_ptr_index_1,
         .struct_field_ptr_index_2,
         .struct_field_ptr_index_3,
+        .array_to_slice,
+        .float_to_int,
+        .int_to_float,
         => {
             const o = inst_datas[inst].ty_op;
             return trackOperands(a, new_set, inst, main_tomb, .{ o.operand, .none, .none });
@@ -338,6 +347,19 @@ fn analyzeInst(
         .ptr_elem_ptr => {
             const extra = a.air.extraData(Air.Bin, inst_datas[inst].ty_pl.payload).data;
             return trackOperands(a, new_set, inst, main_tomb, .{ extra.lhs, extra.rhs, .none });
+        },
+        .cmpxchg_strong, .cmpxchg_weak => {
+            const extra = a.air.extraData(Air.Cmpxchg, inst_datas[inst].ty_pl.payload).data;
+            return trackOperands(a, new_set, inst, main_tomb, .{ extra.ptr, extra.expected_value, extra.new_value });
+        },
+        .atomic_load => {
+            const ptr = inst_datas[inst].atomic_load.ptr;
+            return trackOperands(a, new_set, inst, main_tomb, .{ ptr, .none, .none });
+        },
+        .atomic_rmw => {
+            const pl_op = inst_datas[inst].pl_op;
+            const extra = a.air.extraData(Air.AtomicRmw, pl_op.payload).data;
+            return trackOperands(a, new_set, inst, main_tomb, .{ pl_op.operand, extra.operand, .none });
         },
         .br => {
             const br = inst_datas[inst].br;
@@ -435,7 +457,7 @@ fn analyzeInst(
             }
             // Now we have to correctly populate new_set.
             if (new_set) |ns| {
-                try ns.ensureCapacity(gpa, @intCast(u32, ns.count() + then_table.count() + else_table.count()));
+                try ns.ensureUnusedCapacity(gpa, @intCast(u32, then_table.count() + else_table.count()));
                 var it = then_table.keyIterator();
                 while (it.next()) |key| {
                     _ = ns.putAssumeCapacity(key.*, {});

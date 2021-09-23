@@ -73,6 +73,10 @@ pub const Options = struct {
     rdynamic: bool,
     z_nodelete: bool,
     z_defs: bool,
+    z_origin: bool,
+    z_noexecstack: bool,
+    z_now: bool,
+    z_relro: bool,
     tsaware: bool,
     nxcompat: bool,
     dynamicbase: bool,
@@ -145,7 +149,7 @@ pub const File = struct {
         coff: Coff.TextBlock,
         macho: MachO.TextBlock,
         plan9: Plan9.DeclBlock,
-        c: C.DeclBlock,
+        c: void,
         wasm: Wasm.DeclBlock,
         spirv: void,
     };
@@ -155,7 +159,7 @@ pub const File = struct {
         coff: Coff.SrcFn,
         macho: MachO.SrcFn,
         plan9: void,
-        c: C.FnBlock,
+        c: void,
         wasm: Wasm.FnData,
         spirv: SpirV.FnData,
     };
@@ -368,16 +372,18 @@ pub const File = struct {
 
     /// Must be called before any call to updateDecl or updateDeclExports for
     /// any given Decl.
+    /// TODO we're transitioning to deleting this function and instead having
+    /// each linker backend notice the first time updateDecl or updateFunc is called, or
+    /// a callee referenced from AIR.
     pub fn allocateDeclIndexes(base: *File, decl: *Module.Decl) !void {
         log.debug("allocateDeclIndexes {*} ({s})", .{ decl, decl.name });
         switch (base.tag) {
             .coff => return @fieldParentPtr(Coff, "base", base).allocateDeclIndexes(decl),
             .elf => return @fieldParentPtr(Elf, "base", base).allocateDeclIndexes(decl),
             .macho => return @fieldParentPtr(MachO, "base", base).allocateDeclIndexes(decl),
-            .c => return @fieldParentPtr(C, "base", base).allocateDeclIndexes(decl),
             .wasm => return @fieldParentPtr(Wasm, "base", base).allocateDeclIndexes(decl),
             .plan9 => return @fieldParentPtr(Plan9, "base", base).allocateDeclIndexes(decl),
-            .spirv => {},
+            .c, .spirv => {},
         }
     }
 
@@ -631,7 +637,7 @@ pub const File = struct {
         var object_files = std.ArrayList([*:0]const u8).init(base.allocator);
         defer object_files.deinit();
 
-        try object_files.ensureCapacity(base.options.objects.len + comp.c_object_table.count() + 2);
+        try object_files.ensureTotalCapacity(base.options.objects.len + comp.c_object_table.count() + 2);
         for (base.options.objects) |obj_path| {
             object_files.appendAssumeCapacity(try arena.dupeZ(u8, obj_path));
         }

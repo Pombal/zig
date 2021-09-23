@@ -475,3 +475,90 @@ pub fn clangAssemblerSupportsMcpuArg(target: std.Target) bool {
 pub fn needUnwindTables(target: std.Target) bool {
     return target.os.tag == .windows;
 }
+
+/// TODO this was ported from stage1 but it does not take into account CPU features,
+/// which can affect this value. Audit this!
+pub fn largestAtomicBits(target: std.Target) u32 {
+    return switch (target.cpu.arch) {
+        .avr,
+        .msp430,
+        .spu_2,
+        => 16,
+
+        .arc,
+        .arm,
+        .armeb,
+        .hexagon,
+        .le32,
+        .mips,
+        .mipsel,
+        .nvptx,
+        .powerpc,
+        .powerpcle,
+        .r600,
+        .riscv32,
+        .sparc,
+        .sparcel,
+        .tce,
+        .tcele,
+        .thumb,
+        .thumbeb,
+        .i386,
+        .xcore,
+        .amdil,
+        .hsail,
+        .spir,
+        .kalimba,
+        .lanai,
+        .shave,
+        .wasm32,
+        .renderscript32,
+        .csky,
+        .spirv32,
+        => 32,
+
+        .aarch64,
+        .aarch64_be,
+        .aarch64_32,
+        .amdgcn,
+        .bpfel,
+        .bpfeb,
+        .le64,
+        .mips64,
+        .mips64el,
+        .nvptx64,
+        .powerpc64,
+        .powerpc64le,
+        .riscv64,
+        .sparcv9,
+        .s390x,
+        .amdil64,
+        .hsail64,
+        .spir64,
+        .wasm64,
+        .renderscript64,
+        .ve,
+        .spirv64,
+        => 64,
+
+        .x86_64 => 128,
+    };
+}
+
+pub fn defaultAddressSpace(
+    target: std.Target,
+    context: enum {
+        /// Query the default address space for global constant values.
+        global_constant,
+        /// Query the default address space for global mutable values.
+        global_mutable,
+        /// Query the default address space for function-local values.
+        local,
+        /// Query the default address space for functions themselves.
+        function,
+    },
+) std.builtin.AddressSpace {
+    _ = target;
+    _ = context;
+    return .generic;
+}

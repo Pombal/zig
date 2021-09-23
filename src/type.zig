@@ -18,7 +18,7 @@ const file_struct = @This();
 pub const Type = extern union {
     /// If the tag value is less than Tag.no_payload_count, then no pointer
     /// dereference is needed.
-    tag_if_small_enough: usize,
+    tag_if_small_enough: Tag,
     ptr_otherwise: *Payload,
 
     pub fn zigTypeTag(ty: Type) std.builtin.TypeId {
@@ -124,9 +124,10 @@ pub const Type = extern union {
             .enum_full,
             .enum_nonexhaustive,
             .enum_simple,
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             => return .Enum,
@@ -178,7 +179,7 @@ pub const Type = extern union {
 
     pub fn initTag(comptime small_tag: Tag) Type {
         comptime assert(@enumToInt(small_tag) < Tag.no_payload_count);
-        return .{ .tag_if_small_enough = @enumToInt(small_tag) };
+        return .{ .tag_if_small_enough = small_tag };
     }
 
     pub fn initPayload(payload: *Payload) Type {
@@ -187,8 +188,8 @@ pub const Type = extern union {
     }
 
     pub fn tag(self: Type) Tag {
-        if (self.tag_if_small_enough < Tag.no_payload_count) {
-            return @intToEnum(Tag, @intCast(std.meta.Tag(Tag), self.tag_if_small_enough));
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count) {
+            return self.tag_if_small_enough;
         } else {
             return self.ptr_otherwise.tag;
         }
@@ -199,7 +200,7 @@ pub const Type = extern union {
         if (@hasField(T, "base_tag")) {
             return self.castTag(T.base_tag);
         }
-        if (self.tag_if_small_enough < Tag.no_payload_count) {
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count) {
             return null;
         }
         inline for (@typeInfo(Tag).Enum.fields) |field| {
@@ -217,7 +218,7 @@ pub const Type = extern union {
     }
 
     pub fn castTag(self: Type, comptime t: Tag) ?*t.Type() {
-        if (self.tag_if_small_enough < Tag.no_payload_count)
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count)
             return null;
 
         if (self.ptr_otherwise.tag == t)
@@ -288,6 +289,7 @@ pub const Type = extern union {
                 .pointee_type = Type.initTag(.comptime_int),
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -299,6 +301,7 @@ pub const Type = extern union {
                 .pointee_type = Type.initTag(.u8),
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -310,6 +313,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -321,6 +325,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -332,6 +337,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -343,6 +349,7 @@ pub const Type = extern union {
                 .pointee_type = Type.initTag(.u8),
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -354,6 +361,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -365,6 +373,7 @@ pub const Type = extern union {
                 .pointee_type = Type.initTag(.u8),
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -376,6 +385,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -387,6 +397,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -398,6 +409,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -409,6 +421,7 @@ pub const Type = extern union {
                 .pointee_type = self.castPointer().?.data,
                 .sentinel = null,
                 .@"align" = 0,
+                .@"addrspace" = .generic,
                 .bit_offset = 0,
                 .host_size = 0,
                 .@"allowzero" = false,
@@ -460,6 +473,8 @@ pub const Type = extern union {
                 if (info_a.bit_offset != info_b.bit_offset)
                     return false;
                 if (info_a.host_size != info_b.host_size)
+                    return false;
+                if (info_a.@"addrspace" != info_b.@"addrspace")
                     return false;
 
                 const sentinel_a = info_a.sentinel;
@@ -587,8 +602,8 @@ pub const Type = extern union {
                 }
                 return false;
             },
+            .Float => return a.tag() == b.tag(),
             .Opaque,
-            .Float,
             .BoundFn,
             .Frame,
             => std.debug.panic("TODO implement Type equality comparison of {} and {}", .{ a, b }),
@@ -690,7 +705,7 @@ pub const Type = extern union {
     };
 
     pub fn copy(self: Type, allocator: *Allocator) error{OutOfMemory}!Type {
-        if (self.tag_if_small_enough < Tag.no_payload_count) {
+        if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count) {
             return Type{ .tag_if_small_enough = self.tag_if_small_enough };
         } else switch (self.ptr_otherwise.tag) {
             .u1,
@@ -743,9 +758,10 @@ pub const Type = extern union {
             .empty_struct_literal,
             .manyptr_u8,
             .manyptr_const_u8,
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -835,6 +851,7 @@ pub const Type = extern union {
                     .pointee_type = try payload.pointee_type.copy(allocator),
                     .sentinel = sent,
                     .@"align" = payload.@"align",
+                    .@"addrspace" = payload.@"addrspace",
                     .bit_offset = payload.bit_offset,
                     .host_size = payload.host_size,
                     .@"allowzero" = payload.@"allowzero",
@@ -955,9 +972,10 @@ pub const Type = extern union {
                 .single_const_pointer_to_comptime_int => return writer.writeAll("*const comptime_int"),
                 .manyptr_u8 => return writer.writeAll("[*]u8"),
                 .manyptr_const_u8 => return writer.writeAll("[*]const u8"),
-                .atomic_ordering => return writer.writeAll("std.builtin.AtomicOrdering"),
+                .atomic_order => return writer.writeAll("std.builtin.AtomicOrder"),
                 .atomic_rmw_op => return writer.writeAll("std.builtin.AtomicRmwOp"),
                 .calling_convention => return writer.writeAll("std.builtin.CallingConvention"),
+                .address_space => return writer.writeAll("std.builtin.AddressSpace"),
                 .float_mode => return writer.writeAll("std.builtin.FloatMode"),
                 .reduce_op => return writer.writeAll("std.builtin.ReduceOp"),
                 .call_options => return writer.writeAll("std.builtin.CallOptions"),
@@ -1111,6 +1129,9 @@ pub const Type = extern union {
                         }
                         try writer.writeAll(") ");
                     }
+                    if (payload.@"addrspace" != .generic) {
+                        try writer.print("addrspace(.{s}) ", .{@tagName(payload.@"addrspace")});
+                    }
                     if (!payload.mutable) try writer.writeAll("const ");
                     if (payload.@"volatile") try writer.writeAll("volatile ");
                     if (payload.@"allowzero") try writer.writeAll("allowzero ");
@@ -1183,9 +1204,10 @@ pub const Type = extern union {
             .@"anyframe",
             .@"null",
             .@"undefined",
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -1298,9 +1320,10 @@ pub const Type = extern union {
             .enum_literal => return Value.initTag(.enum_literal_type),
             .manyptr_u8 => return Value.initTag(.manyptr_u8_type),
             .manyptr_const_u8 => return Value.initTag(.manyptr_const_u8_type),
-            .atomic_ordering => return Value.initTag(.atomic_ordering_type),
+            .atomic_order => return Value.initTag(.atomic_order_type),
             .atomic_rmw_op => return Value.initTag(.atomic_rmw_op_type),
             .calling_convention => return Value.initTag(.calling_convention_type),
+            .address_space => return Value.initTag(.address_space_type),
             .float_mode => return Value.initTag(.float_mode_type),
             .reduce_op => return Value.initTag(.reduce_op_type),
             .call_options => return Value.initTag(.call_options_type),
@@ -1343,10 +1366,6 @@ pub const Type = extern union {
             .f128,
             .bool,
             .anyerror,
-            .fn_noreturn_no_args,
-            .fn_void_no_args,
-            .fn_naked_noreturn_no_args,
-            .fn_ccc_void_no_args,
             .single_const_pointer_to_comptime_int,
             .const_slice_u8,
             .array_u8_sentinel_0,
@@ -1359,9 +1378,10 @@ pub const Type = extern union {
             .error_set_inferred,
             .manyptr_u8,
             .manyptr_const_u8,
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -1372,6 +1392,12 @@ pub const Type = extern union {
             => true,
 
             .function => !self.castTag(.function).?.data.is_generic,
+
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            => true,
 
             .@"struct" => {
                 // TODO introduce lazy value mechanism
@@ -1459,7 +1485,7 @@ pub const Type = extern union {
 
     pub fn isNoReturn(self: Type) bool {
         const definitely_correct_result = self.zigTypeTag() == .NoReturn;
-        const fast_result = self.tag_if_small_enough == @enumToInt(Tag.noreturn);
+        const fast_result = self.tag_if_small_enough == Tag.noreturn;
         assert(fast_result == definitely_correct_result);
         return fast_result;
     }
@@ -1496,6 +1522,30 @@ pub const Type = extern union {
         }
     }
 
+    pub fn ptrAddressSpace(self: Type) std.builtin.AddressSpace {
+        return switch (self.tag()) {
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .inferred_alloc_const,
+            .inferred_alloc_mut,
+            .manyptr_u8,
+            .manyptr_const_u8,
+            => .generic,
+
+            .pointer => self.castTag(.pointer).?.data.@"addrspace",
+
+            else => unreachable,
+        };
+    }
+
     /// Asserts that hasCodeGenBits() is true.
     pub fn abiAlignment(self: Type, target: Target) u32 {
         return switch (self.tag()) {
@@ -1505,9 +1555,10 @@ pub const Type = extern union {
             .bool,
             .array_u8_sentinel_0,
             .array_u8,
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -1583,7 +1634,11 @@ pub const Type = extern union {
 
             .int_signed, .int_unsigned => {
                 const bits: u16 = self.cast(Payload.Bits).?.data;
-                return std.math.ceilPowerOfTwoPromote(u16, (bits + 7) / 8);
+                if (bits <= 8) return 1;
+                if (bits <= 16) return 2;
+                if (bits <= 32) return 4;
+                if (bits <= 64) return 8;
+                return 16;
             },
 
             .optional => {
@@ -1727,9 +1782,10 @@ pub const Type = extern union {
             .u8,
             .i8,
             .bool,
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -1818,6 +1874,7 @@ pub const Type = extern union {
 
             .int_signed, .int_unsigned => {
                 const bits: u16 = self.cast(Payload.Bits).?.data;
+                if (bits == 0) return 0;
                 return std.math.ceilPowerOfTwoPromote(u16, (bits + 7) / 8);
             },
 
@@ -2011,9 +2068,10 @@ pub const Type = extern union {
                 @panic("TODO bitSize error union");
             },
 
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -2100,42 +2158,82 @@ pub const Type = extern union {
         };
     }
 
-    pub fn slicePtrFieldType(self: Type, buffer: *Payload.ElemType) Type {
+    pub const SlicePtrFieldTypeBuffer = union {
+        elem_type: Payload.ElemType,
+        pointer: Payload.Pointer,
+    };
+
+    pub fn slicePtrFieldType(self: Type, buffer: *SlicePtrFieldTypeBuffer) Type {
         switch (self.tag()) {
             .const_slice_u8 => return Type.initTag(.manyptr_const_u8),
 
             .const_slice => {
                 const elem_type = self.castTag(.const_slice).?.data;
                 buffer.* = .{
-                    .base = .{ .tag = .many_const_pointer },
-                    .data = elem_type,
+                    .elem_type = .{
+                        .base = .{ .tag = .many_const_pointer },
+                        .data = elem_type,
+                    },
                 };
-                return Type.initPayload(&buffer.base);
+                return Type.initPayload(&buffer.elem_type.base);
             },
             .mut_slice => {
                 const elem_type = self.castTag(.mut_slice).?.data;
                 buffer.* = .{
-                    .base = .{ .tag = .many_mut_pointer },
-                    .data = elem_type,
+                    .elem_type = .{
+                        .base = .{ .tag = .many_mut_pointer },
+                        .data = elem_type,
+                    },
                 };
-                return Type.initPayload(&buffer.base);
+                return Type.initPayload(&buffer.elem_type.base);
             },
 
             .pointer => {
                 const payload = self.castTag(.pointer).?.data;
                 assert(payload.size == .Slice);
-                if (payload.mutable) {
+
+                if (payload.sentinel != null or
+                    payload.@"align" != 0 or
+                    payload.@"addrspace" != .generic or
+                    payload.bit_offset != 0 or
+                    payload.host_size != 0 or
+                    payload.@"allowzero" or
+                    payload.@"volatile")
+                {
                     buffer.* = .{
-                        .base = .{ .tag = .many_mut_pointer },
-                        .data = payload.pointee_type,
+                        .pointer = .{
+                            .data = .{
+                                .pointee_type = payload.pointee_type,
+                                .sentinel = payload.sentinel,
+                                .@"align" = payload.@"align",
+                                .@"addrspace" = payload.@"addrspace",
+                                .bit_offset = payload.bit_offset,
+                                .host_size = payload.host_size,
+                                .@"allowzero" = payload.@"allowzero",
+                                .mutable = payload.mutable,
+                                .@"volatile" = payload.@"volatile",
+                                .size = .Many,
+                            },
+                        },
                     };
+                    return Type.initPayload(&buffer.pointer.base);
+                } else if (payload.mutable) {
+                    buffer.* = .{
+                        .elem_type = .{
+                            .base = .{ .tag = .many_mut_pointer },
+                            .data = payload.pointee_type,
+                        },
+                    };
+                    return Type.initPayload(&buffer.elem_type.base);
                 } else {
                     buffer.* = .{
-                        .base = .{ .tag = .many_const_pointer },
-                        .data = payload.pointee_type,
+                        .elem_type = .{
+                            .base = .{ .tag = .many_const_pointer },
+                            .data = payload.pointee_type,
+                        },
                     };
+                    return Type.initPayload(&buffer.elem_type.base);
                 }
-                return Type.initPayload(&buffer.base);
             },
 
             else => unreachable,
@@ -2191,6 +2289,44 @@ pub const Type = extern union {
         };
     }
 
+    pub fn isPtrAtRuntime(self: Type) bool {
+        switch (self.tag()) {
+            .c_const_pointer,
+            .c_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .manyptr_const_u8,
+            .manyptr_u8,
+            .optional_single_const_pointer,
+            .optional_single_mut_pointer,
+            .single_const_pointer,
+            .single_const_pointer_to_comptime_int,
+            .single_mut_pointer,
+            => return true,
+
+            .pointer => switch (self.castTag(.pointer).?.data.size) {
+                .Slice => return false,
+                .One, .Many, .C => return true,
+            },
+
+            .optional => {
+                var buf: Payload.ElemType = undefined;
+                const child_type = self.optionalChild(&buf);
+                // optionals of zero sized pointers behave like bools
+                if (!child_type.hasCodeGenBits()) return false;
+                if (child_type.zigTypeTag() != .Pointer) return false;
+
+                const info = child_type.ptrInfo().data;
+                switch (info.size) {
+                    .Slice, .C => return false,
+                    .Many, .One => return !info.@"allowzero",
+                }
+            },
+
+            else => return false,
+        }
+    }
+
     /// Asserts that the type is an optional
     pub fn isPtrLikeOptional(self: Type) bool {
         switch (self.tag()) {
@@ -2203,8 +2339,13 @@ pub const Type = extern union {
                 const child_type = self.optionalChild(&buf);
                 // optionals of zero sized pointers behave like bools
                 if (!child_type.hasCodeGenBits()) return false;
+                if (child_type.zigTypeTag() != .Pointer) return false;
 
-                return child_type.zigTypeTag() == .Pointer and !child_type.isCPtr();
+                const info = child_type.ptrInfo().data;
+                switch (info.size) {
+                    .Slice, .C => return false,
+                    .Many, .One => return !info.@"allowzero",
+                }
             },
             else => unreachable,
         }
@@ -2476,7 +2617,8 @@ pub const Type = extern union {
         };
     }
 
-    pub fn isFloat(self: Type) bool {
+    /// Returns `false` for `comptime_float`.
+    pub fn isRuntimeFloat(self: Type) bool {
         return switch (self.tag()) {
             .f16,
             .f32,
@@ -2489,13 +2631,29 @@ pub const Type = extern union {
         };
     }
 
-    /// Asserts the type is a fixed-size float.
+    /// Returns `true` for `comptime_float`.
+    pub fn isAnyFloat(self: Type) bool {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .comptime_float,
+            => true,
+
+            else => false,
+        };
+    }
+
+    /// Asserts the type is a fixed-size float or comptime_float.
+    /// Returns 128 for comptime_float types.
     pub fn floatBits(self: Type, target: Target) u16 {
         return switch (self.tag()) {
             .f16 => 16,
             .f32 => 32,
             .f64 => 64,
-            .f128 => 128,
+            .f128, .comptime_float => 128,
             .c_longdouble => CType.longdouble.sizeInBits(target),
 
             else => unreachable,
@@ -2725,9 +2883,10 @@ pub const Type = extern union {
             .var_args_param,
             .manyptr_u8,
             .manyptr_const_u8,
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -2832,7 +2991,7 @@ pub const Type = extern union {
     }
 
     /// Asserts that self.zigTypeTag() == .Int.
-    pub fn minInt(self: Type, arena: *std.heap.ArenaAllocator, target: Target) !Value {
+    pub fn minInt(self: Type, arena: *Allocator, target: Target) !Value {
         assert(self.zigTypeTag() == .Int);
         const info = self.intInfo(target);
 
@@ -2842,35 +3001,35 @@ pub const Type = extern union {
 
         if ((info.bits - 1) <= std.math.maxInt(u6)) {
             const n: i64 = -(@as(i64, 1) << @truncate(u6, info.bits - 1));
-            return Value.Tag.int_i64.create(&arena.allocator, n);
+            return Value.Tag.int_i64.create(arena, n);
         }
 
-        var res = try std.math.big.int.Managed.initSet(&arena.allocator, 1);
+        var res = try std.math.big.int.Managed.initSet(arena, 1);
         try res.shiftLeft(res, info.bits - 1);
         res.negate();
 
         const res_const = res.toConst();
         if (res_const.positive) {
-            return Value.Tag.int_big_positive.create(&arena.allocator, res_const.limbs);
+            return Value.Tag.int_big_positive.create(arena, res_const.limbs);
         } else {
-            return Value.Tag.int_big_negative.create(&arena.allocator, res_const.limbs);
+            return Value.Tag.int_big_negative.create(arena, res_const.limbs);
         }
     }
 
     /// Asserts that self.zigTypeTag() == .Int.
-    pub fn maxInt(self: Type, arena: *std.heap.ArenaAllocator, target: Target) !Value {
+    pub fn maxInt(self: Type, arena: *Allocator, target: Target) !Value {
         assert(self.zigTypeTag() == .Int);
         const info = self.intInfo(target);
 
         if (info.signedness == .signed and (info.bits - 1) <= std.math.maxInt(u6)) {
             const n: i64 = (@as(i64, 1) << @truncate(u6, info.bits - 1)) - 1;
-            return Value.Tag.int_i64.create(&arena.allocator, n);
+            return Value.Tag.int_i64.create(arena, n);
         } else if (info.signedness == .signed and info.bits <= std.math.maxInt(u6)) {
             const n: u64 = (@as(u64, 1) << @truncate(u6, info.bits)) - 1;
-            return Value.Tag.int_u64.create(&arena.allocator, n);
+            return Value.Tag.int_u64.create(arena, n);
         }
 
-        var res = try std.math.big.int.Managed.initSet(&arena.allocator, 1);
+        var res = try std.math.big.int.Managed.initSet(arena, 1);
         try res.shiftLeft(res, info.bits - @boolToInt(info.signedness == .signed));
         const one = std.math.big.int.Const{
             .limbs = &[_]std.math.big.Limb{1},
@@ -2880,9 +3039,38 @@ pub const Type = extern union {
 
         const res_const = res.toConst();
         if (res_const.positive) {
-            return Value.Tag.int_big_positive.create(&arena.allocator, res_const.limbs);
+            return Value.Tag.int_big_positive.create(arena, res_const.limbs);
         } else {
-            return Value.Tag.int_big_negative.create(&arena.allocator, res_const.limbs);
+            return Value.Tag.int_big_negative.create(arena, res_const.limbs);
+        }
+    }
+
+    /// Returns the integer tag type of the enum.
+    pub fn enumTagType(ty: Type, buffer: *Payload.Bits) Type {
+        switch (ty.tag()) {
+            .enum_full, .enum_nonexhaustive => {
+                const enum_full = ty.cast(Payload.EnumFull).?.data;
+                return enum_full.tag_ty;
+            },
+            .enum_simple => {
+                const enum_simple = ty.castTag(.enum_simple).?.data;
+                buffer.* = .{
+                    .base = .{ .tag = .int_unsigned },
+                    .data = std.math.log2_int_ceil(usize, enum_simple.fields.count()),
+                };
+                return Type.initPayload(&buffer.base);
+            },
+            .atomic_order,
+            .atomic_rmw_op,
+            .calling_convention,
+            .float_mode,
+            .reduce_op,
+            .call_options,
+            .export_options,
+            .extern_options,
+            => @panic("TODO resolve std.builtin types"),
+
+            else => unreachable,
         }
     }
 
@@ -2903,9 +3091,10 @@ pub const Type = extern union {
                 const enum_simple = ty.castTag(.enum_simple).?.data;
                 return enum_simple.fields.count();
             },
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -2927,9 +3116,10 @@ pub const Type = extern union {
                 const enum_simple = ty.castTag(.enum_simple).?.data;
                 return enum_simple.fields.keys()[field_index];
             },
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -2950,9 +3140,10 @@ pub const Type = extern union {
                 const enum_simple = ty.castTag(.enum_simple).?.data;
                 return enum_simple.fields.getIndex(field_name);
             },
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -3003,9 +3194,10 @@ pub const Type = extern union {
                 const tag_ty = Type.initPayload(&buffer.base);
                 return S.fieldWithRange(tag_ty, enum_tag, fields_len);
             },
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -3058,9 +3250,10 @@ pub const Type = extern union {
                 const union_obj = ty.cast(Payload.Union).?.data;
                 return union_obj.srcLoc();
             },
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -3095,9 +3288,10 @@ pub const Type = extern union {
                 return union_obj.owner_decl;
             },
             .@"opaque" => @panic("TODO"),
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -3145,9 +3339,10 @@ pub const Type = extern union {
                 const tag_ty = Type.initPayload(&buffer.base);
                 return S.intInRange(tag_ty, int, fields_len);
             },
-            .atomic_ordering,
+            .atomic_order,
             .atomic_rmw_op,
             .calling_convention,
+            .address_space,
             .float_mode,
             .reduce_op,
             .call_options,
@@ -3165,7 +3360,7 @@ pub const Type = extern union {
     /// but with different alignment values, in this data structure they are represented
     /// with different enum tags, because the the former requires more payload data than the latter.
     /// See `zigTypeTag` for the function that corresponds to `std.builtin.TypeId`.
-    pub const Tag = enum {
+    pub const Tag = enum(usize) {
         // The first section of this enum are tags that require no payload.
         u1,
         u8,
@@ -3205,9 +3400,10 @@ pub const Type = extern union {
         @"null",
         @"undefined",
         enum_literal,
-        atomic_ordering,
+        atomic_order,
         atomic_rmw_op,
         calling_convention,
+        address_space,
         float_mode,
         reduce_op,
         call_options,
@@ -3328,9 +3524,10 @@ pub const Type = extern union {
                 .empty_struct_literal,
                 .manyptr_u8,
                 .manyptr_const_u8,
-                .atomic_ordering,
+                .atomic_order,
                 .atomic_rmw_op,
                 .calling_convention,
+                .address_space,
                 .float_mode,
                 .reduce_op,
                 .call_options,
@@ -3382,7 +3579,7 @@ pub const Type = extern union {
 
         pub fn init(comptime t: Tag) file_struct.Type {
             comptime std.debug.assert(@enumToInt(t) < Tag.no_payload_count);
-            return .{ .tag_if_small_enough = @enumToInt(t) };
+            return .{ .tag_if_small_enough = t };
         }
 
         pub fn create(comptime t: Tag, ally: *Allocator, data: Data(t)) error{OutOfMemory}!file_struct.Type {
@@ -3486,6 +3683,7 @@ pub const Type = extern union {
                 sentinel: ?Value,
                 /// If zero use pointee_type.AbiAlign()
                 @"align": u32,
+                @"addrspace": std.builtin.AddressSpace,
                 bit_offset: u16,
                 host_size: u16,
                 @"allowzero": bool,

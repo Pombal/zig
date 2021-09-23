@@ -87,12 +87,17 @@ fn main2() callconv(.C) c_int {
 }
 
 fn _start2() callconv(.Naked) noreturn {
+    callMain2();
+}
+
+fn callMain2() noreturn {
+    @setAlignStack(16);
     root.main();
     exit2(0);
 }
 
 fn exit2(code: usize) noreturn {
-    switch (builtin.stage2_os) {
+    switch (native_os) {
         .linux => switch (builtin.stage2_arch) {
             .x86_64 => {
                 asm volatile ("syscall"

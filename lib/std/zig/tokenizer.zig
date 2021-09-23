@@ -11,6 +11,7 @@ pub const Token = struct {
     };
 
     pub const keywords = std.ComptimeStringMap(Tag, .{
+        .{ "addrspace", .keyword_addrspace },
         .{ "align", .keyword_align },
         .{ "allowzero", .keyword_allowzero },
         .{ "and", .keyword_and },
@@ -132,6 +133,7 @@ pub const Token = struct {
         float_literal,
         doc_comment,
         container_doc_comment,
+        keyword_addrspace,
         keyword_align,
         keyword_allowzero,
         keyword_and,
@@ -251,6 +253,7 @@ pub const Token = struct {
                 .angle_bracket_angle_bracket_right => ">>",
                 .angle_bracket_angle_bracket_right_equal => ">>=",
                 .tilde => "~",
+                .keyword_addrspace => "addrspace",
                 .keyword_align => "align",
                 .keyword_allowzero => "allowzero",
                 .keyword_and => "and",
@@ -700,7 +703,7 @@ pub const Tokenizer = struct {
                 },
 
                 .string_literal_backslash => switch (c) {
-                    '\n' => {
+                    0, '\n' => {
                         result.tag = .invalid;
                         break;
                     },
@@ -769,6 +772,10 @@ pub const Tokenizer = struct {
                 },
 
                 .char_literal_unicode_escape_saw_u => switch (c) {
+                    0 => {
+                        result.tag = .invalid;
+                        break;
+                    },
                     '{' => {
                         state = .char_literal_unicode_escape;
                     },
@@ -779,6 +786,10 @@ pub const Tokenizer = struct {
                 },
 
                 .char_literal_unicode_escape => switch (c) {
+                    0 => {
+                        result.tag = .invalid;
+                        break;
+                    },
                     '0'...'9', 'a'...'f', 'A'...'F' => {},
                     '}' => {
                         state = .char_literal_end; // too many/few digits handled later
@@ -1917,6 +1928,12 @@ test "tokenizer - multi line string literal with only 1 backslash" {
 test "tokenizer - invalid builtin identifiers" {
     try testTokenize("@()", &.{ .invalid, .l_paren, .r_paren });
     try testTokenize("@0()", &.{ .invalid, .integer_literal, .l_paren, .r_paren });
+}
+
+test "tokenizer - invalid token with unfinished escape right before eof" {
+    try testTokenize("\"\\", &.{.invalid});
+    try testTokenize("'\\", &.{.invalid});
+    try testTokenize("'\\u", &.{.invalid});
 }
 
 fn testTokenize(source: [:0]const u8, expected_tokens: []const Token.Tag) !void {

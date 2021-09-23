@@ -85,6 +85,9 @@ pub const Value = opaque {
     pub const addAttributeAtIndex = LLVMAddAttributeAtIndex;
     extern fn LLVMAddAttributeAtIndex(*const Value, Idx: AttributeIndex, A: *const Attribute) void;
 
+    pub const removeEnumAttributeAtIndex = LLVMRemoveEnumAttributeAtIndex;
+    extern fn LLVMRemoveEnumAttributeAtIndex(F: *const Value, Idx: AttributeIndex, KindID: c_uint) void;
+
     pub const getFirstBasicBlock = LLVMGetFirstBasicBlock;
     extern fn LLVMGetFirstBasicBlock(Fn: *const Value) ?*const BasicBlock;
 
@@ -133,6 +136,15 @@ pub const Value = opaque {
 
     pub const constIntToPtr = LLVMConstIntToPtr;
     extern fn LLVMConstIntToPtr(ConstantVal: *const Value, ToType: *const Type) *const Value;
+
+    pub const setOrdering = LLVMSetOrdering;
+    extern fn LLVMSetOrdering(MemoryAccessInst: *const Value, Ordering: AtomicOrdering) void;
+
+    pub const setVolatile = LLVMSetVolatile;
+    extern fn LLVMSetVolatile(MemoryAccessInst: *const Value, IsVolatile: Bool) void;
+
+    pub const setAlignment = LLVMSetAlignment;
+    extern fn LLVMSetAlignment(V: *const Value, Bytes: c_uint) void;
 };
 
 pub const Type = opaque {
@@ -167,6 +179,9 @@ pub const Type = opaque {
         ElementCount: c_uint,
         Packed: Bool,
     ) void;
+
+    pub const getTypeKind = LLVMGetTypeKind;
+    extern fn LLVMGetTypeKind(Ty: *const Type) TypeKind;
 };
 
 pub const Module = opaque {
@@ -182,6 +197,9 @@ pub const Module = opaque {
     pub const addFunction = LLVMAddFunction;
     extern fn LLVMAddFunction(*const Module, Name: [*:0]const u8, FunctionTy: *const Type) *const Value;
 
+    pub const addFunctionInAddressSpace = ZigLLVMAddFunctionInAddressSpace;
+    extern fn ZigLLVMAddFunctionInAddressSpace(*const Module, Name: [*:0]const u8, FunctionTy: *const Type, AddressSpace: c_uint) *const Value;
+
     pub const getNamedFunction = LLVMGetNamedFunction;
     extern fn LLVMGetNamedFunction(*const Module, Name: [*:0]const u8) ?*const Value;
 
@@ -193,6 +211,9 @@ pub const Module = opaque {
 
     pub const addGlobal = LLVMAddGlobal;
     extern fn LLVMAddGlobal(M: *const Module, Ty: *const Type, Name: [*:0]const u8) *const Value;
+
+    pub const addGlobalInAddressSpace = LLVMAddGlobalInAddressSpace;
+    extern fn LLVMAddGlobalInAddressSpace(M: *const Module, Ty: *const Type, Name: [*:0]const u8, AddressSpace: c_uint) *const Value;
 
     pub const getNamedGlobal = LLVMGetNamedGlobal;
     extern fn LLVMGetNamedGlobal(M: *const Module, Name: [*:0]const u8) ?*const Value;
@@ -294,6 +315,14 @@ pub const Builder = opaque {
     extern fn LLVMBuildZExt(
         *const Builder,
         Value: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildSExt = LLVMBuildSExt;
+    extern fn LLVMBuildSExt(
+        *const Builder,
+        Val: *const Value,
         DestTy: *const Type,
         Name: [*:0]const u8,
     ) *const Value;
@@ -469,6 +498,14 @@ pub const Builder = opaque {
         Name: [*:0]const u8,
     ) *const Value;
 
+    pub const buildIntToPtr = LLVMBuildIntToPtr;
+    extern fn LLVMBuildIntToPtr(
+        *const Builder,
+        Val: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
     pub const buildStructGEP = LLVMBuildStructGEP;
     extern fn LLVMBuildStructGEP(
         B: *const Builder,
@@ -479,6 +516,102 @@ pub const Builder = opaque {
 
     pub const buildTrunc = LLVMBuildTrunc;
     extern fn LLVMBuildTrunc(
+        *const Builder,
+        Val: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildInsertValue = LLVMBuildInsertValue;
+    extern fn LLVMBuildInsertValue(
+        *const Builder,
+        AggVal: *const Value,
+        EltVal: *const Value,
+        Index: c_uint,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildCmpXchg = ZigLLVMBuildCmpXchg;
+    extern fn ZigLLVMBuildCmpXchg(
+        builder: *const Builder,
+        ptr: *const Value,
+        cmp: *const Value,
+        new_val: *const Value,
+        success_ordering: AtomicOrdering,
+        failure_ordering: AtomicOrdering,
+        is_weak: bool,
+        is_single_threaded: bool,
+    ) *const Value;
+
+    pub const buildSelect = LLVMBuildSelect;
+    extern fn LLVMBuildSelect(
+        *const Builder,
+        If: *const Value,
+        Then: *const Value,
+        Else: *const Value,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildFence = LLVMBuildFence;
+    extern fn LLVMBuildFence(
+        B: *const Builder,
+        ordering: AtomicOrdering,
+        singleThread: Bool,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildAtomicRmw = LLVMBuildAtomicRMW;
+    extern fn LLVMBuildAtomicRMW(
+        B: *const Builder,
+        op: AtomicRMWBinOp,
+        PTR: *const Value,
+        Val: *const Value,
+        ordering: AtomicOrdering,
+        singleThread: Bool,
+    ) *const Value;
+
+    pub const buildFPToUI = LLVMBuildFPToUI;
+    extern fn LLVMBuildFPToUI(
+        *const Builder,
+        Val: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildFPToSI = LLVMBuildFPToSI;
+    extern fn LLVMBuildFPToSI(
+        *const Builder,
+        Val: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildUIToFP = LLVMBuildUIToFP;
+    extern fn LLVMBuildUIToFP(
+        *const Builder,
+        Val: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildSIToFP = LLVMBuildSIToFP;
+    extern fn LLVMBuildSIToFP(
+        *const Builder,
+        Val: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildFPTrunc = LLVMBuildFPTrunc;
+    extern fn LLVMBuildFPTrunc(
+        *const Builder,
+        Val: *const Value,
+        DestTy: *const Type,
+        Name: [*:0]const u8,
+    ) *const Value;
+
+    pub const buildFPExt = LLVMBuildFPExt;
+    extern fn LLVMBuildFPExt(
         *const Builder,
         Val: *const Value,
         DestTy: *const Type,
@@ -844,4 +977,115 @@ pub const Linkage = enum(c_uint) {
     Common,
     LinkerPrivate,
     LinkerPrivateWeak,
+};
+
+pub const AtomicOrdering = enum(c_uint) {
+    NotAtomic = 0,
+    Unordered = 1,
+    Monotonic = 2,
+    Acquire = 4,
+    Release = 5,
+    AcquireRelease = 6,
+    SequentiallyConsistent = 7,
+};
+
+pub const AtomicRMWBinOp = enum(c_int) {
+    Xchg,
+    Add,
+    Sub,
+    And,
+    Nand,
+    Or,
+    Xor,
+    Max,
+    Min,
+    UMax,
+    UMin,
+    FAdd,
+    FSub,
+};
+
+pub const TypeKind = enum(c_int) {
+    Void,
+    Half,
+    Float,
+    Double,
+    X86_FP80,
+    FP128,
+    PPC_FP128,
+    Label,
+    Integer,
+    Function,
+    Struct,
+    Array,
+    Pointer,
+    Vector,
+    Metadata,
+    X86_MMX,
+    Token,
+    ScalableVector,
+    BFloat,
+    X86_AMX,
+};
+
+pub const address_space = struct {
+    pub const default: c_uint = 0;
+
+    // See llvm/lib/Target/X86/X86.h
+    pub const x86_64 = x86;
+    pub const x86 = struct {
+        pub const gs: c_uint = 256;
+        pub const fs: c_uint = 257;
+        pub const ss: c_uint = 258;
+
+        pub const ptr32_sptr: c_uint = 270;
+        pub const ptr32_uptr: c_uint = 271;
+        pub const ptr64: c_uint = 272;
+    };
+
+    // See llvm/lib/Target/AVR/AVR.h
+    pub const avr = struct {
+        pub const data_memory: c_uint = 0;
+        pub const program_memory: c_uint = 1;
+    };
+
+    // See llvm/lib/Target/NVPTX/NVPTX.h
+    pub const nvptx = struct {
+        pub const generic: c_uint = 0;
+        pub const global: c_uint = 1;
+        pub const constant: c_uint = 2;
+        pub const shared: c_uint = 3;
+        pub const param: c_uint = 4;
+        pub const local: c_uint = 5;
+    };
+
+    // See llvm/lib/Target/AMDGPU/AMDGPU.h
+    pub const amdgpu = struct {
+        pub const flat: c_uint = 0;
+        pub const global: c_uint = 1;
+        pub const region: c_uint = 2;
+        pub const local: c_uint = 3;
+        pub const constant: c_uint = 4;
+        pub const private: c_uint = 5;
+        pub const constant_32bit: c_uint = 6;
+        pub const buffer_fat_pointer: c_uint = 7;
+        pub const param_d: c_uint = 6;
+        pub const param_i: c_uint = 7;
+        pub const constant_buffer_0: c_uint = 8;
+        pub const constant_buffer_1: c_uint = 9;
+        pub const constant_buffer_2: c_uint = 10;
+        pub const constant_buffer_3: c_uint = 11;
+        pub const constant_buffer_4: c_uint = 12;
+        pub const constant_buffer_5: c_uint = 13;
+        pub const constant_buffer_6: c_uint = 14;
+        pub const constant_buffer_7: c_uint = 15;
+        pub const constant_buffer_8: c_uint = 16;
+        pub const constant_buffer_9: c_uint = 17;
+        pub const constant_buffer_10: c_uint = 18;
+        pub const constant_buffer_11: c_uint = 19;
+        pub const constant_buffer_12: c_uint = 20;
+        pub const constant_buffer_13: c_uint = 21;
+        pub const constant_buffer_14: c_uint = 22;
+        pub const constant_buffer_15: c_uint = 23;
+    };
 };

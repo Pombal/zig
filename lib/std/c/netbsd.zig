@@ -476,6 +476,7 @@ pub const sockaddr = extern struct {
     /// actually longer; address value
     data: [14]u8,
 
+    pub const SS_MAXSIZE = 128;
     pub const storage = std.x.os.Socket.Address.Native.Storage;
 
     pub const in = extern struct {
@@ -765,6 +766,9 @@ pub const EVFILT_TIMER = 6;
 
 /// Filesystem events
 pub const EVFILT_FS = 7;
+
+/// User events
+pub const EVFILT_USER = 1;
 
 /// On input, NOTE_TRIGGER causes the event to be triggered for output.
 pub const NOTE_TRIGGER = 0x08000000;

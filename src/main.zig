@@ -589,6 +589,10 @@ fn buildOutputType(
     var linker_bind_global_refs_locally: ?bool = null;
     var linker_z_nodelete = false;
     var linker_z_defs = false;
+    var linker_z_origin = false;
+    var linker_z_noexecstack = false;
+    var linker_z_now = false;
+    var linker_z_relro = false;
     var linker_tsaware = false;
     var linker_nxcompat = false;
     var linker_dynamicbase = false;
@@ -1147,6 +1151,7 @@ fn buildOutputType(
             var is_shared_lib = false;
             var linker_args = std.ArrayList([]const u8).init(arena);
             var it = ClangArgIterator.init(arena, all_args);
+            var emit_llvm = false;
             while (it.has_next) {
                 it.next() catch |err| {
                     fatal("unable to parse command line parameters: {s}", .{@errorName(err)});
@@ -1157,6 +1162,7 @@ fn buildOutputType(
                     .c => c_out_mode = .object, // -c
                     .asm_only => c_out_mode = .assembly, // -S
                     .preprocess_only => c_out_mode = .preprocessor, // -E
+                    .emit_llvm => emit_llvm = true,
                     .other => {
                         try clang_argv.appendSlice(it.other_args);
                     },
@@ -1393,6 +1399,14 @@ fn buildOutputType(
                         linker_z_nodelete = true;
                     } else if (mem.eql(u8, z_arg, "defs")) {
                         linker_z_defs = true;
+                    } else if (mem.eql(u8, z_arg, "origin")) {
+                        linker_z_origin = true;
+                    } else if (mem.eql(u8, z_arg, "noexecstack")) {
+                        linker_z_noexecstack = true;
+                    } else if (mem.eql(u8, z_arg, "now")) {
+                        linker_z_now = true;
+                    } else if (mem.eql(u8, z_arg, "relro")) {
+                        linker_z_relro = true;
                     } else {
                         warn("unsupported linker arg: -z {s}", .{z_arg});
                     }
@@ -1506,22 +1520,42 @@ fn buildOutputType(
                     output_mode = if (is_shared_lib) .Lib else .Exe;
                     emit_bin = if (out_path) |p| .{ .yes = p } else EmitBin.yes_a_out;
                     enable_cache = true;
+                    if (emit_llvm) {
+                        fatal("-emit-llvm cannot be used when linking", .{});
+                    }
                 },
                 .object => {
                     output_mode = .Obj;
-                    if (out_path) |p| {
-                        emit_bin = .{ .yes = p };
+                    if (emit_llvm) {
+                        emit_bin = .no;
+                        if (out_path) |p| {
+                            emit_llvm_bc = .{ .yes = p };
+                        } else {
+                            emit_llvm_bc = .yes_default_path;
+                        }
                     } else {
-                        emit_bin = .yes_default_path;
+                        if (out_path) |p| {
+                            emit_bin = .{ .yes = p };
+                        } else {
+                            emit_bin = .yes_default_path;
+                        }
                     }
                 },
                 .assembly => {
                     output_mode = .Obj;
                     emit_bin = .no;
-                    if (out_path) |p| {
-                        emit_asm = .{ .yes = p };
+                    if (emit_llvm) {
+                        if (out_path) |p| {
+                            emit_llvm_ir = .{ .yes = p };
+                        } else {
+                            emit_llvm_ir = .yes_default_path;
+                        }
                     } else {
-                        emit_asm = .yes_default_path;
+                        if (out_path) |p| {
+                            emit_asm = .{ .yes = p };
+                        } else {
+                            emit_asm = .yes_default_path;
+                        }
                     }
                 },
                 .preprocessor => {
@@ -1581,39 +1615,11 @@ fn buildOutputType(
         }
     };
 
-    var diags: std.zig.CrossTarget.ParseOptions.Diagnostics = .{};
-    const cross_target = std.zig.CrossTarget.parse(.{
+    const cross_target = try parseCrossTargetOrReportFatalError(arena, .{
         .arch_os_abi = target_arch_os_abi,
         .cpu_features = target_mcpu,
         .dynamic_linker = target_dynamic_linker,
-        .diagnostics = &diags,
-    }) catch |err| switch (err) {
-        error.UnknownCpuModel => {
-            help: {
-                var help_text = std.ArrayList(u8).init(arena);
-                for (diags.arch.?.allCpuModels()) |cpu| {
-                    help_text.writer().print(" {s}\n", .{cpu.name}) catch break :help;
-                }
-                std.log.info("Available CPUs for architecture '{s}':\n{s}", .{
-                    @tagName(diags.arch.?), help_text.items,
-                });
-            }
-            fatal("Unknown CPU: '{s}'", .{diags.cpu_name.?});
-        },
-        error.UnknownCpuFeature => {
-            help: {
-                var help_text = std.ArrayList(u8).init(arena);
-                for (diags.arch.?.allFeaturesList()) |feature| {
-                    help_text.writer().print(" {s}: {s}\n", .{ feature.name, feature.description }) catch break :help;
-                }
-                std.log.info("Available CPU features for architecture '{s}':\n{s}", .{
-                    @tagName(diags.arch.?), help_text.items,
-                });
-            }
-            fatal("Unknown CPU feature: '{s}'", .{diags.unknown_feature_name});
-        },
-        else => |e| return e,
-    };
+    });
 
     const target_info = try detectNativeTargetInfo(gpa, cross_target);
 
@@ -1698,22 +1704,22 @@ fn buildOutputType(
             } else true;
             if (!should_get_sdk_path) break :outer false;
             if (try std.zig.system.darwin.getSDKPath(arena, target_info.target)) |sdk_path| {
-                try clang_argv.ensureCapacity(clang_argv.items.len + 2);
+                try clang_argv.ensureUnusedCapacity(2);
                 clang_argv.appendAssumeCapacity("-isysroot");
                 clang_argv.appendAssumeCapacity(sdk_path);
                 break :outer true;
             } else break :outer false;
         } else false;
 
-        try clang_argv.ensureCapacity(clang_argv.items.len + paths.include_dirs.items.len * 2);
+        try clang_argv.ensureUnusedCapacity(paths.include_dirs.items.len * 2);
         const isystem_flag = if (has_sysroot) "-iwithsysroot" else "-isystem";
         for (paths.include_dirs.items) |include_dir| {
             clang_argv.appendAssumeCapacity(isystem_flag);
             clang_argv.appendAssumeCapacity(include_dir);
         }
 
-        try clang_argv.ensureCapacity(clang_argv.items.len + paths.framework_dirs.items.len * 2);
-        try framework_dirs.ensureCapacity(framework_dirs.items.len + paths.framework_dirs.items.len);
+        try clang_argv.ensureUnusedCapacity(paths.framework_dirs.items.len * 2);
+        try framework_dirs.ensureUnusedCapacity(paths.framework_dirs.items.len);
         const iframework_flag = if (has_sysroot) "-iframeworkwithsysroot" else "-iframework";
         for (paths.framework_dirs.items) |framework_dir| {
             clang_argv.appendAssumeCapacity(iframework_flag);
@@ -1960,7 +1966,7 @@ fn buildOutputType(
     defer if (libc_installation) |*l| l.deinit(gpa);
 
     if (libc_paths_file) |paths_file| {
-        libc_installation = LibCInstallation.parse(gpa, paths_file) catch |err| {
+        libc_installation = LibCInstallation.parse(gpa, paths_file, cross_target) catch |err| {
             fatal("unable to parse libc paths file at path {s}: {s}", .{ paths_file, @errorName(err) });
         };
     }
@@ -2077,6 +2083,10 @@ fn buildOutputType(
         .linker_bind_global_refs_locally = linker_bind_global_refs_locally,
         .linker_z_nodelete = linker_z_nodelete,
         .linker_z_defs = linker_z_defs,
+        .linker_z_origin = linker_z_origin,
+        .linker_z_noexecstack = linker_z_noexecstack,
+        .linker_z_now = linker_z_now,
+        .linker_z_relro = linker_z_relro,
         .linker_tsaware = linker_tsaware,
         .linker_nxcompat = linker_nxcompat,
         .linker_dynamicbase = linker_dynamicbase,
@@ -2271,6 +2281,43 @@ fn buildOutputType(
     }
     // Skip resource deallocation in release builds; let the OS do it.
     return cleanExit();
+}
+
+fn parseCrossTargetOrReportFatalError(allocator: *Allocator, opts: std.zig.CrossTarget.ParseOptions) !std.zig.CrossTarget {
+    var opts_with_diags = opts;
+    var diags: std.zig.CrossTarget.ParseOptions.Diagnostics = .{};
+    if (opts_with_diags.diagnostics == null) {
+        opts_with_diags.diagnostics = &diags;
+    }
+    return std.zig.CrossTarget.parse(opts_with_diags) catch |err| switch (err) {
+        error.UnknownCpuModel => {
+            help: {
+                var help_text = std.ArrayList(u8).init(allocator);
+                defer help_text.deinit();
+                for (diags.arch.?.allCpuModels()) |cpu| {
+                    help_text.writer().print(" {s}\n", .{cpu.name}) catch break :help;
+                }
+                std.log.info("Available CPUs for architecture '{s}':\n{s}", .{
+                    @tagName(diags.arch.?), help_text.items,
+                });
+            }
+            fatal("Unknown CPU: '{s}'", .{diags.cpu_name.?});
+        },
+        error.UnknownCpuFeature => {
+            help: {
+                var help_text = std.ArrayList(u8).init(allocator);
+                defer help_text.deinit();
+                for (diags.arch.?.allFeaturesList()) |feature| {
+                    help_text.writer().print(" {s}: {s}\n", .{ feature.name, feature.description }) catch break :help;
+                }
+                std.log.info("Available CPU features for architecture '{s}':\n{s}", .{
+                    @tagName(diags.arch.?), help_text.items,
+                });
+            }
+            fatal("Unknown CPU feature: '{s}'", .{diags.unknown_feature_name});
+        },
+        else => |e| return e,
+    };
 }
 
 fn runOrTest(
@@ -2614,10 +2661,15 @@ pub const usage_libc =
     \\
     \\    Parse a libc installation text file and validate it.
     \\
+    \\Options:
+    \\    -h, --help             Print this help and exit
+    \\    -target [name]         <arch><sub>-<os>-<abi> see the targets command
+    \\
 ;
 
 pub fn cmdLibC(gpa: *Allocator, args: []const []const u8) !void {
     var input_file: ?[]const u8 = null;
+    var target_arch_os_abi: []const u8 = "native";
     {
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
@@ -2627,6 +2679,10 @@ pub fn cmdLibC(gpa: *Allocator, args: []const []const u8) !void {
                     const stdout = io.getStdOut().writer();
                     try stdout.writeAll(usage_libc);
                     return cleanExit();
+                } else if (mem.eql(u8, arg, "-target")) {
+                    if (i + 1 >= args.len) fatal("expected parameter after {s}", .{arg});
+                    i += 1;
+                    target_arch_os_abi = args[i];
                 } else {
                     fatal("unrecognized parameter: '{s}'", .{arg});
                 }
@@ -2637,12 +2693,21 @@ pub fn cmdLibC(gpa: *Allocator, args: []const []const u8) !void {
             }
         }
     }
+
+    const cross_target = try parseCrossTargetOrReportFatalError(gpa, .{
+        .arch_os_abi = target_arch_os_abi,
+    });
+
     if (input_file) |libc_file| {
-        var libc = LibCInstallation.parse(gpa, libc_file) catch |err| {
+        var libc = LibCInstallation.parse(gpa, libc_file, cross_target) catch |err| {
             fatal("unable to parse libc file at path {s}: {s}", .{ libc_file, @errorName(err) });
         };
         defer libc.deinit(gpa);
     } else {
+        if (!cross_target.isNative()) {
+            fatal("unable to detect libc for non-native target", .{});
+        }
+
         var libc = LibCInstallation.findNative(.{
             .allocator = gpa,
             .verbose = true,
@@ -2718,7 +2783,7 @@ pub fn cmdInit(
         fatal("unable to read template file 'build.zig': {s}", .{@errorName(err)});
     };
     var modified_build_zig_contents = std.ArrayList(u8).init(arena);
-    try modified_build_zig_contents.ensureCapacity(build_zig_contents.len);
+    try modified_build_zig_contents.ensureTotalCapacity(build_zig_contents.len);
     for (build_zig_contents) |c| {
         if (c == '$') {
             try modified_build_zig_contents.appendSlice(cwd_basename);
@@ -3399,7 +3464,7 @@ fn fmtPathFile(
 
     // As a heuristic, we make enough capacity for the same as the input source.
     fmt.out_buffer.shrinkRetainingCapacity(0);
-    try fmt.out_buffer.ensureCapacity(source_code.len);
+    try fmt.out_buffer.ensureTotalCapacity(source_code.len);
 
     try tree.renderToArrayList(&fmt.out_buffer);
     if (mem.eql(u8, fmt.out_buffer.items, source_code))
@@ -3620,6 +3685,7 @@ pub const ClangArgIterator = struct {
         no_red_zone,
         strip,
         exec_model,
+        emit_llvm,
     };
 
     const Args = struct {
@@ -4066,7 +4132,7 @@ pub fn cmdAstCheck(
         // zig fmt: on
     }
 
-    return Zir.renderAsTextToFile(gpa, &file, io.getStdOut());
+    return @import("print_zir.zig").renderAsTextToFile(gpa, &file, io.getStdOut());
 }
 
 /// This is only enabled for debug builds.
