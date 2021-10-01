@@ -683,7 +683,7 @@ pub fn addCases(ctx: *TestContext) !void {
         \\    _ = u;
         \\}
     , &[_][]const u8{
-        "tmp.zig:12:16: error: runtime cast to union 'U' from non-exhustive enum",
+        "tmp.zig:12:16: error: runtime cast to union 'U' from non-exhaustive enum",
         "tmp.zig:17:16: error: no tag by value 15",
     });
 
@@ -6145,9 +6145,9 @@ pub fn addCases(ctx: *TestContext) !void {
     });
 
     ctx.objErrStage1("endless loop in function evaluation",
-        \\const seventh_fib_number = fibbonaci(7);
-        \\fn fibbonaci(x: i32) i32 {
-        \\    return fibbonaci(x - 1) + fibbonaci(x - 2);
+        \\const seventh_fib_number = fibonacci(7);
+        \\fn fibonacci(x: i32) i32 {
+        \\    return fibonacci(x - 1) + fibonacci(x - 2);
         \\}
         \\
         \\export fn entry() usize { return @sizeOf(@TypeOf(seventh_fib_number)); }
@@ -6775,7 +6775,7 @@ pub fn addCases(ctx: *TestContext) !void {
         "tmp.zig:2:5: error: expression value is ignored",
     });
 
-    ctx.objErrStage1("ignored defered statement value",
+    ctx.objErrStage1("ignored deferred statement value",
         \\export fn foo() void {
         \\    defer {1;}
         \\}
@@ -6783,7 +6783,7 @@ pub fn addCases(ctx: *TestContext) !void {
         "tmp.zig:2:12: error: expression value is ignored",
     });
 
-    ctx.objErrStage1("ignored defered function call",
+    ctx.objErrStage1("ignored deferred function call",
         \\export fn foo() void {
         \\    defer bar();
         \\}
@@ -8859,9 +8859,9 @@ pub fn addCases(ctx: *TestContext) !void {
         "tmp.zig:3:12: note: crosses namespace boundary here",
     });
 
-    ctx.objErrStage1("Issue #9619: saturating arithmetic builtins should fail to compile when given floats",
+    ctx.objErrStage1("saturating arithmetic does not allow floats",
         \\pub fn main() !void {
-        \\    _ = @addWithSaturation(@as(f32, 1.0), @as(f32, 1.0));
+        \\    _ = @as(f32, 1.0) +| @as(f32, 1.0);
         \\}
     , &[_][]const u8{
         "error: invalid operands to binary expression: 'f32' and 'f32'",

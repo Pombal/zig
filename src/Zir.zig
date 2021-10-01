@@ -49,8 +49,6 @@ pub const Header = extern struct {
 };
 
 pub const ExtraIndex = enum(u32) {
-    /// Ref. The main struct decl for this file.
-    main_struct,
     /// If this is 0, no compile errors. Otherwise there is a `CompileErrors`
     /// payload at this index.
     compile_errors,
@@ -60,11 +58,6 @@ pub const ExtraIndex = enum(u32) {
 
     _,
 };
-
-pub fn getMainStruct(zir: Zir) Inst.Index {
-    return zir.extra[@enumToInt(ExtraIndex.main_struct)] -
-        @intCast(u32, Inst.Ref.typed_value_map.len);
-}
 
 /// Returns the requested data, as well as the new index which is at the start of the
 /// trailers for the object.
@@ -77,6 +70,7 @@ pub fn extraData(code: Zir, comptime T: type, index: usize) struct { data: T, en
             u32 => code.extra[i],
             Inst.Ref => @intToEnum(Inst.Ref, code.extra[i]),
             i32 => @bitCast(i32, code.extra[i]),
+            Inst.Call.Flags => @bitCast(Inst.Call.Flags, code.extra[i]),
             else => @compileError("bad field type"),
         };
         i += 1;
@@ -112,6 +106,10 @@ pub fn deinit(code: *Zir, gpa: *Allocator) void {
     code.* = undefined;
 }
 
+/// ZIR is structured so that the outermost "main" struct of any file
+/// is always at index 0.
+pub const main_struct_inst: Inst.Index = 0;
+
 /// These are untyped instructions generated from an Abstract Syntax Tree.
 /// The data here is immutable because it is possible to have multiple
 /// analyses on the same ZIR happening at the same time.
@@ -128,6 +126,64 @@ pub const Inst = struct {
         /// Twos complement wrapping integer addition.
         /// Uses the `pl_node` union field. Payload is `Bin`.
         addwrap,
+        /// Saturating addition.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        add_sat,
+        /// Arithmetic subtraction. Asserts no integer overflow.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        sub,
+        /// Twos complement wrapping integer subtraction.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        subwrap,
+        /// Saturating subtraction.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        sub_sat,
+        /// Arithmetic multiplication. Asserts no integer overflow.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        mul,
+        /// Twos complement wrapping integer multiplication.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        mulwrap,
+        /// Saturating multiplication.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        mul_sat,
+        /// Implements the `@divExact` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`.
+        div_exact,
+        /// Implements the `@divFloor` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`.
+        div_floor,
+        /// Implements the `@divTrunc` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`.
+        div_trunc,
+        /// Implements the `@mod` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`.
+        mod,
+        /// Implements the `@rem` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`.
+        rem,
+        /// Ambiguously remainder division or modulus. If the computation would possibly have
+        /// a different value depending on whether the operation is remainder division or modulus,
+        /// a compile error is emitted. Otherwise the computation is performed.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        mod_rem,
+        /// Integer shift-left. Zeroes are shifted in from the right hand side.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        shl,
+        /// Implements the `@shlExact` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`.
+        shl_exact,
+        /// Saturating shift-left.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        shl_sat,
+        /// Integer shift-right. Arithmetic or logical depending on the signedness of
+        /// the integer type.
+        /// Uses the `pl_node` union field. Payload is `Bin`.
+        shr,
+        /// Implements the `@shrExact` builtin.
+        /// Uses the `pl_node` union field with payload `Bin`.
+        shr_exact,
+
         /// Declares a parameter of the current function. Used for:
         /// * debug info
         /// * checking shadowing against declarations in the current namespace
@@ -225,17 +281,9 @@ pub const Inst = struct {
         break_inline,
         /// Uses the `node` union field.
         breakpoint,
-        /// Function call with modifier `.auto`.
+        /// Function call.
         /// Uses `pl_node`. AST node is the function call. Payload is `Call`.
         call,
-        /// Same as `call` but it also does `ensure_result_used` on the return value.
-        call_chkused,
-        /// Same as `call` but with modifier `.compile_time`.
-        call_compile_time,
-        /// Same as `call` but with modifier `.no_suspend`.
-        call_nosuspend,
-        /// Same as `call` but with modifier `.async_kw`.
-        call_async,
         /// `<`
         /// Uses the `pl_node` union field. Payload is `Bin`.
         cmp_lt,
@@ -267,11 +315,6 @@ pub const Inst = struct {
         /// only the taken branch is analyzed. The then block and else block must
         /// terminate with an "inline" variant of a noreturn instruction.
         condbr_inline,
-        /// An opaque type definition. Provides an AST node only.
-        /// Uses the `pl_node` union field. Payload is `OpaqueDecl`.
-        opaque_decl,
-        opaque_decl_anon,
-        opaque_decl_func,
         /// An error set type definition. Contains a list of field names.
         /// Uses the `pl_node` union field. Payload is `ErrorSetDecl`.
         error_set_decl,
@@ -335,6 +378,15 @@ pub const Inst = struct {
         /// This instruction also accepts a pointer.
         /// Uses `pl_node` field. The AST node is the a.b syntax. Payload is Field.
         field_val,
+        /// Given a pointer to a struct or object that contains virtual fields, returns the
+        /// named field.  If there is no named field, searches in the type for a decl that
+        /// matches the field name.  The decl is resolved and we ensure that it's a function
+        /// which can accept the object as the first parameter, with one pointer fixup.  If
+        /// all of that works, this instruction produces a special "bound function" value
+        /// which contains both the function and the saved first parameter value.
+        /// Bound functions may only be used as the function parameter to a `call` or
+        /// `builtin_call` instruction.  Any other use is invalid zir and may crash the compiler.
+        field_call_bind,
         /// Given a pointer to a struct or object that contains virtual fields, returns a pointer
         /// to the named field. The field name is a comptime instruction. Used by @field.
         /// Uses `pl_node` field. The AST node is the builtin call. Payload is FieldNamed.
@@ -343,6 +395,15 @@ pub const Inst = struct {
         /// The field name is a comptime instruction. Used by @field.
         /// Uses `pl_node` field. The AST node is the builtin call. Payload is FieldNamed.
         field_val_named,
+        /// Given a pointer to a struct or object that contains virtual fields, returns the
+        /// named field.  If there is no named field, searches in the type for a decl that
+        /// matches the field name.  The decl is resolved and we ensure that it's a function
+        /// which can accept the object as the first parameter, with one pointer fixup.  If
+        /// all of that works, this instruction produces a special "bound function" value
+        /// which contains both the function and the saved first parameter value.
+        /// Bound functions may only be used as the function parameter to a `call` or
+        /// `builtin_call` instruction.  Any other use is invalid zir and may crash the compiler.
+        field_call_bind_named,
         /// Returns a function type, or a function instance, depending on whether
         /// the body_len is 0. Calling convention is auto.
         /// Uses the `pl_node` union field. `payload_index` points to a `Func`.
@@ -392,25 +453,6 @@ pub const Inst = struct {
         /// Merge two error sets into one, `E1 || E2`.
         /// Uses the `pl_node` field with payload `Bin`.
         merge_error_sets,
-        /// Ambiguously remainder division or modulus. If the computation would possibly have
-        /// a different value depending on whether the operation is remainder division or modulus,
-        /// a compile error is emitted. Otherwise the computation is performed.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        mod_rem,
-        /// Arithmetic multiplication. Asserts no integer overflow.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        mul,
-        /// Twos complement wrapping integer multiplication.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        mulwrap,
-        /// Given a reference to a function and a parameter index, returns the
-        /// type of the parameter. The only usage of this instruction is for the
-        /// result location of parameters of function calls. In the case of a function's
-        /// parameter type being `anytype`, it is the type coercion's job to detect this
-        /// scenario and skip the coercion, so that semantic analysis of this instruction
-        /// is not in a position where it must create an invalid type.
-        /// Uses the `param_type` union field.
-        param_type,
         /// Turns an R-Value into a const L-Value. In other words, it takes a value,
         /// stores it in a memory location, and returns a const pointer to it. If the value
         /// is `comptime`, the memory location is global static constant data. Otherwise,
@@ -487,12 +529,6 @@ pub const Inst = struct {
         /// String Literal. Makes an anonymous Decl and then takes a pointer to it.
         /// Uses the `str` union field.
         str,
-        /// Arithmetic subtraction. Asserts no integer overflow.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        sub,
-        /// Twos complement wrapping integer subtraction.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        subwrap,
         /// Arithmetic negation. Asserts no integer overflow.
         /// Same as sub with a lhs of 0, split into a separate instruction to save memory.
         /// Uses `un_node`.
@@ -818,35 +854,6 @@ pub const Inst = struct {
         /// Implements the `@bitReverse` builtin. Uses the `un_node` union field.
         bit_reverse,
 
-        /// Implements the `@divExact` builtin.
-        /// Uses the `pl_node` union field with payload `Bin`.
-        div_exact,
-        /// Implements the `@divFloor` builtin.
-        /// Uses the `pl_node` union field with payload `Bin`.
-        div_floor,
-        /// Implements the `@divTrunc` builtin.
-        /// Uses the `pl_node` union field with payload `Bin`.
-        div_trunc,
-        /// Implements the `@mod` builtin.
-        /// Uses the `pl_node` union field with payload `Bin`.
-        mod,
-        /// Implements the `@rem` builtin.
-        /// Uses the `pl_node` union field with payload `Bin`.
-        rem,
-
-        /// Integer shift-left. Zeroes are shifted in from the right hand side.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        shl,
-        /// Implements the `@shlExact` builtin.
-        /// Uses the `pl_node` union field with payload `Bin`.
-        shl_exact,
-        /// Integer shift-right. Arithmetic or logical depending on the signedness of the integer type.
-        /// Uses the `pl_node` union field. Payload is `Bin`.
-        shr,
-        /// Implements the `@shrExact` builtin.
-        /// Uses the `pl_node` union field with payload `Bin`.
-        shr_exact,
-
         /// Implements the `@bitOffsetOf` builtin.
         /// Uses the `pl_node` union field with payload `Bin`.
         bit_offset_of,
@@ -941,6 +948,17 @@ pub const Inst = struct {
         @"await",
         await_nosuspend,
 
+        /// When a type or function refers to a comptime value from an outer
+        /// scope, that forms a closure over comptime value.  The outer scope
+        /// will record a capture of that value, which encodes its current state
+        /// and marks it to persist.  Uses `un_tok` field.  Operand is the
+        /// instruction value to capture.
+        closure_capture,
+        /// The inner scope of a closure uses closure_get to retrieve the value
+        /// stored by the outer scope.  Uses `inst_node` field.  Operand is the
+        /// closure_capture instruction ref.
+        closure_get,
+
         /// The ZIR instruction tag is one of the `Extended` ones.
         /// Uses the `extended` union field.
         extended,
@@ -955,6 +973,7 @@ pub const Inst = struct {
                 .param_anytype_comptime,
                 .add,
                 .addwrap,
+                .add_sat,
                 .alloc,
                 .alloc_mut,
                 .alloc_comptime,
@@ -985,10 +1004,6 @@ pub const Inst = struct {
                 .breakpoint,
                 .fence,
                 .call,
-                .call_chkused,
-                .call_compile_time,
-                .call_nosuspend,
-                .call_async,
                 .cmp_lt,
                 .cmp_lte,
                 .cmp_eq,
@@ -996,9 +1011,6 @@ pub const Inst = struct {
                 .cmp_gt,
                 .cmp_neq,
                 .coerce_result_ptr,
-                .opaque_decl,
-                .opaque_decl_anon,
-                .opaque_decl_func,
                 .error_set_decl,
                 .error_set_decl_anon,
                 .error_set_decl_func,
@@ -1017,8 +1029,10 @@ pub const Inst = struct {
                 .export_value,
                 .field_ptr,
                 .field_val,
+                .field_call_bind,
                 .field_ptr_named,
                 .field_val_named,
+                .field_call_bind_named,
                 .func,
                 .func_inferred,
                 .has_decl,
@@ -1034,9 +1048,10 @@ pub const Inst = struct {
                 .mod_rem,
                 .mul,
                 .mulwrap,
-                .param_type,
+                .mul_sat,
                 .ref,
                 .shl,
+                .shl_sat,
                 .shr,
                 .store,
                 .store_node,
@@ -1045,6 +1060,7 @@ pub const Inst = struct {
                 .str,
                 .sub,
                 .subwrap,
+                .sub_sat,
                 .negate,
                 .negate_wrap,
                 .typeof,
@@ -1191,6 +1207,8 @@ pub const Inst = struct {
                 .await_nosuspend,
                 .ret_err_value_code,
                 .extended,
+                .closure_get,
+                .closure_capture,
                 => false,
 
                 .@"break",
@@ -1216,6 +1234,14 @@ pub const Inst = struct {
             break :list std.enums.directEnumArray(Tag, Data.FieldEnum, 0, .{
                 .add = .pl_node,
                 .addwrap = .pl_node,
+                .add_sat = .pl_node,
+                .sub = .pl_node,
+                .subwrap = .pl_node,
+                .sub_sat = .pl_node,
+                .mul = .pl_node,
+                .mulwrap = .pl_node,
+                .mul_sat = .pl_node,
+
                 .param = .pl_tok,
                 .param_comptime = .pl_tok,
                 .param_anytype = .str_tok,
@@ -1245,10 +1271,6 @@ pub const Inst = struct {
                 .break_inline = .@"break",
                 .breakpoint = .node,
                 .call = .pl_node,
-                .call_chkused = .pl_node,
-                .call_compile_time = .pl_node,
-                .call_nosuspend = .pl_node,
-                .call_async = .pl_node,
                 .cmp_lt = .pl_node,
                 .cmp_lte = .pl_node,
                 .cmp_eq = .pl_node,
@@ -1258,9 +1280,6 @@ pub const Inst = struct {
                 .coerce_result_ptr = .bin,
                 .condbr = .pl_node,
                 .condbr_inline = .pl_node,
-                .opaque_decl = .pl_node,
-                .opaque_decl_anon = .pl_node,
-                .opaque_decl_func = .pl_node,
                 .error_set_decl = .pl_node,
                 .error_set_decl_anon = .pl_node,
                 .error_set_decl_func = .pl_node,
@@ -1283,6 +1302,8 @@ pub const Inst = struct {
                 .field_val = .pl_node,
                 .field_ptr_named = .pl_node,
                 .field_val_named = .pl_node,
+                .field_call_bind = .pl_node,
+                .field_call_bind_named = .pl_node,
                 .func = .pl_node,
                 .func_inferred = .pl_node,
                 .import = .str_tok,
@@ -1300,9 +1321,6 @@ pub const Inst = struct {
                 .repeat_inline = .node,
                 .merge_error_sets = .pl_node,
                 .mod_rem = .pl_node,
-                .mul = .pl_node,
-                .mulwrap = .pl_node,
-                .param_type = .param_type,
                 .ref = .un_tok,
                 .ret_node = .un_node,
                 .ret_load = .un_node,
@@ -1319,8 +1337,6 @@ pub const Inst = struct {
                 .store_to_block_ptr = .bin,
                 .store_to_inferred_ptr = .bin,
                 .str = .str,
-                .sub = .pl_node,
-                .subwrap = .pl_node,
                 .negate = .un_node,
                 .negate_wrap = .un_node,
                 .typeof = .un_node,
@@ -1441,6 +1457,7 @@ pub const Inst = struct {
 
                 .shl = .pl_node,
                 .shl_exact = .pl_node,
+                .shl_sat = .pl_node,
                 .shr = .pl_node,
                 .shr_exact = .pl_node,
 
@@ -1478,6 +1495,9 @@ pub const Inst = struct {
                 .@"await" = .un_node,
                 .await_nosuspend = .un_node,
 
+                .closure_capture = .un_tok,
+                .closure_get = .inst_node,
+
                 .extended = .extended,
             });
         };
@@ -1510,6 +1530,10 @@ pub const Inst = struct {
         /// `operand` is payload index to `UnionDecl`.
         /// `small` is `UnionDecl.Small`.
         union_decl,
+        /// An opaque type definition. Contains references to decls and captures.
+        /// `operand` is payload index to `OpaqueDecl`.
+        /// `small` is `OpaqueDecl.Small`.
+        opaque_decl,
         /// Obtains a pointer to the return value.
         /// `operand` is `src_node: i32`.
         ret_ptr,
@@ -1590,22 +1614,6 @@ pub const Inst = struct {
         wasm_memory_size,
         /// `operand` is payload index to `BinNode`.
         wasm_memory_grow,
-        /// Implements the `@addWithSaturation` builtin.
-        /// `operand` is payload index to `SaturatingArithmetic`.
-        /// `small` is unused.
-        add_with_saturation,
-        /// Implements the `@subWithSaturation` builtin.
-        /// `operand` is payload index to `SaturatingArithmetic`.
-        /// `small` is unused.
-        sub_with_saturation,
-        /// Implements the `@mulWithSaturation` builtin.
-        /// `operand` is payload index to `SaturatingArithmetic`.
-        /// `small` is unused.
-        mul_with_saturation,
-        /// Implements the `@shlWithSaturation` builtin.
-        /// `operand` is payload index to `SaturatingArithmetic`.
-        /// `small` is unused.
-        shl_with_saturation,
 
         pub const InstData = struct {
             opcode: Extended,
@@ -2164,10 +2172,6 @@ pub const Inst = struct {
             /// Points to a `Block`.
             payload_index: u32,
         },
-        param_type: struct {
-            callee: Ref,
-            param_index: u32,
-        },
         @"unreachable": struct {
             /// Offset from Decl AST node index.
             /// `Tag` determines which kind of AST node this points to.
@@ -2193,6 +2197,18 @@ pub const Inst = struct {
         dbg_stmt: struct {
             line: u32,
             column: u32,
+        },
+        /// Used for unary operators which reference an inst,
+        /// with an AST node source location.
+        inst_node: struct {
+            /// Offset from Decl AST node index.
+            src_node: i32,
+            /// The meaning of this operand depends on the corresponding `Tag`.
+            inst: Index,
+
+            pub fn src(self: @This()) LazySrcLoc {
+                return .{ .node_offset = self.src_node };
+            }
         },
 
         // Make sure we don't accidentally add a field to make this union
@@ -2226,11 +2242,11 @@ pub const Inst = struct {
             ptr_type,
             int_type,
             bool_br,
-            param_type,
             @"unreachable",
             @"break",
             switch_capture,
             dbg_stmt,
+            inst_node,
         };
     };
 
@@ -2353,8 +2369,27 @@ pub const Inst = struct {
     /// Stored inside extra, with trailing arguments according to `args_len`.
     /// Each argument is a `Ref`.
     pub const Call = struct {
+        // Note: Flags *must* come first so that unusedResultExpr
+        // can find it when it goes to modify them.
+        flags: Flags,
         callee: Ref,
-        args_len: u32,
+
+        pub const Flags = packed struct {
+            /// std.builtin.CallOptions.Modifier in packed form
+            pub const PackedModifier = u3;
+            pub const PackedArgsLen = u28;
+
+            packed_modifier: PackedModifier,
+            ensure_result_used: bool = false,
+            args_len: PackedArgsLen,
+
+            comptime {
+                if (@sizeOf(Flags) != 4 or @bitSizeOf(Flags) != 32)
+                    @compileError("Layout of Call.Flags needs to be updated!");
+                if (@bitSizeOf(std.builtin.CallOptions.Modifier) != @bitSizeOf(PackedModifier))
+                    @compileError("Call.Flags.PackedModifier needs to be updated!");
+            }
+        };
     };
 
     pub const BuiltinCall = struct {
@@ -2662,13 +2697,15 @@ pub const Inst = struct {
     };
 
     /// Trailing:
-    /// 0. decl_bits: u32 // for every 8 decls
+    /// 0. src_node: i32, // if has_src_node
+    /// 1. decls_len: u32, // if has_decls_len
+    /// 2. decl_bits: u32 // for every 8 decls
     ///    - sets of 4 bits:
     ///      0b000X: whether corresponding decl is pub
     ///      0b00X0: whether corresponding decl is exported
     ///      0b0X00: whether corresponding decl has an align expression
     ///      0bX000: whether corresponding decl has a linksection or an address space expression
-    /// 1. decl: { // for every decls_len
+    /// 3. decl: { // for every decls_len
     ///        src_hash: [4]u32, // hash of source bytes
     ///        line: u32, // line number of decl, relative to parent
     ///        name: u32, // null terminated string index
@@ -2685,7 +2722,12 @@ pub const Inst = struct {
     ///        }
     ///    }
     pub const OpaqueDecl = struct {
-        decls_len: u32,
+        pub const Small = packed struct {
+            has_src_node: bool,
+            has_decls_len: bool,
+            name_strategy: NameStrategy,
+            _: u12 = undefined,
+        };
     };
 
     /// Trailing: field_name: u32 // for every field: null terminated string index
@@ -2749,12 +2791,6 @@ pub const Inst = struct {
         lhs: Ref,
         rhs: Ref,
         ptr: Ref,
-    };
-
-    pub const SaturatingArithmetic = struct {
-        node: i32,
-        lhs: Ref,
-        rhs: Ref,
     };
 
     pub const Cmpxchg = struct {
@@ -2842,6 +2878,14 @@ pub const Inst = struct {
     /// 1. align_inst: Ref, // if small 0b00X0 is set
     pub const AllocExtended = struct {
         src_node: i32,
+
+        pub const Small = packed struct {
+            has_type: bool,
+            has_align: bool,
+            is_const: bool,
+            is_comptime: bool,
+            _: u12 = undefined,
+        };
     };
 
     pub const Export = struct {
@@ -2937,15 +2981,6 @@ pub fn declIterator(zir: Zir, decl_inst: u32) DeclIterator {
     const tags = zir.instructions.items(.tag);
     const datas = zir.instructions.items(.data);
     switch (tags[decl_inst]) {
-        .opaque_decl,
-        .opaque_decl_anon,
-        .opaque_decl_func,
-        => {
-            const inst_data = datas[decl_inst].pl_node;
-            const extra = zir.extraData(Inst.OpaqueDecl, inst_data.payload_index);
-            return declIteratorInner(zir, extra.end, extra.data.decls_len);
-        },
-
         // Functions are allowed and yield no iterations.
         // There is one case matching this in the extended instruction set below.
         .func,
@@ -3000,6 +3035,18 @@ pub fn declIterator(zir: Zir, decl_inst: u32) DeclIterator {
 
                     return declIteratorInner(zir, extra_index, decls_len);
                 },
+                .opaque_decl => {
+                    const small = @bitCast(Inst.OpaqueDecl.Small, extended.small);
+                    var extra_index: usize = extended.operand;
+                    extra_index += @boolToInt(small.has_src_node);
+                    const decls_len = if (small.has_decls_len) decls_len: {
+                        const decls_len = zir.extra[extra_index];
+                        extra_index += 1;
+                        break :decls_len decls_len;
+                    } else 0;
+
+                    return declIteratorInner(zir, extra_index, decls_len);
+                },
                 else => unreachable,
             }
         },
@@ -3037,13 +3084,6 @@ fn findDeclsInner(
     const datas = zir.instructions.items(.data);
 
     switch (tags[inst]) {
-        // Decl instructions are interesting but have no body.
-        // TODO yes they do have a body actually. recurse over them just like block instructions.
-        .opaque_decl,
-        .opaque_decl_anon,
-        .opaque_decl_func,
-        => return list.append(inst),
-
         // Functions instructions are interesting and have a body.
         .func,
         .func_inferred,
@@ -3071,9 +3111,12 @@ fn findDeclsInner(
                     return zir.findDeclsBody(list, body);
                 },
 
+                // Decl instructions are interesting but have no body.
+                // TODO yes they do have a body actually. recurse over them just like block instructions.
                 .struct_decl,
                 .union_decl,
                 .enum_decl,
+                .opaque_decl,
                 => return list.append(inst),
 
                 else => return,

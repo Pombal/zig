@@ -12,7 +12,7 @@ const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
 
-const aarch64 = @import("../codegen/aarch64.zig");
+const aarch64 = @import("../arch/aarch64/bits.zig");
 const bind = @import("MachO/bind.zig");
 const codegen = @import("../codegen.zig");
 const commands = @import("MachO/commands.zig");
@@ -200,7 +200,7 @@ atoms: std.AutoHashMapUnmanaged(MatchingSection, *Atom) = .{},
 
 /// List of atoms that are owned directly by the linker.
 /// Currently these are only atoms that are the result of linking
-/// object files. Atoms which take part in incremental linking are 
+/// object files. Atoms which take part in incremental linking are
 /// at present owned by Module.Decl.
 /// TODO consolidate this.
 managed_atoms: std.ArrayListUnmanaged(*Atom) = .{},
@@ -213,7 +213,7 @@ decls: std.AutoArrayHashMapUnmanaged(*Module.Decl, void) = .{},
 
 /// Currently active Module.Decl.
 /// TODO this might not be necessary if we figure out how to pass Module.Decl instance
-/// to codegen.genSetReg() or alterntively move PIE displacement for MCValue{ .memory = x }
+/// to codegen.genSetReg() or alternatively move PIE displacement for MCValue{ .memory = x }
 /// somewhere else in the codegen.
 active_decl: ?*Module.Decl = null,
 
@@ -290,7 +290,7 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
         const self = try createEmpty(allocator, options);
         errdefer self.base.destroy();
 
-        self.llvm_object = try LlvmObject.create(allocator, options);
+        self.llvm_object = try LlvmObject.create(allocator, sub_path, options);
         return self;
     }
 
@@ -512,7 +512,7 @@ pub fn flush(self: *MachO, comp: *Compilation) !void {
     const full_out_path = try directory.join(arena, &[_][]const u8{self.base.options.emit.?.sub_path});
 
     if (self.base.options.output_mode == .Obj) {
-        // LLD's MachO driver does not support the equvialent of `-r` so we do a simple file copy
+        // LLD's MachO driver does not support the equivalent of `-r` so we do a simple file copy
         // here. TODO: think carefully about how we can avoid this redundant operation when doing
         // build-obj. See also the corresponding TODO in linkAsArchive.
         const the_object_path = blk: {
@@ -2245,7 +2245,7 @@ pub fn createStubAtom(self: *MachO, laptr_sym_index: u32) !*Atom {
 fn createTentativeDefAtoms(self: *MachO) !void {
     if (self.tentatives.count() == 0) return;
     // Convert any tentative definition into a regular symbol and allocate
-    // text blocks for each tentative defintion.
+    // text blocks for each tentative definition.
     while (self.tentatives.popOrNull()) |entry| {
         const match = MatchingSection{
             .seg = self.data_segment_cmd_index.?,
@@ -3501,6 +3501,9 @@ pub fn deleteExport(self: *MachO, exp: Export) void {
 }
 
 pub fn freeDecl(self: *MachO, decl: *Module.Decl) void {
+    if (build_options.have_llvm) {
+        if (self.llvm_object) |llvm_object| return llvm_object.freeDecl(decl);
+    }
     log.debug("freeDecl {*}", .{decl});
     _ = self.decls.swapRemove(decl);
     // Appending to free lists is allowed to fail because the free lists are heuristics based anyway.
@@ -4606,7 +4609,7 @@ fn populateLazyBindOffsetsInStubHelper(self: *MachO, buffer: []const u8) !void {
 
     // Because we insert lazy binding opcodes in reverse order (from last to the first atom),
     // we need reverse the order of atom traversal here as well.
-    // TODO figure out a less error prone mechanims for this!
+    // TODO figure out a less error prone mechanisms for this!
     var atom = last_atom;
     while (atom.prev) |prev| {
         atom = prev;

@@ -104,12 +104,16 @@ const Writer = struct {
 
             .add,
             .addwrap,
+            .add_sat,
             .sub,
             .subwrap,
+            .sub_sat,
             .mul,
             .mulwrap,
+            .mul_sat,
             .div,
             .rem,
+            .mod,
             .ptr_add,
             .ptr_sub,
             .bit_and,
@@ -129,7 +133,10 @@ const Writer = struct {
             .ptr_elem_val,
             .ptr_ptr_elem_val,
             .shl,
+            .shl_exact,
+            .shl_sat,
             .shr,
+            .set_union_tag,
             => try w.writeBinOp(s, inst),
 
             .is_null,
@@ -178,6 +185,9 @@ const Writer = struct {
             .array_to_slice,
             .int_to_float,
             .float_to_int,
+            .get_union_tag,
+            .clz,
+            .ctz,
             => try w.writeTyOp(s, inst),
 
             .block,
@@ -202,6 +212,8 @@ const Writer = struct {
             .atomic_store_release => try w.writeAtomicStore(s, inst, .Release),
             .atomic_store_seq_cst => try w.writeAtomicStore(s, inst, .SeqCst),
             .atomic_rmw => try w.writeAtomicRmw(s, inst),
+            .memcpy => try w.writeMemcpy(s, inst),
+            .memset => try w.writeMemset(s, inst),
         }
     }
 
@@ -320,6 +332,28 @@ const Writer = struct {
         try s.writeAll(", ");
         try w.writeOperand(s, inst, 1, extra.operand);
         try s.print(", {s}, {s}", .{ @tagName(extra.op()), @tagName(extra.ordering()) });
+    }
+
+    fn writeMemset(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {
+        const pl_op = w.air.instructions.items(.data)[inst].pl_op;
+        const extra = w.air.extraData(Air.Bin, pl_op.payload).data;
+
+        try w.writeOperand(s, inst, 0, pl_op.operand);
+        try s.writeAll(", ");
+        try w.writeOperand(s, inst, 1, extra.lhs);
+        try s.writeAll(", ");
+        try w.writeOperand(s, inst, 2, extra.rhs);
+    }
+
+    fn writeMemcpy(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {
+        const pl_op = w.air.instructions.items(.data)[inst].pl_op;
+        const extra = w.air.extraData(Air.Bin, pl_op.payload).data;
+
+        try w.writeOperand(s, inst, 0, pl_op.operand);
+        try s.writeAll(", ");
+        try w.writeOperand(s, inst, 1, extra.lhs);
+        try s.writeAll(", ");
+        try w.writeOperand(s, inst, 2, extra.rhs);
     }
 
     fn writeConstant(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {

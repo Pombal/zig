@@ -1244,8 +1244,9 @@ fn divide(a: i32, b: i32) i32 {
       </p>
       <p>
       Operators such as {#syntax#}+{#endsyntax#} and {#syntax#}-{#endsyntax#} cause undefined behavior on
-              integer overflow. Also available are operations such as {#syntax#}+%{#endsyntax#} and
-                  {#syntax#}-%{#endsyntax#} which are defined to have wrapping arithmetic on all targets.
+      integer overflow. Alternative operators are provided for wrapping and saturating arithmetic on all targets.  
+      {#syntax#}+%{#endsyntax#} and {#syntax#}-%{#endsyntax#} perform wrapping arithmetic
+      while {#syntax#}+|{#endsyntax#} and {#syntax#}-|{#endsyntax#} perform saturating arithmetic.
       </p>
       <p>
       Zig supports arbitrary bit-width integers, referenced by using
@@ -1396,6 +1397,23 @@ a +%= b{#endsyntax#}</pre></th>
           </td>
         </tr>
         <tr>
+          <th scope="row"><pre>{#syntax#}a +| b
+a +|= b{#endsyntax#}</pre></th>
+          <td>
+            <ul>
+              <li>{#link|Integers#}</li>
+            </ul>
+          </td>
+          <td>Saturating Addition.
+            <ul>
+              <li>Invokes {#link|Peer Type Resolution#} for the operands.</li>
+            </ul>
+          </td>
+          <td>
+            <pre>{#syntax#}@as(u32, std.math.maxInt(u32)) +| 1 == @as(u32, std.math.maxInt(u32)){#endsyntax#}</pre>
+          </td>
+        </tr>
+        <tr>
           <th scope="row"><pre>{#syntax#}a - b
 a -= b{#endsyntax#}</pre></th>
           <td>
@@ -1432,6 +1450,23 @@ a -%= b{#endsyntax#}</pre></th>
           </td>
           <td>
             <pre>{#syntax#}@as(u32, 0) -% 1 == std.math.maxInt(u32){#endsyntax#}</pre>
+          </td>
+        </tr>
+        <tr>
+          <th scope="row"><pre>{#syntax#}a -| b
+a -|= b{#endsyntax#}</pre></th>
+          <td>
+            <ul>
+              <li>{#link|Integers#}</li>
+            </ul>
+          </td>
+          <td>Saturating Subtraction.
+            <ul>
+              <li>Invokes {#link|Peer Type Resolution#} for the operands.</li>
+            </ul>
+          </td>
+          <td>
+            <pre>{#syntax#}@as(u32, 0) -| 1 == 0{#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -1509,6 +1544,23 @@ a *%= b{#endsyntax#}</pre></th>
           </td>
         </tr>
         <tr>
+          <th scope="row"><pre>{#syntax#}a *| b
+a *|= b{#endsyntax#}</pre></th>
+          <td>
+            <ul>
+              <li>{#link|Integers#}</li>
+            </ul>
+          </td>
+          <td>Saturating Multiplication.
+            <ul>
+              <li>Invokes {#link|Peer Type Resolution#} for the operands.</li>
+            </ul>
+          </td>
+          <td>
+            <pre>{#syntax#}@as(u8, 200) *| 2 == 255{#endsyntax#}</pre>
+          </td>
+        </tr>
+        <tr>
           <th scope="row"><pre>{#syntax#}a / b
 a /= b{#endsyntax#}</pre></th>
           <td>
@@ -1575,6 +1627,24 @@ a <<= b{#endsyntax#}</pre></th>
           </td>
           <td>
             <pre>{#syntax#}1 << 8 == 256{#endsyntax#}</pre>
+          </td>
+        </tr>
+        <tr>
+          <th scope="row"><pre>{#syntax#}a <<| b
+a <<|= b{#endsyntax#}</pre></th>
+          <td>
+            <ul>
+              <li>{#link|Integers#}</li>
+            </ul>
+          </td>
+          <td>Saturating Bit Shift Left.
+            <ul>
+              <li>See also {#link|@shlExact#}.</li>
+              <li>See also {#link|@shlWithOverflow#}.</li>
+            </ul>
+          </td>
+          <td>
+            <pre>{#syntax#}@as(u8, 1) <<| 8 == 255{#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -1968,14 +2038,14 @@ const B = error{Two};
 a!b
 x{}
 !x -x -%x ~x &x ?x
-* / % ** *% ||
-+ - ++ +% -%
-<< >>
+* / % ** *% *| ||
++ - ++ +% -% +| -|
+<< >> <<|
 & ^ | orelse catch
 == != < > <= >=
 and
 or
-= *= /= %= += -= <<= >>= &= ^= |={#endsyntax#}</pre>
+= *= *%= *|= /= %= += +%= +|= -= -%= -|= <<= <<|= >>= &= ^= |={#endsyntax#}</pre>
       {#header_close#}
       {#header_close#}
       {#header_open|Arrays#}
@@ -2125,7 +2195,7 @@ fn dump(args: anytype) !void {
 
       {#header_open|Multidimensional Arrays#}
       <p>
-      Mutlidimensional arrays can be created by nesting arrays:
+      Multidimensional arrays can be created by nesting arrays:
       </p>
       {#code_begin|test|multidimensional#}
 const std = @import("std");
@@ -2898,7 +2968,7 @@ fn bar(x: *const u3) u3 {
 }
       {#code_end#}
       <p>
-      In this case, the function {#syntax#}bar{#endsyntax#} cannot be called becuse the pointer
+      In this case, the function {#syntax#}bar{#endsyntax#} cannot be called because the pointer
       to the non-ABI-aligned field mentions the bit offset, but the function expects an ABI-aligned pointer.
       </p>
       <p>
@@ -5549,7 +5619,7 @@ test "coerce to optionals" {
 }
       {#code_end#}
       <p>It works nested inside the {#link|Error Union Type#}, too:</p>
-      {#code_begin|test|test_corerce_optional_wrapped_error_union#}
+      {#code_begin|test|test_coerce_optional_wrapped_error_union#}
 const std = @import("std");
 const expect = std.testing.expect;
 
@@ -7162,16 +7232,6 @@ fn readFile(allocator: *Allocator, filename: []const u8) ![]u8 {
                   If no overflow or underflow occurs, returns {#syntax#}false{#endsyntax#}.
       </p>
       {#header_close#}
-      {#header_open|@addWithSaturation#}
-      <pre>{#syntax#}@addWithSaturation(a: T, b: T) T{#endsyntax#}</pre>
-      <p>
-      Returns {#syntax#}a + b{#endsyntax#}. The result will be clamped between the type maximum and minimum.
-      </p>
-      <p>
-      Once <a href="https://github.com/ziglang/zig/issues/1284">Saturating arithmetic</a>.
-      is completed, the syntax {#syntax#}a +| b{#endsyntax#} will be equivalent to calling {#syntax#}@addWithSaturation(a, b){#endsyntax#}.
-      </p>
-      {#header_close#}
       {#header_open|@alignCast#}
       <pre>{#syntax#}@alignCast(comptime alignment: u29, ptr: anytype) anytype{#endsyntax#}</pre>
       <p>
@@ -7669,7 +7729,7 @@ test "main" {
 }
       {#code_end#}
       <p>
-      will ouput:
+      will output:
       </p>
       <p>
       If all {#syntax#}@compileLog{#endsyntax#} calls are removed or
@@ -7786,7 +7846,7 @@ test "main" {
       the tag value is used as the enumeration value.
       </p>
       <p>
-      If there is only one possible enum value, the resut is a {#syntax#}comptime_int{#endsyntax#}
+      If there is only one possible enum value, the result is a {#syntax#}comptime_int{#endsyntax#}
       known at {#link|comptime#}.
       </p>
       {#see_also|@intToEnum#}
@@ -8293,22 +8353,6 @@ test "@wasmMemoryGrow" {
       </p>
       {#header_close#}
       
-      {#header_open|@mulWithSaturation#}
-      <pre>{#syntax#}@mulWithSaturation(a: T, b: T) T{#endsyntax#}</pre>
-      <p>
-      Returns {#syntax#}a * b{#endsyntax#}. The result will be clamped between the type maximum and minimum.
-      </p>
-      <p>
-      Once <a href="https://github.com/ziglang/zig/issues/1284">Saturating arithmetic</a>.
-      is completed, the syntax {#syntax#}a *| b{#endsyntax#} will be equivalent to calling {#syntax#}@mulWithSaturation(a, b){#endsyntax#}.
-      </p>
-      <p>
-      NOTE: Currently there is a bug in the llvm.smul.fix.sat intrinsic which affects {#syntax#}@mulWithSaturation{#endsyntax#} of signed integers.  
-      This may result in an incorrect sign bit when there is overflow.  This will be fixed in zig's 0.9.0 release.  
-      Check <a href="https://github.com/ziglang/zig/issues/9643">this issue</a> for more information.
-      </p>
-      {#header_close#}
-
       {#header_open|@panic#}
       <pre>{#syntax#}@panic(message: []const u8) noreturn{#endsyntax#}</pre>
       <p>
@@ -8526,14 +8570,16 @@ test "@setRuntimeSafety" {
       {#header_open|@shlExact#}
       <pre>{#syntax#}@shlExact(value: T, shift_amt: Log2T) T{#endsyntax#}</pre>
       <p>
-      Performs the left shift operation ({#syntax#}<<{#endsyntax#}). Caller guarantees
-      that the shift will not shift any 1 bits out.
+      Performs the left shift operation ({#syntax#}<<{#endsyntax#}).
+      For unsigned integers, the result is {#link|undefined#} if any 1 bits
+      are shifted out. For signed integers, the result is {#link|undefined#} if
+      any bits that disagree with the resultant sign bit are shifted out.
       </p>
       <p>
       The type of {#syntax#}shift_amt{#endsyntax#} is an unsigned integer with {#syntax#}log2(T.bit_count){#endsyntax#} bits.
               This is because {#syntax#}shift_amt >= T.bit_count{#endsyntax#} is undefined behavior.
       </p>
-      {#see_also|@shrExact|@shlWithOverflow|@shlWithSaturation#}
+      {#see_also|@shrExact|@shlWithOverflow#}
       {#header_close#}
 
       {#header_open|@shlWithOverflow#}
@@ -8547,24 +8593,9 @@ test "@setRuntimeSafety" {
       The type of {#syntax#}shift_amt{#endsyntax#} is an unsigned integer with {#syntax#}log2(T.bit_count){#endsyntax#} bits.
               This is because {#syntax#}shift_amt >= T.bit_count{#endsyntax#} is undefined behavior.
       </p>
-      {#see_also|@shlExact|@shrExact|@shlWithSaturation#}
+      {#see_also|@shlExact|@shrExact#}
       {#header_close#}
       
-      {#header_open|@shlWithSaturation#}
-      <pre>{#syntax#}@shlWithSaturation(a: T, shift_amt: T) T{#endsyntax#}</pre>
-      <p>
-      Returns {#syntax#}a << b{#endsyntax#}. The result will be clamped between type minimum and maximum.  
-      </p>
-      <p>
-      Once <a href="https://github.com/ziglang/zig/issues/1284">Saturating arithmetic</a>.
-      is completed, the syntax {#syntax#}a <<| b{#endsyntax#} will be equivalent to calling {#syntax#}@shlWithSaturation(a, b){#endsyntax#}.
-      </p>
-      <p>
-      Unlike other @shl builtins, shift_amt doesn't need to be a Log2T as saturated overshifting is well defined.  
-      </p>
-      {#see_also|@shlExact|@shrExact|@shlWithOverflow#}
-      {#header_close#}
-
       {#header_open|@shrExact#}
       <pre>{#syntax#}@shrExact(value: T, shift_amt: Log2T) T{#endsyntax#}</pre>
       <p>
@@ -8575,7 +8606,7 @@ test "@setRuntimeSafety" {
       The type of {#syntax#}shift_amt{#endsyntax#} is an unsigned integer with {#syntax#}log2(T.bit_count){#endsyntax#} bits.
               This is because {#syntax#}shift_amt >= T.bit_count{#endsyntax#} is undefined behavior.
       </p>
-      {#see_also|@shlExact|@shlWithOverflow|@shlWithSaturation#}
+      {#see_also|@shlExact|@shlWithOverflow#}
       {#header_close#}
 
       {#header_open|@shuffle#}
@@ -8736,7 +8767,7 @@ fn doTheTest() !void {
       {#header_open|@sin#}
       <pre>{#syntax#}@sin(value: anytype) @TypeOf(value){#endsyntax#}</pre>
       <p>
-      Sine trigometric function on a floating point number. Uses a dedicated hardware instruction
+      Sine trigonometric function on a floating point number. Uses a dedicated hardware instruction
       when available.
       </p>
       <p>
@@ -8747,7 +8778,7 @@ fn doTheTest() !void {
       {#header_open|@cos#}
       <pre>{#syntax#}@cos(value: anytype) @TypeOf(value){#endsyntax#}</pre>
       <p>
-      Cosine trigometric function on a floating point number. Uses a dedicated hardware instruction
+      Cosine trigonometric function on a floating point number. Uses a dedicated hardware instruction
       when available.
       </p>
       <p>
@@ -8835,7 +8866,7 @@ fn doTheTest() !void {
       {#header_open|@ceil#}
       <pre>{#syntax#}@ceil(value: anytype) @TypeOf(value){#endsyntax#}</pre>
       <p>
-      Returns the largest integral value not less than the given floating point number.
+      Returns the smallest integral value not less than the given floating point number.
       Uses a dedicated hardware instruction when available.
       </p>
       <p>
@@ -8875,17 +8906,6 @@ fn doTheTest() !void {
       </p>
       {#header_close#}
       
-      {#header_open|@subWithSaturation#}
-      <pre>{#syntax#}@subWithSaturation(a: T, b: T) T{#endsyntax#}</pre>
-      <p>
-      Returns {#syntax#}a - b{#endsyntax#}. The result will be clamped between the type maximum and minimum.  
-      </p>
-      <p>
-      Once <a href="https://github.com/ziglang/zig/issues/1284">Saturating arithmetic</a>.
-      is completed, the syntax {#syntax#}a -| b{#endsyntax#} will be equivalent to calling {#syntax#}@subWithSaturation(a, b){#endsyntax#}.
-      </p>
-      {#header_close#}
-
       {#header_open|@tagName#}
       <pre>{#syntax#}@tagName(value: anytype) [:0]const u8{#endsyntax#}</pre>
       <p>
@@ -10325,7 +10345,7 @@ pub fn main() void {
       <p>
         Some C constructs cannot be translated to Zig - for example, <em>goto</em>,
         structs with bitfields, and token-pasting macros. Zig employs <em>demotion</em> to allow translation
-        to continue in the face of non-translateable entities.
+        to continue in the face of non-translatable entities.
       </p>
       <p>
         Demotion comes in three varieties - {#link|opaque#}, <em>extern</em>, and
@@ -10335,13 +10355,13 @@ pub fn main() void {
         Functions that contain opaque types or code constructs that cannot be translated will be demoted
         to {#syntax#}extern{#endsyntax#} declarations.
 
-        Thus, non-translateable types can still be used as pointers, and non-translateable functions
+        Thus, non-translatable types can still be used as pointers, and non-translatable functions
         can be called so long as the linker is aware of the compiled function.
       </p>
       <p>
         {#syntax#}@compileError{#endsyntax#} is used when top-level definitions (global variables,
         function prototypes, macros) cannot be translated or demoted. Since Zig uses lazy analysis for
-        top-level declarations, untranslateable entities will not cause a compile error in your code unless
+        top-level declarations, untranslatable entities will not cause a compile error in your code unless
         you actually use them.
       </p>
       {#see_also|opaque|extern|@compileError#}
@@ -10353,7 +10373,7 @@ pub fn main() void {
         can be translated to Zig. Macros that cannot be translated will be be demoted to
         {#syntax#}@compileError{#endsyntax#}. Note that C code which <em>uses</em> macros will be
         translated without any additional issues (since Zig operates on the pre-processed source
-        with macros expanded). It is merely the macros themselves which may not be translateable to
+        with macros expanded). It is merely the macros themselves which may not be translatable to
         Zig.
       </p>
       <p>Consider the following example:</p>
@@ -10373,7 +10393,7 @@ pub export fn foo() c_int {
 }
 pub const MAKELOCAL = @compileError("unable to translate C expr: unexpected token .Equal"); // macro.c:1:9
       {#code_end#}
-      <p>Note that {#syntax#}foo{#endsyntax#} was translated correctly despite using a non-translateable
+      <p>Note that {#syntax#}foo{#endsyntax#} was translated correctly despite using a non-translatable
         macro. {#syntax#}MAKELOCAL{#endsyntax#} was demoted to {#syntax#}@compileError{#endsyntax#} since
         it cannot be expressed as a Zig function; this simply means that you cannot directly use
         {#syntax#}MAKELOCAL{#endsyntax#} from Zig.
@@ -10543,8 +10563,8 @@ const typedArray = new Uint8Array(source);
 
 WebAssembly.instantiate(typedArray, {
   env: {
-    print: (result) =&gt; { console.log(`The result is ${result}`); }
-  }}).then(result =&gt; {
+    print: (result) => { console.log(`The result is ${result}`); }
+  }}).then(result => {
   const add = result.instance.exports.add;
   add(1, 2);
 });{#end_syntax_block#}
@@ -11839,6 +11859,7 @@ AssignOp
      / PLUSEQUAL
      / MINUSEQUAL
      / LARROW2EQUAL
+     / LARROW2PIPEEQUAL
      / RARROW2EQUAL
      / AMPERSANDEQUAL
      / CARETEQUAL
@@ -11873,6 +11894,8 @@ AdditionOp
      / PLUS2
      / PLUSPERCENT
      / MINUSPERCENT
+     / PLUSPIPE
+     / MINUSPIPE
 
 MultiplyOp
     &lt;- PIPE2
@@ -11881,6 +11904,7 @@ MultiplyOp
      / PERCENT
      / ASTERISK2
      / ASTERISKPERCENT
+     / ASTERISKPIPE
 
 PrefixOp
     &lt;- EXCLAMATIONMARK
@@ -12044,6 +12068,8 @@ ASTERISK2            &lt;- '**'               skip
 ASTERISKEQUAL        &lt;- '*='               skip
 ASTERISKPERCENT      &lt;- '*%'     ![=]      skip
 ASTERISKPERCENTEQUAL &lt;- '*%='              skip
+ASTERISKPIPE         &lt;- '*|'     ![=]      skip
+ASTERISKPIPEEQUAL    &lt;- '*|='              skip
 CARET                &lt;- '^'      ![=]      skip
 CARETEQUAL           &lt;- '^='               skip
 COLON                &lt;- ':'                skip
@@ -12060,6 +12086,8 @@ EXCLAMATIONMARK      &lt;- '!'      ![=]      skip
 EXCLAMATIONMARKEQUAL &lt;- '!='               skip
 LARROW               &lt;- '&lt;'      ![&lt;=]     skip
 LARROW2              &lt;- '&lt;&lt;'     ![=]      skip
+LARROW2PIPE          &lt;- '&lt;&lt;|'    ![=]      skip
+LARROW2PIPEEQUAL     &lt;- '&lt;&lt;|='   ![=]      skip
 LARROW2EQUAL         &lt;- '&lt;&lt;='              skip
 LARROWEQUAL          &lt;- '&lt;='               skip
 LBRACE               &lt;- '{'                skip
@@ -12069,6 +12097,8 @@ MINUS                &lt;- '-'      ![%=&gt;]    skip
 MINUSEQUAL           &lt;- '-='               skip
 MINUSPERCENT         &lt;- '-%'     ![=]      skip
 MINUSPERCENTEQUAL    &lt;- '-%='              skip
+MINUSPIPE            &lt;- '-|'     ![=]      skip
+MINUSPIPEEQUAL       &lt;- '-|='              skip
 MINUSRARROW          &lt;- '-&gt;'               skip
 PERCENT              &lt;- '%'      ![=]      skip
 PERCENTEQUAL         &lt;- '%='               skip
@@ -12080,6 +12110,8 @@ PLUS2                &lt;- '++'               skip
 PLUSEQUAL            &lt;- '+='               skip
 PLUSPERCENT          &lt;- '+%'     ![=]      skip
 PLUSPERCENTEQUAL     &lt;- '+%='              skip
+PLUSPIPE             &lt;- '+|'     ![=]      skip
+PLUSPIPEEQUAL        &lt;- '+|='              skip
 LETTERC              &lt;- 'c'                skip
 QUESTIONMARK         &lt;- '?'                skip
 RARROW               &lt;- '&gt;'      ![&gt;=]     skip

@@ -6374,7 +6374,7 @@ static Stage1AirInst *ir_analyze_enum_to_union(IrAnalyze *ira, Scope *scope, Ast
 
     if (target->value->type->data.enumeration.non_exhaustive) {
         ir_add_error_node(ira, source_node,
-                buf_sprintf("runtime cast to union '%s' from non-exhustive enum",
+                buf_sprintf("runtime cast to union '%s' from non-exhaustive enum",
                     buf_ptr(&wanted_type->name)));
         return ira->codegen->invalid_inst_gen;
     }
@@ -9820,28 +9820,28 @@ static ErrorMsg *ir_eval_math_op_scalar(IrAnalyze *ira, Scope *scope, AstNode *s
                 float_min(out_val, op1_val, op2_val);
             }
             break;
-        case IrBinOpSatAdd:
+        case IrBinOpAddSat:
             if (is_int) {
                 bigint_add_sat(&out_val->data.x_bigint, &op1_val->data.x_bigint, &op2_val->data.x_bigint, type_entry->data.integral.bit_count, type_entry->data.integral.is_signed);
             } else {
                 zig_unreachable();
             }
             break;
-        case IrBinOpSatSub:
+        case IrBinOpSubSat:
             if (is_int) {
                 bigint_sub_sat(&out_val->data.x_bigint, &op1_val->data.x_bigint, &op2_val->data.x_bigint, type_entry->data.integral.bit_count, type_entry->data.integral.is_signed);
             } else {
                 zig_unreachable();
             }
             break;
-        case IrBinOpSatMul:
+        case IrBinOpMultSat:
             if (is_int) {
                 bigint_mul_sat(&out_val->data.x_bigint, &op1_val->data.x_bigint, &op2_val->data.x_bigint, type_entry->data.integral.bit_count, type_entry->data.integral.is_signed);
             } else {
                 zig_unreachable();
             }
             break;
-        case IrBinOpSatShl:
+        case IrBinOpShlSat:
             if (is_int) {
                 bigint_shl_sat(&out_val->data.x_bigint, &op1_val->data.x_bigint, &op2_val->data.x_bigint, type_entry->data.integral.bit_count, type_entry->data.integral.is_signed);
             } else {
@@ -10069,10 +10069,10 @@ static bool ok_float_op(IrBinOp op) {
         case IrBinOpBitShiftRightExact:
         case IrBinOpAddWrap:
         case IrBinOpSubWrap:
-        case IrBinOpSatAdd:
-        case IrBinOpSatSub:
-        case IrBinOpSatMul:
-        case IrBinOpSatShl:
+        case IrBinOpAddSat:
+        case IrBinOpSubSat:
+        case IrBinOpMultSat:
+        case IrBinOpShlSat:
         case IrBinOpMultWrap:
         case IrBinOpArrayCat:
         case IrBinOpArrayMult:
@@ -11046,10 +11046,10 @@ static Stage1AirInst *ir_analyze_instruction_bin_op(IrAnalyze *ira, Stage1ZirIns
         case IrBinOpRemMod:
         case IrBinOpMaximum:
         case IrBinOpMinimum:
-        case IrBinOpSatAdd:
-        case IrBinOpSatSub:
-        case IrBinOpSatMul:
-        case IrBinOpSatShl:
+        case IrBinOpAddSat:
+        case IrBinOpSubSat:
+        case IrBinOpMultSat:
+        case IrBinOpShlSat:
             return ir_analyze_bin_op_math(ira, bin_op_instruction);
         case IrBinOpArrayCat:
             return ir_analyze_array_cat(ira, bin_op_instruction);
@@ -15189,7 +15189,7 @@ static Stage1AirInst *ir_analyze_container_field_ptr(IrAnalyze *ira, Buf *field_
         return ir_analyze_inferred_field_ptr(ira, field_name, scope, source_node, container_ptr, bare_type);
     }
 
-    // Tracks wether we should return an undefined value of the correct type.
+    // Tracks whether we should return an undefined value of the correct type.
     // We do this if the container pointer is undefined and we are in a TypeOf call.
     bool return_undef = container_ptr->value->special == ConstValSpecialUndef && \
                          get_scope_typeof(scope) != nullptr;
@@ -15248,7 +15248,7 @@ static Stage1AirInst *ir_analyze_container_field_ptr(IrAnalyze *ira, Buf *field_
                 if (type_is_invalid(union_val->type))
                     return ira->codegen->invalid_inst_gen;
 
-                // Reject undefined values unless we're intializing the union:
+                // Reject undefined values unless we're initializing the union:
                 // a undefined union means also the tag is undefined, accessing
                 // its payload slot is UB.
                 const UndefAllowed allow_undef = initializing ? UndefOk : UndefBad;

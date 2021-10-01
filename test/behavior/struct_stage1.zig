@@ -5,6 +5,7 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
 const maxInt = std.math.maxInt;
+
 top_level_field: i32,
 
 test "top level fields" {
@@ -15,41 +16,11 @@ test "top level fields" {
     try expectEqual(@as(i32, 1235), instance.top_level_field);
 }
 
-test "void struct fields" {
-    const foo = VoidStructFieldsFoo{
-        .a = void{},
-        .b = 1,
-        .c = void{},
-    };
-    try expect(foo.b == 1);
-    try expect(@sizeOf(VoidStructFieldsFoo) == 4);
-}
-const VoidStructFieldsFoo = struct {
-    a: void,
-    b: i32,
-    c: void,
-};
-
-test "structs" {
-    var foo: StructFoo = undefined;
-    @memset(@ptrCast([*]u8, &foo), 0, @sizeOf(StructFoo));
-    foo.a += 1;
-    foo.b = foo.a == 1;
-    try testFoo(foo);
-    testMutation(&foo);
-    try expect(foo.c == 100);
-}
 const StructFoo = struct {
     a: i32,
     b: bool,
     c: f32,
 };
-fn testFoo(foo: StructFoo) !void {
-    try expect(foo.b);
-}
-fn testMutation(foo: *StructFoo) void {
-    foo.c = 100;
-}
 
 const Node = struct {
     val: Val,
@@ -59,35 +30,6 @@ const Node = struct {
 const Val = struct {
     x: i32,
 };
-
-test "struct point to self" {
-    var root: Node = undefined;
-    root.val.x = 1;
-
-    var node: Node = undefined;
-    node.next = &root;
-    node.val.x = 2;
-
-    root.next = &node;
-
-    try expect(node.next.next.next.val.x == 1);
-}
-
-test "struct byval assign" {
-    var foo1: StructFoo = undefined;
-    var foo2: StructFoo = undefined;
-
-    foo1.a = 1234;
-    foo2.a = 0;
-    try expect(foo2.a == 0);
-    foo2 = foo1;
-    try expect(foo2.a == 1234);
-}
-
-fn structInitializer() void {
-    const val = Val{ .x = 42 };
-    try expect(val.x == 42);
-}
 
 test "fn call of struct field" {
     const Foo = struct {
@@ -106,35 +48,18 @@ test "fn call of struct field" {
     try expect(S.callStructField(Foo{ .ptr = S.aFunc }) == 13);
 }
 
-test "store member function in variable" {
-    const instance = MemberFnTestFoo{ .x = 1234 };
-    const memberFn = MemberFnTestFoo.member;
-    const result = memberFn(instance);
-    try expect(result == 1234);
-}
 const MemberFnTestFoo = struct {
     x: i32,
     fn member(foo: MemberFnTestFoo) i32 {
         return foo.x;
     }
 };
-
-test "call member function directly" {
+test "store member function in variable" {
     const instance = MemberFnTestFoo{ .x = 1234 };
-    const result = MemberFnTestFoo.member(instance);
+    const memberFn = MemberFnTestFoo.member;
+    const result = memberFn(instance);
     try expect(result == 1234);
 }
-
-test "member functions" {
-    const r = MemberFnRand{ .seed = 1234 };
-    try expect(r.getSeed() == 1234);
-}
-const MemberFnRand = struct {
-    seed: u32,
-    pub fn getSeed(r: *const MemberFnRand) u32 {
-        return r.seed;
-    }
-};
 
 test "return struct byval from function" {
     const bar = makeBar2(1234, 5678);

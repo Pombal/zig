@@ -2,7 +2,7 @@ const Atom = @This();
 
 const std = @import("std");
 const build_options = @import("build_options");
-const aarch64 = @import("../../codegen/aarch64.zig");
+const aarch64 = @import("../../arch/aarch64/bits.zig");
 const assert = std.debug.assert;
 const commands = @import("commands.zig");
 const log = std.log.scoped(.text_block);
@@ -41,7 +41,7 @@ code: std.ArrayListUnmanaged(u8) = .{},
 size: u64,
 
 /// Alignment of this atom as a power of 2.
-/// For instance, aligmment of 0 should be read as 2^0 = 1 byte aligned.
+/// For instance, alignment of 0 should be read as 2^0 = 1 byte aligned.
 alignment: u32,
 
 /// List of relocations belonging to this atom.

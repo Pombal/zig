@@ -30,7 +30,7 @@ tomb_bits: []usize,
 ///    The main tomb bits are still used and the extra ones are starting with the lsb of the
 ///    value here.
 special: std.AutoHashMapUnmanaged(Air.Inst.Index, u32),
-/// Auxilliary data. The way this data is interpreted is determined contextually.
+/// Auxiliary data. The way this data is interpreted is determined contextually.
 extra: []const u32,
 
 /// Trailing is the set of instructions whose lifetimes end at the start of the then branch,
@@ -226,12 +226,16 @@ fn analyzeInst(
     switch (inst_tags[inst]) {
         .add,
         .addwrap,
+        .add_sat,
         .sub,
         .subwrap,
+        .sub_sat,
         .mul,
         .mulwrap,
+        .mul_sat,
         .div,
         .rem,
+        .mod,
         .ptr_add,
         .ptr_sub,
         .bit_and,
@@ -251,11 +255,14 @@ fn analyzeInst(
         .ptr_elem_val,
         .ptr_ptr_elem_val,
         .shl,
+        .shl_exact,
+        .shl_sat,
         .shr,
         .atomic_store_unordered,
         .atomic_store_monotonic,
         .atomic_store_release,
         .atomic_store_seq_cst,
+        .set_union_tag,
         => {
             const o = inst_datas[inst].bin_op;
             return trackOperands(a, new_set, inst, main_tomb, .{ o.lhs, o.rhs, .none });
@@ -296,6 +303,9 @@ fn analyzeInst(
         .array_to_slice,
         .float_to_int,
         .int_to_float,
+        .get_union_tag,
+        .clz,
+        .ctz,
         => {
             const o = inst_datas[inst].ty_op;
             return trackOperands(a, new_set, inst, main_tomb, .{ o.operand, .none, .none });
@@ -360,6 +370,11 @@ fn analyzeInst(
             const pl_op = inst_datas[inst].pl_op;
             const extra = a.air.extraData(Air.AtomicRmw, pl_op.payload).data;
             return trackOperands(a, new_set, inst, main_tomb, .{ pl_op.operand, extra.operand, .none });
+        },
+        .memset, .memcpy => {
+            const pl_op = inst_datas[inst].pl_op;
+            const extra = a.air.extraData(Air.Bin, pl_op.payload).data;
+            return trackOperands(a, new_set, inst, main_tomb, .{ pl_op.operand, extra.lhs, extra.rhs });
         },
         .br => {
             const br = inst_datas[inst].br;

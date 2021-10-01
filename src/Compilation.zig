@@ -812,7 +812,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
 
     const needs_c_symbols = !options.skip_linker_dependencies and is_exe_or_dyn_lib;
 
-    // WASI-only. Resolve the optinal exec-model option, defaults to command.
+    // WASI-only. Resolve the optional exec-model option, defaults to command.
     const wasi_exec_model = if (options.target.os.tag != .wasi) undefined else options.wasi_exec_model orelse .command;
 
     const comp: *Compilation = comp: {
@@ -1177,6 +1177,8 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             }
             hash.add(valgrind);
             hash.add(single_threaded);
+            hash.add(use_stage1);
+            hash.add(use_llvm);
             hash.add(dll_export_fns);
             hash.add(options.is_test);
             hash.add(options.skip_linker_dependencies);
@@ -1574,25 +1576,30 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
         // also test the use case of `build-obj -fcompiler-rt` with the self-hosted compiler
         // and make sure the compiler-rt symbols are emitted. Currently this is hooked up for
         // stage1 but not stage2.
-        if (comp.bin_file.options.use_stage1) {
-            if (comp.bin_file.options.include_compiler_rt) {
-                if (is_exe_or_dyn_lib) {
-                    try comp.work_queue.writeItem(.{ .compiler_rt_lib = {} });
-                } else if (options.output_mode != .Obj) {
-                    // If build-obj with -fcompiler-rt is requested, that is handled specially
-                    // elsewhere. In this case we are making a static library, so we ask
-                    // for a compiler-rt object to put in it.
-                    try comp.work_queue.writeItem(.{ .compiler_rt_obj = {} });
-                }
+        const capable_of_building_compiler_rt = comp.bin_file.options.use_stage1 or
+            comp.bin_file.options.use_llvm;
+        const capable_of_building_zig_libc = comp.bin_file.options.use_stage1 or
+            comp.bin_file.options.use_llvm;
+        const capable_of_building_ssp = comp.bin_file.options.use_stage1;
+
+        if (comp.bin_file.options.include_compiler_rt and capable_of_building_compiler_rt) {
+            if (is_exe_or_dyn_lib) {
+                try comp.work_queue.writeItem(.{ .compiler_rt_lib = {} });
+            } else if (options.output_mode != .Obj) {
+                // If build-obj with -fcompiler-rt is requested, that is handled specially
+                // elsewhere. In this case we are making a static library, so we ask
+                // for a compiler-rt object to put in it.
+                try comp.work_queue.writeItem(.{ .compiler_rt_obj = {} });
             }
-            if (needs_c_symbols) {
-                // MinGW provides no libssp, use our own implementation.
-                if (comp.getTarget().isMinGW()) {
-                    try comp.work_queue.writeItem(.{ .libssp = {} });
-                }
-                if (!comp.bin_file.options.link_libc) {
-                    try comp.work_queue.writeItem(.{ .zig_libc = {} });
-                }
+        }
+        if (needs_c_symbols) {
+            // MinGW provides no libssp, use our own implementation.
+            if (comp.getTarget().isMinGW() and capable_of_building_ssp) {
+                try comp.work_queue.writeItem(.{ .libssp = {} });
+            }
+
+            if (!comp.bin_file.options.link_libc and capable_of_building_zig_libc) {
+                try comp.work_queue.writeItem(.{ .zig_libc = {} });
             }
         }
     }
@@ -1642,6 +1649,9 @@ pub fn destroy(self: *Compilation) void {
         crt_file.deinit(gpa);
     }
     if (self.compiler_rt_static_lib) |*crt_file| {
+        crt_file.deinit(gpa);
+    }
+    if (self.compiler_rt_obj) |*crt_file| {
         crt_file.deinit(gpa);
     }
     if (self.libssp_static_lib) |*crt_file| {
@@ -2761,16 +2771,12 @@ fn reportRetryableAstGenError(
         try Module.ErrorMsg.create(
             gpa,
             src_loc,
-            "unable to load '{'}" ++ std.fs.path.sep_str ++ "{'}': {s}",
-            .{
-                std.zig.fmtEscapes(dir_path),
-                std.zig.fmtEscapes(file.sub_file_path),
-                @errorName(err),
-            },
+            "unable to load '{s}" ++ std.fs.path.sep_str ++ "{s}': {s}",
+            .{ dir_path, file.sub_file_path, @errorName(err) },
         )
     else
-        try Module.ErrorMsg.create(gpa, src_loc, "unable to load '{'}': {s}", .{
-            std.zig.fmtEscapes(file.sub_file_path), @errorName(err),
+        try Module.ErrorMsg.create(gpa, src_loc, "unable to load '{s}': {s}", .{
+            file.sub_file_path, @errorName(err),
         });
     errdefer err_msg.destroy(gpa);
 
@@ -3977,6 +3983,7 @@ fn buildOutputFromZig(
         },
         .root_src_path = src_basename,
     };
+    defer main_pkg.deinitTable(comp.gpa);
     const root_name = src_basename[0 .. src_basename.len - std.fs.path.extension(src_basename).len];
     const target = comp.getTarget();
     const bin_basename = try std.zig.binNameAlloc(comp.gpa, .{
