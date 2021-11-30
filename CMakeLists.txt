@@ -104,9 +104,9 @@ else()
     set(ZIG_USE_LLVM_CONFIG OFF CACHE BOOL "use llvm-config to find LLVM libraries")
 endif()
 
-find_package(llvm)
-find_package(clang)
-find_package(lld)
+find_package(llvm 13)
+find_package(clang 13)
+find_package(lld 13)
 
 if(ZIG_STATIC_ZLIB)
     list(REMOVE_ITEM LLVM_LIBRARIES "-lz")
@@ -116,7 +116,10 @@ endif()
 
 if(APPLE AND ZIG_STATIC)
     list(REMOVE_ITEM LLVM_LIBRARIES "-lcurses")
-    find_library(CURSES NAMES libcurses.a curses libcurses libncurses.a ncurses libncurses)
+    find_library(CURSES NAMES libcurses.a libncurses.a
+      PATHS
+        /usr/local/opt/ncurses/lib
+        /opt/homebrew/opt/ncurses/lib)
     list(APPEND LLVM_LIBRARIES "${CURSES}")
 endif()
 
@@ -494,7 +497,8 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/muloti4.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/multi3.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/negXf2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/popcountdi2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/os_version_check.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/popcount.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/shift.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/stack_probe.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/truncXfYf2.zig"
@@ -530,7 +534,7 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/unicode.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/Ast.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/zig/cross_target.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/CrossTarget.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/parse.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/render.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/string_literal.zig"
@@ -555,6 +559,7 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/arch/arm/bits.zig"
     "${CMAKE_SOURCE_DIR}/src/arch/riscv64/bits.zig"
     "${CMAKE_SOURCE_DIR}/src/arch/x86_64/bits.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/wasm/CodeGen.zig"
     "${CMAKE_SOURCE_DIR}/src/clang.zig"
     "${CMAKE_SOURCE_DIR}/src/clang_options.zig"
     "${CMAKE_SOURCE_DIR}/src/clang_options_data.zig"
@@ -562,7 +567,6 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/codegen/c.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/llvm.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/llvm/bindings.zig"
-    "${CMAKE_SOURCE_DIR}/src/codegen/wasm.zig"
     "${CMAKE_SOURCE_DIR}/src/glibc.zig"
     "${CMAKE_SOURCE_DIR}/src/introspect.zig"
     "${CMAKE_SOURCE_DIR}/src/libc_installation.zig"

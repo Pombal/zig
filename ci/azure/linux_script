@@ -9,7 +9,7 @@ sudo apt-get install -y cmake s3cmd tidy
 ZIGDIR="$(pwd)"
 ARCH="$(uname -m)"
 TARGET="$ARCH-linux-musl"
-CACHE_BASENAME="zig+llvm+lld+clang-$TARGET-0.8.1-dev.94+535615117"
+CACHE_BASENAME="zig+llvm+lld+clang-$TARGET-0.9.0-dev.1243+456d7e5f5"
 PREFIX="$HOME/$CACHE_BASENAME"
 MCPU="baseline"
 JOBS="-j$(nproc)"
@@ -89,7 +89,7 @@ release/bin/zig build test-fmt              -Denable-qemu -Denable-wasmtime
 release/bin/zig build test-stage2           -Denable-qemu -Denable-wasmtime
 
 # Look for HTML errors.
-tidy -qe ../zig-cache/langref.html
+tidy --drop-empty-elements no -qe ../zig-cache/langref.html
 
 if [ "${BUILD_REASON}" != "PullRequest" ]; then
   # Produce the experimental std lib documentation.

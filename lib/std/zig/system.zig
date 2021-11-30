@@ -1,4 +1,5 @@
 const std = @import("../std.zig");
+const builtin = @import("builtin");
 const elf = std.elf;
 const mem = std.mem;
 const fs = std.fs;
@@ -8,7 +9,7 @@ const assert = std.debug.assert;
 const process = std.process;
 const Target = std.Target;
 const CrossTarget = std.zig.CrossTarget;
-const native_endian = std.Target.current.cpu.arch.endian();
+const native_endian = builtin.cpu.arch.endian();
 const linux = @import("system/linux.zig");
 pub const windows = @import("system/windows.zig");
 pub const darwin = @import("system/darwin.zig");
@@ -88,7 +89,7 @@ pub const NativePaths = struct {
             return self;
         }
 
-        if (comptime Target.current.isDarwin()) {
+        if (comptime builtin.target.isDarwin()) {
             try self.addIncludeDir("/usr/include");
             try self.addIncludeDir("/usr/local/include");
 
@@ -164,7 +165,7 @@ pub const NativePaths = struct {
     }
 
     pub fn addIncludeDirFmt(self: *NativePaths, comptime fmt: []const u8, args: anytype) !void {
-        const item = try std.fmt.allocPrint0(self.include_dirs.allocator, fmt, args);
+        const item = try std.fmt.allocPrintZ(self.include_dirs.allocator, fmt, args);
         errdefer self.include_dirs.allocator.free(item);
         try self.include_dirs.append(item);
     }
@@ -174,7 +175,7 @@ pub const NativePaths = struct {
     }
 
     pub fn addLibDirFmt(self: *NativePaths, comptime fmt: []const u8, args: anytype) !void {
-        const item = try std.fmt.allocPrint0(self.lib_dirs.allocator, fmt, args);
+        const item = try std.fmt.allocPrintZ(self.lib_dirs.allocator, fmt, args);
         errdefer self.lib_dirs.allocator.free(item);
         try self.lib_dirs.append(item);
     }
@@ -188,13 +189,13 @@ pub const NativePaths = struct {
     }
 
     pub fn addFrameworkDirFmt(self: *NativePaths, comptime fmt: []const u8, args: anytype) !void {
-        const item = try std.fmt.allocPrint0(self.framework_dirs.allocator, fmt, args);
+        const item = try std.fmt.allocPrintZ(self.framework_dirs.allocator, fmt, args);
         errdefer self.framework_dirs.allocator.free(item);
         try self.framework_dirs.append(item);
     }
 
     pub fn addWarningFmt(self: *NativePaths, comptime fmt: []const u8, args: anytype) !void {
-        const item = try std.fmt.allocPrint0(self.warnings.allocator, fmt, args);
+        const item = try std.fmt.allocPrintZ(self.warnings.allocator, fmt, args);
         errdefer self.warnings.allocator.free(item);
         try self.warnings.append(item);
     }
@@ -237,12 +238,12 @@ pub const NativeTargetInfo = struct {
     /// deinitialization method.
     /// TODO Remove the Allocator requirement from this function.
     pub fn detect(allocator: *Allocator, cross_target: CrossTarget) DetectError!NativeTargetInfo {
-        var os = cross_target.getOsTag().defaultVersionRange();
+        var os = cross_target.getOsTag().defaultVersionRange(cross_target.getCpuArch());
         if (cross_target.os_tag == null) {
-            switch (Target.current.os.tag) {
+            switch (builtin.target.os.tag) {
                 .linux => {
                     const uts = std.os.uname();
-                    const release = mem.spanZ(&uts.release);
+                    const release = mem.sliceTo(&uts.release, 0);
                     // The release field sometimes has a weird format,
                     // `Version.parse` will attempt to find some meaningful interpretation.
                     if (std.builtin.Version.parse(release)) |ver| {
@@ -256,7 +257,7 @@ pub const NativeTargetInfo = struct {
                 },
                 .solaris => {
                     const uts = std.os.uname();
-                    const release = mem.spanZ(&uts.release);
+                    const release = mem.sliceTo(&uts.release, 0);
                     if (std.builtin.Version.parse(release)) |ver| {
                         os.version_range.semver.min = ver;
                         os.version_range.semver.max = ver;
@@ -273,7 +274,7 @@ pub const NativeTargetInfo = struct {
                 },
                 .macos => try darwin.macos.detect(&os),
                 .freebsd, .netbsd, .dragonfly => {
-                    const key = switch (Target.current.os.tag) {
+                    const key = switch (builtin.target.os.tag) {
                         .freebsd => "kern.osreldate",
                         .netbsd, .dragonfly => "kern.osrevision",
                         else => unreachable,
@@ -289,7 +290,7 @@ pub const NativeTargetInfo = struct {
                         error.Unexpected => return error.OSVersionDetectionFail,
                     };
 
-                    switch (Target.current.os.tag) {
+                    switch (builtin.target.os.tag) {
                         .freebsd => {
                             // https://www.freebsd.org/doc/en_US.ISO8859-1/books/porters-handbook/versions.html
                             // Major * 100,000 has been convention since FreeBSD 2.2 (1997)
@@ -445,8 +446,8 @@ pub const NativeTargetInfo = struct {
         os: Target.Os,
         cross_target: CrossTarget,
     ) DetectError!NativeTargetInfo {
-        const native_target_has_ld = comptime Target.current.hasDynamicLinker();
-        const is_linux = Target.current.os.tag == .linux;
+        const native_target_has_ld = comptime builtin.target.hasDynamicLinker();
+        const is_linux = builtin.target.os.tag == .linux;
         const have_all_info = cross_target.dynamic_linker.get() != null and
             cross_target.abi != null and (!is_linux or cross_target.abi.?.isGnu());
         const os_is_non_native = cross_target.os_tag != null;
@@ -463,7 +464,7 @@ pub const NativeTargetInfo = struct {
         // compiler for target riscv64-linux-musl and provide a tarball for users to download.
         // A user could then run that zig compiler on riscv64-linux-gnu. This use case is well-defined
         // and supported by Zig. But that means that we must detect the system ABI here rather than
-        // relying on `Target.current`.
+        // relying on `builtin.target`.
         const all_abis = comptime blk: {
             assert(@enumToInt(Target.Abi.none) == 0);
             const fields = std.meta.fields(Target.Abi)[1..];
@@ -524,7 +525,7 @@ pub const NativeTargetInfo = struct {
 
             // Look for glibc version.
             var os_adjusted = os;
-            if (Target.current.os.tag == .linux and found_ld_info.abi.isGnu() and
+            if (builtin.target.os.tag == .linux and found_ld_info.abi.isGnu() and
                 cross_target.glibc_version == null)
             {
                 for (lib_paths) |lib_path| {
@@ -613,6 +614,7 @@ pub const NativeTargetInfo = struct {
             error.FileSystem => return error.FileSystem,
             error.SymLinkLoop => return error.SymLinkLoop,
             error.NameTooLong => unreachable,
+            error.NotLink => return error.GnuLibCVersionUnavailable,
             error.FileNotFound => return error.GnuLibCVersionUnavailable,
             error.SystemResources => return error.SystemResources,
             error.NotDir => return error.GnuLibCVersionUnavailable,
@@ -740,7 +742,7 @@ pub const NativeTargetInfo = struct {
                         }
                     },
                     // We only need this for detecting glibc version.
-                    elf.PT_DYNAMIC => if (Target.current.os.tag == .linux and result.target.isGnuLibC() and
+                    elf.PT_DYNAMIC => if (builtin.target.os.tag == .linux and result.target.isGnuLibC() and
                         cross_target.glibc_version == null)
                     {
                         var dyn_off = elfInt(is_64, need_bswap, ph32.p_offset, ph64.p_offset);
@@ -787,7 +789,7 @@ pub const NativeTargetInfo = struct {
             }
         }
 
-        if (Target.current.os.tag == .linux and result.target.isGnuLibC() and cross_target.glibc_version == null) {
+        if (builtin.target.os.tag == .linux and result.target.isGnuLibC() and cross_target.glibc_version == null) {
             if (rpath_offset) |rpoff| {
                 const shstrndx = elfInt(is_64, need_bswap, hdr32.e_shstrndx, hdr64.e_shstrndx);
 
@@ -836,7 +838,7 @@ pub const NativeTargetInfo = struct {
                         );
                         const sh_name_off = elfInt(is_64, need_bswap, sh32.sh_name, sh64.sh_name);
                         // TODO this pointer cast should not be necessary
-                        const sh_name = mem.spanZ(std.meta.assumeSentinel(shstrtab[sh_name_off..].ptr, 0));
+                        const sh_name = mem.sliceTo(std.meta.assumeSentinel(shstrtab[sh_name_off..].ptr, 0), 0);
                         if (mem.eql(u8, sh_name, ".dynstr")) {
                             break :find_dyn_str .{
                                 .offset = elfInt(is_64, need_bswap, sh32.sh_offset, sh64.sh_offset),
@@ -854,7 +856,7 @@ pub const NativeTargetInfo = struct {
                     const rpoff_usize = std.math.cast(usize, rpoff) catch |err| switch (err) {
                         error.Overflow => return error.InvalidElfFile,
                     };
-                    const rpath_list = mem.spanZ(std.meta.assumeSentinel(strtab[rpoff_usize..].ptr, 0));
+                    const rpath_list = mem.sliceTo(std.meta.assumeSentinel(strtab[rpoff_usize..].ptr, 0), 0);
                     var it = mem.tokenize(u8, rpath_list, ":");
                     while (it.next()) |rpath| {
                         var dir = fs.cwd().openDir(rpath, .{}) catch |err| switch (err) {
@@ -891,6 +893,7 @@ pub const NativeTargetInfo = struct {
 
                             error.AccessDenied,
                             error.FileNotFound,
+                            error.NotLink,
                             error.NotDir,
                             => continue,
 
@@ -919,7 +922,7 @@ pub const NativeTargetInfo = struct {
     fn preadMin(file: fs.File, buf: []u8, offset: u64, min_read_len: usize) !usize {
         var i: usize = 0;
         while (i < min_read_len) {
-            const len = file.pread(buf[i .. buf.len - i], offset + i) catch |err| switch (err) {
+            const len = file.pread(buf[i..], offset + i) catch |err| switch (err) {
                 error.OperationAborted => unreachable, // Windows-only
                 error.WouldBlock => unreachable, // Did not request blocking mode
                 error.NotOpenForReading => unreachable,
@@ -979,14 +982,14 @@ pub const NativeTargetInfo = struct {
         // Here we switch on a comptime value rather than `cpu_arch`. This is valid because `cpu_arch`,
         // although it is a runtime value, is guaranteed to be one of the architectures in the set
         // of the respective switch prong.
-        switch (std.Target.current.cpu.arch) {
+        switch (builtin.cpu.arch) {
             .x86_64, .i386 => {
                 return @import("system/x86.zig").detectNativeCpuAndFeatures(cpu_arch, os, cross_target);
             },
             else => {},
         }
 
-        switch (std.Target.current.os.tag) {
+        switch (builtin.os.tag) {
             .linux => return linux.detectNativeCpuAndFeatures(),
             .macos => return darwin.macos.detectNativeCpuAndFeatures(),
             else => {},

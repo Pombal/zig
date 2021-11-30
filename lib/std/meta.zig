@@ -1,5 +1,4 @@
 const std = @import("std.zig");
-const builtin = std.builtin;
 const debug = std.debug;
 const mem = std.mem;
 const math = std.math;
@@ -9,7 +8,7 @@ const root = @import("root");
 pub const trait = @import("meta/trait.zig");
 pub const TrailerFlags = @import("meta/trailer_flags.zig").TrailerFlags;
 
-const TypeInfo = builtin.TypeInfo;
+const TypeInfo = std.builtin.TypeInfo;
 
 pub fn tagName(v: anytype) []const u8 {
     const T = @TypeOf(v);
@@ -595,8 +594,7 @@ test "std.meta.FieldEnum" {
     try expectEqualEnum(enum { a, b, c }, FieldEnum(union { a: u8, b: void, c: f32 }));
 }
 
-// Deprecated: use Tag
-pub const TagType = Tag;
+pub const TagType = @compileError("deprecated; use Tag");
 
 pub fn Tag(comptime T: type) type {
     return switch (@typeInfo(T)) {
@@ -649,7 +647,7 @@ const TagPayloadType = TagPayload;
 ///Given a tagged union type, and an enum, return the type of the union
 /// field corresponding to the enum tag.
 pub fn TagPayload(comptime U: type, tag: Tag(U)) type {
-    try testing.expect(trait.is(.Union)(U));
+    comptime debug.assert(trait.is(.Union)(U));
 
     const info = @typeInfo(U).Union;
 
@@ -858,13 +856,26 @@ pub fn declList(comptime Namespace: type, comptime Decl: type) []const *const De
 
 pub const IntType = @compileError("replaced by std.meta.Int");
 
-pub fn Int(comptime signedness: builtin.Signedness, comptime bit_count: u16) type {
+pub fn Int(comptime signedness: std.builtin.Signedness, comptime bit_count: u16) type {
     return @Type(TypeInfo{
         .Int = .{
             .signedness = signedness,
             .bits = bit_count,
         },
     });
+}
+
+pub fn Float(comptime bit_count: u8) type {
+    return @Type(TypeInfo{
+        .Float = .{ .bits = bit_count },
+    });
+}
+
+test "std.meta.Float" {
+    try testing.expectEqual(f16, Float(16));
+    try testing.expectEqual(f32, Float(32));
+    try testing.expectEqual(f64, Float(64));
+    try testing.expectEqual(f128, Float(128));
 }
 
 pub fn Vector(comptime len: u32, comptime child: type) type {

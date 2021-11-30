@@ -25,6 +25,7 @@ static const ZigLLVM_ArchType arch_list[] = {
     ZigLLVM_bpfeb,          // eBPF or extended BPF or 64-bit BPF (big endian)
     ZigLLVM_csky,           // CSKY: csky
     ZigLLVM_hexagon,        // Hexagon: hexagon
+    ZigLLVM_m68k,           // M68k: Motorola 680x0 family
     ZigLLVM_mips,           // MIPS: mips, mipsallegrex, mipsr6
     ZigLLVM_mipsel,         // MIPSEL: mipsel, mipsallegrexe, mipsr6el
     ZigLLVM_mips64,         // MIPS64: mips64, mips64r6, mipsn32, mipsn32r6
@@ -147,6 +148,7 @@ static const ZigLLVM_EnvironmentType abi_list[] = {
     ZigLLVM_Musl,
     ZigLLVM_MuslEABI,
     ZigLLVM_MuslEABIHF,
+    ZigLLVM_MuslX32,
 
     ZigLLVM_MSVC,
     ZigLLVM_Itanium,
@@ -500,6 +502,7 @@ uint32_t target_arch_pointer_bit_width(ZigLLVM_ArchType arch) {
         case ZigLLVM_arm:
         case ZigLLVM_armeb:
         case ZigLLVM_hexagon:
+        case ZigLLVM_m68k:
         case ZigLLVM_le32:
         case ZigLLVM_mips:
         case ZigLLVM_mipsel:
@@ -567,6 +570,7 @@ uint32_t target_arch_largest_atomic_bits(ZigLLVM_ArchType arch) {
         case ZigLLVM_arm:
         case ZigLLVM_armeb:
         case ZigLLVM_hexagon:
+        case ZigLLVM_m68k:
         case ZigLLVM_le32:
         case ZigLLVM_mips:
         case ZigLLVM_mipsel:
@@ -676,6 +680,8 @@ uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
         case OsSolaris:
         case OsEmscripten:
         case OsPlan9:
+        case OsCUDA:
+        case OsNVCL:
             switch (id) {
                 case CIntTypeShort:
                 case CIntTypeUShort:
@@ -737,8 +743,6 @@ uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
         case OsRTEMS:
         case OsNaCl:
         case OsAIX:
-        case OsCUDA:
-        case OsNVCL:
         case OsAMDHSA:
         case OsPS4:
         case OsELFIAMCU:
@@ -801,6 +805,8 @@ const char *arch_stack_pointer_register_name(ZigLLVM_ArchType arch) {
         case ZigLLVM_aarch64_32:
         case ZigLLVM_riscv32:
         case ZigLLVM_riscv64:
+        case ZigLLVM_m68k:
+        case ZigLLVM_mips:
         case ZigLLVM_mipsel:
         case ZigLLVM_ppc:
         case ZigLLVM_ppcle:
@@ -827,7 +833,6 @@ const char *arch_stack_pointer_register_name(ZigLLVM_ArchType arch) {
         case ZigLLVM_kalimba:
         case ZigLLVM_le32:
         case ZigLLVM_le64:
-        case ZigLLVM_mips:
         case ZigLLVM_mips64:
         case ZigLLVM_mips64el:
         case ZigLLVM_msp430:
@@ -876,6 +881,7 @@ bool target_is_arm(const ZigTarget *target) {
         case ZigLLVM_bpfel:
         case ZigLLVM_csky:
         case ZigLLVM_hexagon:
+        case ZigLLVM_m68k:
         case ZigLLVM_lanai:
         case ZigLLVM_hsail:
         case ZigLLVM_hsail64:
@@ -991,6 +997,22 @@ ZigLLVM_EnvironmentType target_default_abi(ZigLLVM_ArchType arch, Os os) {
 
 bool target_has_debug_info(const ZigTarget *target) {
     return !target_is_wasm(target);
+}
+
+bool target_long_double_is_f128(const ZigTarget *target) {
+    switch (target->arch) {
+        case ZigLLVM_riscv64:
+        case ZigLLVM_aarch64:
+        case ZigLLVM_aarch64_be:
+        case ZigLLVM_aarch64_32:
+        case ZigLLVM_systemz:
+        case ZigLLVM_mips64:
+        case ZigLLVM_mips64el:
+            return true;
+
+        default:
+            return false;
+    }
 }
 
 bool target_is_riscv(const ZigTarget *target) {

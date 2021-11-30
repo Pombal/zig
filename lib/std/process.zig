@@ -1,5 +1,5 @@
 const std = @import("std.zig");
-const builtin = std.builtin;
+const builtin = @import("builtin");
 const os = std.os;
 const fs = std.fs;
 const BufMap = std.BufMap;
@@ -103,7 +103,7 @@ pub fn getEnvMap(allocator: *Allocator) !BufMap {
         }
 
         for (environ) |env| {
-            const pair = mem.spanZ(env);
+            const pair = mem.sliceTo(env, 0);
             var parts = mem.split(u8, pair, "=");
             const key = parts.next().?;
             const value = parts.next().?;
@@ -215,7 +215,7 @@ pub const ArgIteratorPosix = struct {
 
         const s = os.argv[self.index];
         self.index += 1;
-        return mem.spanZ(s);
+        return mem.sliceTo(s, 0);
     }
 
     pub fn skip(self: *ArgIteratorPosix) bool {
@@ -267,7 +267,7 @@ pub const ArgIteratorWasi = struct {
         var result_args = try allocator.alloc([:0]u8, count);
         var i: usize = 0;
         while (i < count) : (i += 1) {
-            result_args[i] = mem.spanZ(argv[i]);
+            result_args[i] = mem.sliceTo(argv[i], 0);
         }
 
         return result_args;
@@ -768,7 +768,7 @@ pub fn getSelfExeSharedLibPaths(allocator: *Allocator) error{OutOfMemory}![][:0]
                     _ = size;
                     const name = info.dlpi_name orelse return;
                     if (name[0] == '/') {
-                        const item = try list.allocator.dupeZ(u8, mem.spanZ(name));
+                        const item = try list.allocator.dupeZ(u8, mem.sliceTo(name, 0));
                         errdefer list.allocator.free(item);
                         try list.append(item);
                     }
@@ -789,7 +789,7 @@ pub fn getSelfExeSharedLibPaths(allocator: *Allocator) error{OutOfMemory}![][:0]
             var i: u32 = 0;
             while (i < img_count) : (i += 1) {
                 const name = std.c._dyld_get_image_name(i);
-                const item = try allocator.dupeZ(u8, mem.spanZ(name));
+                const item = try allocator.dupeZ(u8, mem.sliceTo(name, 0));
                 errdefer allocator.free(item);
                 try paths.append(item);
             }
@@ -807,7 +807,7 @@ pub fn getSelfExeSharedLibPaths(allocator: *Allocator) error{OutOfMemory}![][:0]
             }
 
             var b = "/boot/system/runtime_loader";
-            const item = try allocator.dupeZ(u8, mem.spanZ(b));
+            const item = try allocator.dupeZ(u8, mem.sliceTo(b, 0));
             errdefer allocator.free(item);
             try paths.append(item);
 
@@ -863,9 +863,9 @@ pub fn execve(
         if (env_map) |m| {
             const envp_buf = try child_process.createNullDelimitedEnvMap(arena, m);
             break :m envp_buf.ptr;
-        } else if (std.builtin.link_libc) {
+        } else if (builtin.link_libc) {
             break :m std.c.environ;
-        } else if (std.builtin.output_mode == .Exe) {
+        } else if (builtin.output_mode == .Exe) {
             // Then we have Zig start code and this works.
             // TODO type-safety for null-termination of `os.environ`.
             break :m @ptrCast([*:null]?[*:0]u8, os.environ.ptr);

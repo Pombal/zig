@@ -1,4 +1,5 @@
 const std = @import("std.zig");
+const builtin = @import("builtin");
 const debug = std.debug;
 const assert = debug.assert;
 const math = std.math;
@@ -7,13 +8,13 @@ const meta = std.meta;
 const trait = meta.trait;
 const testing = std.testing;
 const Endian = std.builtin.Endian;
-const native_endian = std.Target.current.cpu.arch.endian();
+const native_endian = builtin.cpu.arch.endian();
 
 /// Compile time known minimum page size.
 /// https://github.com/ziglang/zig/issues/4082
-pub const page_size = switch (std.Target.current.cpu.arch) {
+pub const page_size = switch (builtin.cpu.arch) {
     .wasm32, .wasm64 => 64 * 1024,
-    .aarch64 => switch (std.Target.current.os.tag) {
+    .aarch64 => switch (builtin.os.tag) {
         .macos, .ios, .watchos, .tvos => 16 * 1024,
         else => 4 * 1024,
     },
@@ -552,9 +553,6 @@ test "indexOfDiff" {
     try testing.expectEqual(indexOfDiff(u8, "xne", "one"), 0);
 }
 
-pub const toSliceConst = @compileError("deprecated; use std.mem.spanZ");
-pub const toSlice = @compileError("deprecated; use std.mem.spanZ");
-
 /// Takes a pointer to an array, a sentinel-terminated pointer, or a slice, and
 /// returns a slice. If there is a sentinel on the input type, there will be a
 /// sentinel on the output type. The constness of the output type matches
@@ -643,34 +641,7 @@ test "span" {
     try testing.expectEqual(@as(?[:0]u16, null), span(@as(?[*:0]u16, null)));
 }
 
-/// Deprecated: use std.mem.span() or std.mem.sliceTo()
-/// Same as `span`, except when there is both a sentinel and an array
-/// length or slice length, scans the memory for the sentinel value
-/// rather than using the length.
-pub fn spanZ(ptr: anytype) Span(@TypeOf(ptr)) {
-    if (@typeInfo(@TypeOf(ptr)) == .Optional) {
-        if (ptr) |non_null| {
-            return spanZ(non_null);
-        } else {
-            return null;
-        }
-    }
-    const Result = Span(@TypeOf(ptr));
-    const l = lenZ(ptr);
-    if (@typeInfo(Result).Pointer.sentinel) |s| {
-        return ptr[0..l :s];
-    } else {
-        return ptr[0..l];
-    }
-}
-
-test "spanZ" {
-    var array: [5]u16 = [_]u16{ 1, 2, 3, 4, 5 };
-    const ptr = @as([*:3]u16, array[0..2 :3]);
-    try testing.expect(eql(u16, spanZ(ptr), &[_]u16{ 1, 2 }));
-    try testing.expect(eql(u16, spanZ(&array), &[_]u16{ 1, 2, 3, 4, 5 }));
-    try testing.expectEqual(@as(?[:0]u16, null), spanZ(@as(?[*:0]u16, null)));
-}
+pub const spanZ = @compileError("deprecated; use use std.mem.span() or std.mem.sliceTo()");
 
 /// Helper for the return type of sliceTo()
 fn SliceTo(comptime T: type, comptime end: meta.Elem(T)) type {
@@ -916,61 +887,7 @@ test "len" {
     }
 }
 
-/// Deprecated: use std.mem.len() or std.mem.sliceTo().len
-/// Takes a pointer to an array, an array, a sentinel-terminated pointer,
-/// or a slice, and returns the length.
-/// In the case of a sentinel-terminated array, it scans the array
-/// for a sentinel and uses that for the length, rather than using the array length.
-/// For C pointers it assumes it is a pointer-to-many with a 0 sentinel.
-pub fn lenZ(ptr: anytype) usize {
-    return switch (@typeInfo(@TypeOf(ptr))) {
-        .Array => |info| if (info.sentinel) |sentinel|
-            indexOfSentinel(info.child, sentinel, &ptr)
-        else
-            info.len,
-        .Pointer => |info| switch (info.size) {
-            .One => switch (@typeInfo(info.child)) {
-                .Array => |x| if (x.sentinel) |sentinel|
-                    indexOfSentinel(x.child, sentinel, ptr)
-                else
-                    ptr.len,
-                else => @compileError("invalid type given to std.mem.lenZ"),
-            },
-            .Many => if (info.sentinel) |sentinel|
-                indexOfSentinel(info.child, sentinel, ptr)
-            else
-                @compileError("length of pointer with no sentinel"),
-            .C => {
-                assert(ptr != null);
-                return indexOfSentinel(info.child, 0, ptr);
-            },
-            .Slice => if (info.sentinel) |sentinel|
-                indexOfSentinel(info.child, sentinel, ptr.ptr)
-            else
-                ptr.len,
-        },
-        else => @compileError("invalid type given to std.mem.lenZ"),
-    };
-}
-
-test "lenZ" {
-    try testing.expect(lenZ("aoeu") == 4);
-
-    {
-        var array: [5]u16 = [_]u16{ 1, 2, 3, 4, 5 };
-        try testing.expect(lenZ(&array) == 5);
-        try testing.expect(lenZ(array[0..3]) == 3);
-        array[2] = 0;
-        const ptr = @as([*:0]u16, array[0..2 :0]);
-        try testing.expect(lenZ(ptr) == 2);
-    }
-    {
-        var array: [5:0]u16 = [_:0]u16{ 1, 2, 3, 4, 5 };
-        try testing.expect(lenZ(&array) == 5);
-        array[2] = 0;
-        try testing.expect(lenZ(&array) == 2);
-    }
-}
+pub const lenZ = @compileError("deprecated; use std.mem.len() or std.mem.sliceTo().len");
 
 pub fn indexOfSentinel(comptime Elem: type, comptime sentinel: Elem, ptr: [*:sentinel]const Elem) usize {
     var i: usize = 0;
@@ -988,15 +905,8 @@ pub fn allEqual(comptime T: type, slice: []const T, scalar: T) bool {
     return true;
 }
 
-/// Deprecated, use `Allocator.dupe`.
-pub fn dupe(allocator: *Allocator, comptime T: type, m: []const T) ![]T {
-    return allocator.dupe(T, m);
-}
-
-/// Deprecated, use `Allocator.dupeZ`.
-pub fn dupeZ(allocator: *Allocator, comptime T: type, m: []const T) ![:0]T {
-    return allocator.dupeZ(T, m);
-}
+pub const dupe = @compileError("deprecated; use `Allocator.dupe`");
+pub const dupeZ = @compileError("deprecated; use `Allocator.dupeZ`");
 
 /// Remove values from the beginning of a slice.
 pub fn trimLeft(comptime T: type, slice: []const T, values_to_strip: []const T) []const T {
@@ -1161,7 +1071,7 @@ pub fn lastIndexOf(comptime T: type, haystack: []const T, needle: []const T) ?us
 /// Uses Boyer-moore-horspool algorithm on large inputs; `indexOfPosLinear` on small inputs.
 pub fn indexOfPos(comptime T: type, haystack: []const T, start_index: usize, needle: []const T) ?usize {
     if (needle.len > haystack.len) return null;
-    if (needle.len == 0) return 0;
+    if (needle.len == 0) return start_index;
 
     if (!meta.trait.hasUniqueRepresentation(T) or haystack.len < 52 or needle.len <= 4)
         return indexOfPosLinear(T, haystack, start_index, needle);
@@ -1234,6 +1144,10 @@ test "mem.indexOf multibyte" {
         const needleBE = [_]u16{ 0xaacc, 0xbbdd, 0xccee, 0xddff, 0xee00 };
         try testing.expectEqual(lastIndexOf(u16, &haystack, &needleBE), null);
     }
+}
+
+test "mem.indexOfPos empty needle" {
+    try testing.expectEqual(indexOfPos(u8, "abracadabra", 5, ""), 5);
 }
 
 /// Returns the number of needles inside the haystack
@@ -1479,9 +1393,13 @@ pub fn writeInt(comptime T: type, buffer: *[@divExact(@typeInfo(T).Int.bits, 8)]
 pub fn writeIntSliceLittle(comptime T: type, buffer: []u8, value: T) void {
     assert(buffer.len >= @divExact(@typeInfo(T).Int.bits, 8));
 
-    if (@typeInfo(T).Int.bits == 0)
+    if (@typeInfo(T).Int.bits == 0) {
         return set(u8, buffer, 0);
-
+    } else if (@typeInfo(T).Int.bits == 8) {
+        set(u8, buffer, 0);
+        buffer[0] = @bitCast(u8, value);
+        return;
+    }
     // TODO I want to call writeIntLittle here but comptime eval facilities aren't good enough
     const uint = std.meta.Int(.unsigned, @typeInfo(T).Int.bits);
     var bits = @bitCast(uint, value);
@@ -1499,8 +1417,13 @@ pub fn writeIntSliceLittle(comptime T: type, buffer: []u8, value: T) void {
 pub fn writeIntSliceBig(comptime T: type, buffer: []u8, value: T) void {
     assert(buffer.len >= @divExact(@typeInfo(T).Int.bits, 8));
 
-    if (@typeInfo(T).Int.bits == 0)
+    if (@typeInfo(T).Int.bits == 0) {
         return set(u8, buffer, 0);
+    } else if (@typeInfo(T).Int.bits == 8) {
+        set(u8, buffer, 0);
+        buffer[buffer.len - 1] = @bitCast(u8, value);
+        return;
+    }
 
     // TODO I want to call writeIntBig here but comptime eval facilities aren't good enough
     const uint = std.meta.Int(.unsigned, @typeInfo(T).Int.bits);
@@ -1712,8 +1635,6 @@ pub fn split(comptime T: type, buffer: []const T, delimiter: []const T) SplitIte
         .delimiter = delimiter,
     };
 }
-
-pub const separate = @compileError("deprecated: renamed to split (behavior remains unchanged)");
 
 test "mem.split" {
     var it = split(u8, "abc|def||ghi", "|");
@@ -2167,6 +2088,30 @@ fn testWriteIntImpl() !void {
         0x00,
         0xAB,
         0xCD,
+    }));
+
+    writeIntSlice(u8, bytes[0..], 0x12, Endian.Big);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x12,
+    }));
+
+    writeIntSlice(u8, bytes[0..], 0x12, Endian.Little);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0x12, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    }));
+
+    writeIntSlice(i8, bytes[0..], -1, Endian.Big);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xff,
+    }));
+
+    writeIntSlice(i8, bytes[0..], -1, Endian.Little);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0xff, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     }));
 }
 
@@ -2986,7 +2931,7 @@ test "isAligned" {
 }
 
 test "freeing empty string with null-terminated sentinel" {
-    const empty_string = try dupeZ(testing.allocator, u8, "");
+    const empty_string = try testing.allocator.dupeZ(u8, "");
     testing.allocator.free(empty_string);
 }
 

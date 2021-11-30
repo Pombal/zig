@@ -1,10 +1,8 @@
-const builtin = std.builtin;
 const std = @import("std.zig");
 const io = std.io;
 const math = std.math;
 const mem = std.mem;
 const os = std.os;
-const warn = std.debug.warn;
 const coff = std.coff;
 const fs = std.fs;
 const File = std.fs.File;
@@ -657,7 +655,7 @@ pub const Pdb = struct {
                 const name_index = try reader.readIntLittle(u32);
                 if (name_offset > name_bytes.len)
                     return error.InvalidDebugInfo;
-                const name = mem.spanZ(std.meta.assumeSentinel(name_bytes.ptr + name_offset, 0));
+                const name = mem.sliceTo(std.meta.assumeSentinel(name_bytes.ptr + name_offset, 0), 0);
                 if (mem.eql(u8, name, "/names")) {
                     break :str_tab_index name_index;
                 }
@@ -682,7 +680,7 @@ pub const Pdb = struct {
                 .S_LPROC32, .S_GPROC32 => {
                     const proc_sym = @ptrCast(*ProcSym, &module.symbols[symbol_i + @sizeOf(RecordPrefix)]);
                     if (address >= proc_sym.CodeOffset and address < proc_sym.CodeOffset + proc_sym.CodeSize) {
-                        return mem.spanZ(@ptrCast([*:0]u8, proc_sym) + @sizeOf(ProcSym));
+                        return mem.sliceTo(@ptrCast([*:0]u8, proc_sym) + @sizeOf(ProcSym), 0);
                     }
                 },
                 else => {},

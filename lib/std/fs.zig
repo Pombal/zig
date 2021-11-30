@@ -1,6 +1,6 @@
-const root = @import("root");
-const builtin = std.builtin;
 const std = @import("std.zig");
+const builtin = @import("builtin");
+const root = @import("root");
 const os = std.os;
 const mem = std.mem;
 const base64 = std.base64;
@@ -9,7 +9,7 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const math = std.math;
 
-const is_darwin = std.Target.current.os.tag.isDarwin();
+const is_darwin = builtin.os.tag.isDarwin();
 
 pub const path = @import("fs/path.zig");
 pub const File = @import("fs/file.zig").File;
@@ -19,7 +19,6 @@ pub const wasi = @import("fs/wasi.zig");
 
 pub const realpath = os.realpath;
 pub const realpathZ = os.realpathZ;
-pub const realpathC = @compileError("deprecated: renamed to realpathZ");
 pub const realpathW = os.realpathW;
 
 pub const getAppDataDir = @import("fs/get_app_data_dir.zig").getAppDataDir;
@@ -227,10 +226,6 @@ pub fn makeDirAbsoluteW(absolute_path_w: [*:0]const u16) !void {
     return os.mkdirW(absolute_path_w, default_new_dir_mode);
 }
 
-pub const deleteDir = @compileError("deprecated; use dir.deleteDir or deleteDirAbsolute");
-pub const deleteDirC = @compileError("deprecated; use dir.deleteDirZ or deleteDirAbsoluteZ");
-pub const deleteDirW = @compileError("deprecated; use dir.deleteDirW or deleteDirAbsoluteW");
-
 /// Same as `Dir.deleteDir` except the path is absolute.
 pub fn deleteDirAbsolute(dir_path: []const u8) !void {
     assert(path.isAbsolute(dir_path));
@@ -248,8 +243,6 @@ pub fn deleteDirAbsoluteW(dir_path: [*:0]const u16) !void {
     assert(path.isAbsoluteWindowsW(dir_path));
     return os.rmdirW(dir_path);
 }
-
-pub const renameC = @compileError("deprecated: use renameZ, dir.renameZ, or renameAbsoluteZ");
 
 /// Same as `Dir.rename` except the paths are absolute.
 pub fn renameAbsolute(old_path: []const u8, new_path: []const u8) !void {
@@ -393,7 +386,7 @@ pub const Dir = struct {
                     const next_index = self.index + entry.reclen();
                     self.index = next_index;
 
-                    const name = mem.spanZ(@ptrCast([*:0]u8, &entry.d_name));
+                    const name = mem.sliceTo(@ptrCast([*:0]u8, &entry.d_name), 0);
                     if (mem.eql(u8, name, ".") or mem.eql(u8, name, ".."))
                         continue :start_over;
 
@@ -520,20 +513,30 @@ pub const Dir = struct {
                     const haiku_entry = @ptrCast(*align(1) os.system.dirent, &self.buf[self.index]);
                     const next_index = self.index + haiku_entry.reclen();
                     self.index = next_index;
-                    const name = mem.spanZ(@ptrCast([*:0]u8, &haiku_entry.d_name));
+                    const name = mem.sliceTo(@ptrCast([*:0]u8, &haiku_entry.d_name), 0);
 
                     if (mem.eql(u8, name, ".") or mem.eql(u8, name, "..") or (haiku_entry.d_ino == 0)) {
                         continue :start_over;
                     }
 
                     var stat_info: os.Stat = undefined;
-                    _ = os.system._kern_read_stat(
+                    const rc = os.system._kern_read_stat(
                         self.dir.fd,
                         &haiku_entry.d_name,
                         false,
                         &stat_info,
                         0,
                     );
+                    if (rc != 0) {
+                        switch (os.errno(rc)) {
+                            .SUCCESS => {},
+                            .BADF => unreachable, // Dir is invalid or was opened without iteration ability
+                            .FAULT => unreachable,
+                            .NOTDIR => unreachable,
+                            .INVAL => unreachable,
+                            else => |err| return os.unexpectedErrno(err),
+                        }
+                    }
                     const statmode = stat_info.mode & os.S.IFMT;
 
                     const entry_kind = switch (statmode) {
@@ -588,7 +591,7 @@ pub const Dir = struct {
                     const next_index = self.index + linux_entry.reclen();
                     self.index = next_index;
 
-                    const name = mem.spanZ(@ptrCast([*:0]u8, &linux_entry.d_name));
+                    const name = mem.sliceTo(@ptrCast([*:0]u8, &linux_entry.d_name), 0);
 
                     // skip . and .. entries
                     if (mem.eql(u8, name, ".") or mem.eql(u8, name, "..")) {
@@ -955,8 +958,6 @@ pub const Dir = struct {
         return File{ .handle = fd };
     }
 
-    pub const openFileC = @compileError("deprecated: renamed to openFileZ");
-
     /// Same as `openFile` but the path parameter is null-terminated.
     pub fn openFileZ(self: Dir, sub_path: [*:0]const u8, flags: File.OpenFlags) File.OpenError!File {
         if (builtin.os.tag == .windows) {
@@ -1089,8 +1090,6 @@ pub const Dir = struct {
         const path_c = try os.toPosixPath(sub_path);
         return self.createFileZ(&path_c, flags);
     }
-
-    pub const createFileC = @compileError("deprecated: renamed to createFileZ");
 
     /// Same as `createFile` but WASI only.
     pub fn createFileWasi(self: Dir, sub_path: []const u8, flags: File.CreateFlags) File.OpenError!File {
@@ -1232,10 +1231,6 @@ pub const Dir = struct {
         );
         return file;
     }
-
-    pub const openRead = @compileError("deprecated in favor of openFile");
-    pub const openReadC = @compileError("deprecated in favor of openFileZ");
-    pub const openReadW = @compileError("deprecated in favor of openFileW");
 
     pub fn makeDir(self: Dir, sub_path: []const u8) !void {
         try os.mkdirat(self.fd, sub_path, default_new_dir_mode);
@@ -1453,8 +1448,6 @@ pub const Dir = struct {
         }
     }
 
-    pub const openDirC = @compileError("deprecated: renamed to openDirZ");
-
     /// Same as `openDir` except only WASI.
     pub fn openDirWasi(self: Dir, sub_path: []const u8, args: OpenDirOptions) OpenError!Dir {
         const w = os.wasi;
@@ -1544,7 +1537,7 @@ pub const Dir = struct {
             .fd = undefined,
         };
 
-        const path_len_bytes = @intCast(u16, mem.lenZ(sub_path_w) * 2);
+        const path_len_bytes = @intCast(u16, mem.sliceTo(sub_path_w, 0).len * 2);
         var nt_name = w.UNICODE_STRING{
             .Length = path_len_bytes,
             .MaximumLength = path_len_bytes,
@@ -1602,8 +1595,6 @@ pub const Dir = struct {
             return self.deleteFileZ(&sub_path_c);
         }
     }
-
-    pub const deleteFileC = @compileError("deprecated: renamed to deleteFileZ");
 
     /// Same as `deleteFile` except the parameter is null-terminated.
     pub fn deleteFileZ(self: Dir, sub_path_c: [*:0]const u8) DeleteFileError!void {
@@ -1777,8 +1768,6 @@ pub const Dir = struct {
         const sub_path_c = try os.toPosixPath(sub_path);
         return self.readLinkZ(&sub_path_c, buffer);
     }
-
-    pub const readLinkC = @compileError("deprecated: renamed to readLinkZ");
 
     /// WASI-only. Same as `readLink` except targeting WASI.
     pub fn readLinkWasi(self: Dir, sub_path: []const u8, buffer: []u8) ![]u8 {
@@ -2178,6 +2167,37 @@ pub const Dir = struct {
         };
         return file.stat();
     }
+
+    pub const ChmodError = File.ChmodError;
+
+    /// Changes the mode of the directory.
+    /// The process must have the correct privileges in order to do this
+    /// successfully, or must have the effective user ID matching the owner
+    /// of the directory. Additionally, the directory must have been opened
+    /// with `OpenDirOptions{ .iterate = true }`.
+    pub fn chmod(self: Dir, new_mode: File.Mode) ChmodError!void {
+        const file: File = .{
+            .handle = self.fd,
+            .capable_io_mode = .blocking,
+        };
+        try file.chmod(new_mode);
+    }
+
+    /// Changes the owner and group of the directory.
+    /// The process must have the correct privileges in order to do this
+    /// successfully. The group may be changed by the owner of the directory to
+    /// any group of which the owner is a member. Additionally, the directory
+    /// must have been opened with `OpenDirOptions{ .iterate = true }`. If the
+    /// owner or group is specified as `null`, the ID is not changed.
+    pub fn chown(self: Dir, owner: ?File.Uid, group: ?File.Gid) ChownError!void {
+        const file: File = .{
+            .handle = self.fd,
+            .capable_io_mode = .blocking,
+        };
+        try file.chown(owner, group);
+    }
+
+    pub const ChownError = File.ChownError;
 };
 
 /// Returns a handle to the current working directory. It is not opened with iteration capability.
@@ -2234,8 +2254,6 @@ pub fn openFileAbsolute(absolute_path: []const u8, flags: File.OpenFlags) File.O
     return cwd().openFile(absolute_path, flags);
 }
 
-pub const openFileAbsoluteC = @compileError("deprecated: renamed to openFileAbsoluteZ");
-
 /// Same as `openFileAbsolute` but the path parameter is null-terminated.
 pub fn openFileAbsoluteZ(absolute_path_c: [*:0]const u8, flags: File.OpenFlags) File.OpenError!File {
     assert(path.isAbsoluteZ(absolute_path_c));
@@ -2289,8 +2307,6 @@ pub fn createFileAbsolute(absolute_path: []const u8, flags: File.CreateFlags) Fi
     return cwd().createFile(absolute_path, flags);
 }
 
-pub const createFileAbsoluteC = @compileError("deprecated: renamed to createFileAbsoluteZ");
-
 /// Same as `createFileAbsolute` but the path parameter is null-terminated.
 pub fn createFileAbsoluteZ(absolute_path_c: [*:0]const u8, flags: File.CreateFlags) File.OpenError!File {
     assert(path.isAbsoluteZ(absolute_path_c));
@@ -2311,8 +2327,6 @@ pub fn deleteFileAbsolute(absolute_path: []const u8) Dir.DeleteFileError!void {
     assert(path.isAbsolute(absolute_path));
     return cwd().deleteFile(absolute_path);
 }
-
-pub const deleteFileAbsoluteC = @compileError("deprecated: renamed to deleteFileAbsoluteZ");
 
 /// Same as `deleteFileAbsolute` except the parameter is null-terminated.
 pub fn deleteFileAbsoluteZ(absolute_path_c: [*:0]const u8) Dir.DeleteFileError!void {
@@ -2364,9 +2378,6 @@ pub fn readLinkAbsoluteZ(pathname_c: [*:0]const u8, buffer: *[MAX_PATH_BYTES]u8)
     return os.readlinkZ(pathname_c, buffer);
 }
 
-pub const readLink = @compileError("deprecated; use Dir.readLink or readLinkAbsolute");
-pub const readLinkC = @compileError("deprecated; use Dir.readLinkZ or readLinkAbsoluteZ");
-
 /// Use with `Dir.symLink` and `symLinkAbsolute` to specify whether the symlink
 /// will point to a file or a directory. This value is ignored on all hosts
 /// except Windows where creating symlinks to different resource types, requires
@@ -2416,11 +2427,6 @@ pub fn symLinkAbsoluteZ(target_path_c: [*:0]const u8, sym_link_path_c: [*:0]cons
     }
     return os.symlinkZ(target_path_c, sym_link_path_c);
 }
-
-pub const symLink = @compileError("deprecated: use Dir.symLink or symLinkAbsolute");
-pub const symLinkC = @compileError("deprecated: use Dir.symLinkZ or symLinkAbsoluteZ");
-
-pub const walkPath = @compileError("deprecated: use Dir.walk");
 
 pub const OpenSelfExeError = error{
     SharingViolation,
@@ -2503,14 +2509,14 @@ pub fn selfExePath(out_buffer: []u8) SelfExePathError![]u8 {
             var out_len: usize = out_buffer.len;
             try os.sysctl(&mib, out_buffer.ptr, &out_len, null, 0);
             // TODO could this slice from 0 to out_len instead?
-            return mem.spanZ(std.meta.assumeSentinel(out_buffer.ptr, 0));
+            return mem.sliceTo(std.meta.assumeSentinel(out_buffer.ptr, 0), 0);
         },
         .netbsd => {
             var mib = [4]c_int{ os.CTL.KERN, os.KERN.PROC_ARGS, -1, os.KERN.PROC_PATHNAME };
             var out_len: usize = out_buffer.len;
             try os.sysctl(&mib, out_buffer.ptr, &out_len, null, 0);
             // TODO could this slice from 0 to out_len instead?
-            return mem.spanZ(std.meta.assumeSentinel(out_buffer.ptr, 0));
+            return mem.sliceTo(std.meta.assumeSentinel(out_buffer.ptr, 0), 0);
         },
         .openbsd, .haiku => {
             // OpenBSD doesn't support getting the path of a running process, so try to guess it
@@ -2562,7 +2568,7 @@ pub fn selfExePath(out_buffer: []u8) SelfExePathError![]u8 {
 /// The result is UTF16LE-encoded.
 pub fn selfExePathW() [:0]const u16 {
     const image_path_name = &os.windows.peb().ProcessParameters.ImagePathName;
-    return mem.spanZ(std.meta.assumeSentinel(image_path_name.Buffer, 0));
+    return mem.sliceTo(std.meta.assumeSentinel(image_path_name.Buffer, 0), 0);
 }
 
 /// `selfExeDirPath` except allocates the result on the heap.
@@ -2607,7 +2613,7 @@ const CopyFileError = error{SystemResources} || os.CopyFileRangeError || os.Send
 // The copy starts at offset 0, the initial offsets are preserved.
 // No metadata is transferred over.
 fn copy_file(fd_in: os.fd_t, fd_out: os.fd_t) CopyFileError!void {
-    if (comptime std.Target.current.isDarwin()) {
+    if (comptime builtin.target.isDarwin()) {
         const rc = os.system.fcopyfile(fd_in, fd_out, null, os.system.COPYFILE_DATA);
         switch (os.errno(rc)) {
             .SUCCESS => return,
@@ -2620,7 +2626,7 @@ fn copy_file(fd_in: os.fd_t, fd_out: os.fd_t) CopyFileError!void {
         }
     }
 
-    if (std.Target.current.os.tag == .linux) {
+    if (builtin.os.tag == .linux) {
         // Try copy_file_range first as that works at the FS level and is the
         // most efficient method (if available).
         var offset: u64 = 0;

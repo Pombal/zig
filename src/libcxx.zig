@@ -45,6 +45,7 @@ const libcxx_files = [_][]const u8{
     "src/filesystem/directory_iterator.cpp",
     "src/filesystem/int128_builtins.cpp",
     "src/filesystem/operations.cpp",
+    "src/format.cpp",
     "src/functional.cpp",
     "src/future.cpp",
     "src/hash.cpp",
@@ -64,6 +65,7 @@ const libcxx_files = [_][]const u8{
     "src/stdexcept.cpp",
     "src/string.cpp",
     "src/strstream.cpp",
+    "src/support/ibm/xlocale_zos.cpp",
     "src/support/solaris/xlocale.cpp",
     "src/support/win32/locale_win32.cpp",
     "src/support/win32/support.cpp",
@@ -107,8 +109,7 @@ pub fn buildLibCXX(comp: *Compilation) !void {
 
     const cxxabi_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxxabi", "include" });
     const cxx_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", "include" });
-    var c_source_files = std.ArrayList(Compilation.CSourceFile).init(arena);
-    try c_source_files.ensureTotalCapacity(libcxx_files.len);
+    var c_source_files = try std.ArrayList(Compilation.CSourceFile).initCapacity(arena, libcxx_files.len);
 
     for (libcxx_files) |cxx_src| {
         var cflags = std.ArrayList([]const u8).init(arena);
@@ -119,10 +120,12 @@ pub fn buildLibCXX(comp: *Compilation) !void {
                 continue;
         }
 
-        if (target.os.tag != .windows) {
-            if (std.mem.startsWith(u8, cxx_src, "src/support/win32/"))
-                continue;
-        }
+        if (std.mem.startsWith(u8, cxx_src, "src/support/win32/") and target.os.tag != .windows)
+            continue;
+        if (std.mem.startsWith(u8, cxx_src, "src/support/solaris/") and target.os.tag != .solaris)
+            continue;
+        if (std.mem.startsWith(u8, cxx_src, "src/support/ibm/") and target.os.tag != .zos)
+            continue;
 
         try cflags.append("-DNDEBUG");
         try cflags.append("-D_LIBCPP_BUILDING_LIBRARY");
@@ -130,6 +133,7 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         try cflags.append("-DLIBCXX_BUILDING_LIBCXXABI");
         try cflags.append("-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS");
         try cflags.append("-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS");
+        try cflags.append("-D_LIBCPP_DISABLE_NEW_DELETE_DEFINITIONS");
         try cflags.append("-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS");
         try cflags.append("-fvisibility=hidden");
         try cflags.append("-fvisibility-inlines-hidden");
@@ -144,6 +148,12 @@ pub fn buildLibCXX(comp: *Compilation) !void {
             try cflags.append("-fno-exceptions");
         }
 
+        if (target.os.tag == .zos) {
+            try cflags.append("-fno-aligned-allocation");
+        } else {
+            try cflags.append("-faligned-allocation");
+        }
+
         try cflags.append("-I");
         try cflags.append(cxx_include_path);
 
@@ -154,7 +164,7 @@ pub fn buildLibCXX(comp: *Compilation) !void {
             try cflags.append("-fPIC");
         }
         try cflags.append("-nostdinc++");
-        try cflags.append("-std=c++14");
+        try cflags.append("-std=c++20");
         try cflags.append("-Wno-user-defined-literals");
 
         c_source_files.appendAssumeCapacity(.{
@@ -179,6 +189,7 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         .want_sanitize_c = false,
         .want_stack_check = false,
         .want_red_zone = comp.bin_file.options.red_zone,
+        .omit_frame_pointer = comp.bin_file.options.omit_frame_pointer,
         .want_valgrind = false,
         .want_tsan = comp.bin_file.options.tsan,
         .want_pic = comp.bin_file.options.pic,
@@ -245,8 +256,7 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
 
     const cxxabi_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxxabi", "include" });
     const cxx_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", "include" });
-    var c_source_files = std.ArrayList(Compilation.CSourceFile).init(arena);
-    try c_source_files.ensureTotalCapacity(libcxxabi_files.len);
+    var c_source_files = try std.ArrayList(Compilation.CSourceFile).initCapacity(arena, libcxxabi_files.len);
 
     for (libcxxabi_files) |cxxabi_src| {
         var cflags = std.ArrayList([]const u8).init(arena);
@@ -311,6 +321,7 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
         .want_sanitize_c = false,
         .want_stack_check = false,
         .want_red_zone = comp.bin_file.options.red_zone,
+        .omit_frame_pointer = comp.bin_file.options.omit_frame_pointer,
         .want_valgrind = false,
         .want_tsan = comp.bin_file.options.tsan,
         .want_pic = comp.bin_file.options.pic,

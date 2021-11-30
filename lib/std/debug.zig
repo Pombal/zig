@@ -1,5 +1,5 @@
 const std = @import("std.zig");
-const builtin = std.builtin;
+const builtin = @import("builtin");
 const math = std.math;
 const mem = std.mem;
 const io = std.io;
@@ -16,8 +16,8 @@ const root = @import("root");
 const maxInt = std.math.maxInt;
 const File = std.fs.File;
 const windows = std.os.windows;
-const native_arch = std.Target.current.cpu.arch;
-const native_os = std.Target.current.os.tag;
+const native_arch = builtin.cpu.arch;
+const native_os = builtin.os.tag;
 const native_endian = native_arch.endian();
 
 pub const runtime_safety = switch (builtin.mode) {
@@ -55,15 +55,13 @@ const PdbOrDwarf = union(enum) {
 
 var stderr_mutex = std.Thread.Mutex{};
 
-/// Deprecated. Use `std.log` functions for logging or `std.debug.print` for
-/// "printf debugging".
-pub const warn = print;
+pub const warn = @compileError("deprecated; use `std.log` functions for logging or `std.debug.print` for 'printf debugging'");
 
 /// Print to stderr, unbuffered, and silently returning on failure. Intended
 /// for use in "printf debugging." Use `std.log` functions for proper logging.
 pub fn print(comptime fmt: []const u8, args: anytype) void {
-    const held = stderr_mutex.acquire();
-    defer held.release();
+    stderr_mutex.lock();
+    defer stderr_mutex.unlock();
     const stderr = io.getStdErr().writer();
     nosuspend stderr.print(fmt, args) catch return;
 }
@@ -150,7 +148,7 @@ pub fn dumpStackTraceFromBase(bp: usize, ip: usize) void {
 /// capture that many stack frames exactly, and then look for the first address,
 /// chopping off the irrelevant frames and shifting so that the returned addresses pointer
 /// equals the passed in addresses pointer.
-pub fn captureStackTrace(first_address: ?usize, stack_trace: *builtin.StackTrace) void {
+pub fn captureStackTrace(first_address: ?usize, stack_trace: *std.builtin.StackTrace) void {
     if (native_os == .windows) {
         const addrs = stack_trace.instruction_addresses;
         const u32_addrs_len = @intCast(u32, addrs.len);
@@ -194,7 +192,7 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *builtin.StackTrace
 
 /// Tries to print a stack trace to stderr, unbuffered, and ignores any error returned.
 /// TODO multithreaded awareness
-pub fn dumpStackTrace(stack_trace: builtin.StackTrace) void {
+pub fn dumpStackTrace(stack_trace: std.builtin.StackTrace) void {
     nosuspend {
         const stderr = io.getStdErr().writer();
         if (builtin.strip_debug_info) {
@@ -235,7 +233,7 @@ pub fn panic(comptime format: []const u8, args: anytype) noreturn {
 /// `panicExtra` is useful when you want to print out an `@errorReturnTrace`
 /// and also print out some values.
 pub fn panicExtra(
-    trace: ?*builtin.StackTrace,
+    trace: ?*std.builtin.StackTrace,
     comptime format: []const u8,
     args: anytype,
 ) noreturn {
@@ -253,7 +251,7 @@ pub fn panicExtra(
             break :blk &buf;
         },
     };
-    builtin.panic(msg, trace);
+    std.builtin.panic(msg, trace);
 }
 
 /// Non-zero whenever the program triggered a panic.
@@ -269,7 +267,7 @@ threadlocal var panic_stage: usize = 0;
 
 // `panicImpl` could be useful in implementing a custom panic handler which
 // calls the default handler (on supported platforms)
-pub fn panicImpl(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, msg: []const u8) noreturn {
+pub fn panicImpl(trace: ?*const std.builtin.StackTrace, first_trace_addr: ?usize, msg: []const u8) noreturn {
     @setCold(true);
 
     if (enable_segfault_handler) {
@@ -286,8 +284,8 @@ pub fn panicImpl(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, ms
 
             // Make sure to release the mutex when done
             {
-                const held = panic_mutex.acquire();
-                defer held.release();
+                panic_mutex.lock();
+                defer panic_mutex.unlock();
 
                 const stderr = io.getStdErr().writer();
                 if (builtin.single_threaded) {
@@ -339,7 +337,7 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
 pub fn writeStackTrace(
-    stack_trace: builtin.StackTrace,
+    stack_trace: std.builtin.StackTrace,
     out_stream: anytype,
     allocator: *mem.Allocator,
     debug_info: *DebugInfo,
@@ -764,7 +762,7 @@ pub fn readElfDebugInfo(allocator: *mem.Allocator, elf_file: File) !ModuleDebugI
         if (!mem.eql(u8, hdr.e_ident[0..4], "\x7fELF")) return error.InvalidElfMagic;
         if (hdr.e_ident[elf.EI_VERSION] != 1) return error.InvalidElfVersion;
 
-        const endian: builtin.Endian = switch (hdr.e_ident[elf.EI_DATA]) {
+        const endian: std.builtin.Endian = switch (hdr.e_ident[elf.EI_DATA]) {
             elf.ELFDATA2LSB => .Little,
             elf.ELFDATA2MSB => .Big,
             else => return error.InvalidElfEndian,
@@ -1002,7 +1000,7 @@ pub const DebugInfo = struct {
     }
 
     pub fn getModuleForAddress(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
-        if (comptime std.Target.current.isDarwin()) {
+        if (comptime builtin.target.isDarwin()) {
             return self.lookupModuleDyld(address);
         } else if (native_os == .windows) {
             return self.lookupModuleWin32(address);
@@ -1052,7 +1050,7 @@ pub const DebugInfo = struct {
                     const obj_di = try self.allocator.create(ModuleDebugInfo);
                     errdefer self.allocator.destroy(obj_di);
 
-                    const macho_path = mem.spanZ(std.c._dyld_get_image_name(i));
+                    const macho_path = mem.sliceTo(std.c._dyld_get_image_name(i), 0);
                     const macho_file = fs.cwd().openFile(macho_path, .{ .intended_io_mode = .blocking }) catch |err| switch (err) {
                         error.FileNotFound => return error.MissingDebugInfo,
                         else => return err,
@@ -1178,7 +1176,7 @@ pub const DebugInfo = struct {
                     if (context.address >= seg_start and context.address < seg_end) {
                         // Android libc uses NULL instead of an empty string to mark the
                         // main program
-                        context.name = mem.spanZ(info.dlpi_name) orelse "";
+                        context.name = mem.sliceTo(info.dlpi_name, 0) orelse "";
                         context.base_address = info.dlpi_addr;
                         // Stop the iteration
                         return error.Found;
@@ -1341,12 +1339,12 @@ pub const ModuleDebugInfo = switch (native_os) {
 
                 // Take the symbol name from the N_FUN STAB entry, we're going to
                 // use it if we fail to find the DWARF infos
-                const stab_symbol = mem.spanZ(self.strings[symbol.nlist.n_strx..]);
+                const stab_symbol = mem.sliceTo(self.strings[symbol.nlist.n_strx..], 0);
 
                 if (symbol.ofile == null)
                     return SymbolInfo{ .symbol_name = stab_symbol };
 
-                const o_file_path = mem.spanZ(self.strings[symbol.ofile.?.n_strx..]);
+                const o_file_path = mem.sliceTo(self.strings[symbol.ofile.?.n_strx..], 0);
 
                 // Check if its debug infos are already in the cache
                 var o_file_di = self.ofiles.get(o_file_path) orelse
@@ -1668,5 +1666,5 @@ pub fn dumpStackPointerAddr(prefix: []const u8) void {
     const sp = asm (""
         : [argc] "={rsp}" (-> usize),
     );
-    std.debug.warn("{} sp = 0x{x}\n", .{ prefix, sp });
+    std.debug.print("{} sp = 0x{x}\n", .{ prefix, sp });
 }

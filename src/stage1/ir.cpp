@@ -10407,6 +10407,14 @@ static Stage1AirInst *ir_analyze_bin_op_math(IrAnalyze *ira, Stage1ZirInstBinOp 
                     return ira->codegen->invalid_inst_gen;
                 }
             }
+        } else if (op_id == IrBinOpShlSat) {
+            if (op2_val->data.x_bigint.is_negative) {
+                Buf *val_buf = buf_alloc();
+                bigint_append_buf(val_buf, &op2_val->data.x_bigint, 10);
+                ir_add_error(ira, casted_op2,
+                    buf_sprintf("shift by negative value %s", buf_ptr(val_buf)));
+                return ira->codegen->invalid_inst_gen;
+            }
         }
 
         return ir_analyze_math_op(ira, instruction->base.scope, instruction->base.source_node, resolved_type, op1_val, op_id, op2_val);
@@ -11372,9 +11380,11 @@ static Stage1AirInst *ir_analyze_instruction_export(IrAnalyze *ira, Stage1ZirIns
             }
             break;
         case ZigTypeIdEnum:
-            if (target->value->type->data.enumeration.layout != ContainerLayoutExtern) {
+            if ((err = type_resolve(ira->codegen, target->value->type, ResolveStatusZeroBitsKnown)))
+                return ira->codegen->invalid_inst_gen;
+            if (!target->value->type->data.enumeration.has_explicit_tag_type) {
                 ErrorMsg *msg = ir_add_error(ira, target,
-                    buf_sprintf("exported enum value must be declared extern"));
+                    buf_sprintf("exported enum value without explicit integer tag type"));
                 add_error_note(ira->codegen, msg, target->value->type->data.enumeration.decl_node, buf_sprintf("declared here"));
             } else {
                 want_var_export = true;
@@ -11417,9 +11427,11 @@ static Stage1AirInst *ir_analyze_instruction_export(IrAnalyze *ira, Stage1ZirIns
                     }
                     break;
                 case ZigTypeIdEnum:
-                    if (type_value->data.enumeration.layout != ContainerLayoutExtern) {
+                    if ((err = type_resolve(ira->codegen, type_value, ResolveStatusZeroBitsKnown)))
+                        return ira->codegen->invalid_inst_gen;
+                    if (!type_value->data.enumeration.has_explicit_tag_type) {
                         ErrorMsg *msg = ir_add_error(ira, target,
-                            buf_sprintf("exported enum must be declared extern"));
+                            buf_sprintf("exported enum without explicit integer tag type"));
                         add_error_note(ira->codegen, msg, type_value->data.enumeration.decl_node, buf_sprintf("declared here"));
                     }
                     break;

@@ -9,7 +9,6 @@ const trait = meta.trait;
 const autoHash = std.hash.autoHash;
 const Wyhash = std.hash.Wyhash;
 const Allocator = mem.Allocator;
-const builtin = std.builtin;
 const hash_map = @This();
 
 /// An ArrayHashMap with default hash and equal functions.
@@ -202,8 +201,7 @@ pub fn ArrayHashMap(
             return self.unmanaged.getOrPutValueContext(self.allocator, key, value, self.ctx);
         }
 
-        /// Deprecated: call `ensureUnusedCapacity` or `ensureTotalCapacity`.
-        pub const ensureCapacity = ensureTotalCapacity;
+        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
 
         /// Increases capacity, guaranteeing that insertions up until the
         /// `expected_count` will not cause an allocation, and therefore cannot fail.
@@ -747,8 +745,7 @@ pub fn ArrayHashMapUnmanaged(
             return res;
         }
 
-        /// Deprecated: call `ensureUnusedCapacity` or `ensureTotalCapacity`.
-        pub const ensureCapacity = ensureTotalCapacity;
+        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
 
         /// Increases capacity, guaranteeing that insertions up until the
         /// `expected_count` will not cause an allocation, and therefore cannot fail.
@@ -2216,17 +2213,6 @@ test "auto store_hash" {
     const HasExpensiveEqlUn = AutoArrayHashMapUnmanaged([32]i32, i32);
     try testing.expect(meta.fieldInfo(HasCheapEqlUn.Data, .hash).field_type == void);
     try testing.expect(meta.fieldInfo(HasExpensiveEqlUn.Data, .hash).field_type != void);
-}
-
-test "compile everything" {
-    std.testing.refAllDecls(AutoArrayHashMap(i32, i32));
-    std.testing.refAllDecls(StringArrayHashMap([]const u8));
-    std.testing.refAllDecls(AutoArrayHashMap(i32, void));
-    std.testing.refAllDecls(StringArrayHashMap(u0));
-    std.testing.refAllDecls(AutoArrayHashMapUnmanaged(i32, i32));
-    std.testing.refAllDecls(StringArrayHashMapUnmanaged([]const u8));
-    std.testing.refAllDecls(AutoArrayHashMapUnmanaged(i32, void));
-    std.testing.refAllDecls(StringArrayHashMapUnmanaged(u0));
 }
 
 pub fn getHashPtrAddrFn(comptime K: type, comptime Context: type) (fn (Context, K) u32) {

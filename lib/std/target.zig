@@ -1,6 +1,5 @@
 const std = @import("std.zig");
 const mem = std.mem;
-const builtin = std.builtin;
 const Version = std.builtin.Version;
 
 /// TODO Nearly all the functions in this namespace would be
@@ -82,10 +81,10 @@ pub const Target = struct {
                 }
             }
 
-            pub fn defaultVersionRange(tag: Tag) Os {
+            pub fn defaultVersionRange(tag: Tag, arch: Cpu.Arch) Os {
                 return .{
                     .tag = tag,
-                    .version_range = VersionRange.default(tag),
+                    .version_range = VersionRange.default(tag, arch),
                 };
             }
         };
@@ -227,7 +226,7 @@ pub const Target = struct {
 
             /// The default `VersionRange` represents the range that the Zig Standard Library
             /// bases its abstractions on.
-            pub fn default(tag: Tag) VersionRange {
+            pub fn default(tag: Tag, arch: Cpu.Arch) VersionRange {
                 switch (tag) {
                     .freestanding,
                     .ananas,
@@ -267,12 +266,22 @@ pub const Target = struct {
                             .max = .{ .major = 13, .minor = 0 },
                         },
                     },
-                    .macos => return .{
-                        .semver = .{
-                            .min = .{ .major = 10, .minor = 13 },
-                            .max = .{ .major = 11, .minor = 2 },
+                    .macos => return switch (arch) {
+                        .aarch64 => VersionRange{
+                            .semver = .{
+                                .min = .{ .major = 11, .minor = 6 },
+                                .max = .{ .major = 12, .minor = 0 },
+                            },
                         },
+                        .x86_64 => VersionRange{
+                            .semver = .{
+                                .min = .{ .major = 10, .minor = 13 },
+                                .max = .{ .major = 12, .minor = 0 },
+                            },
+                        },
+                        else => unreachable,
                     },
+
                     .ios => return .{
                         .semver = .{
                             .min = .{ .major = 12, .minor = 0 },
@@ -431,6 +440,7 @@ pub const Target = struct {
     };
 
     pub const aarch64 = @import("target/aarch64.zig");
+    pub const arc = @import("target/arc.zig");
     pub const amdgpu = @import("target/amdgpu.zig");
     pub const arm = @import("target/arm.zig");
     pub const avr = @import("target/avr.zig");
@@ -464,6 +474,7 @@ pub const Target = struct {
         musl,
         musleabi,
         musleabihf,
+        muslx32,
         msvc,
         itanium,
         cygnus,
@@ -758,6 +769,7 @@ pub const Target = struct {
             bpfeb,
             csky,
             hexagon,
+            m68k,
             mips,
             mipsel,
             mips64,
@@ -883,6 +895,13 @@ pub const Target = struct {
                 };
             }
 
+            pub fn isBpf(arch: Arch) bool {
+                return switch (arch) {
+                    .bpfel, .bpfeb => true,
+                    else => false,
+                };
+            }
+
             pub fn parseCpuModel(arch: Arch, cpu_name: []const u8) !*const Cpu.Model {
                 for (arch.allCpuModels()) |cpu| {
                     if (mem.eql(u8, cpu_name, cpu.name)) {
@@ -900,6 +919,7 @@ pub const Target = struct {
                     .arm => ._ARM,
                     .armeb => ._ARM,
                     .hexagon => ._HEXAGON,
+                    .m68k => ._68K,
                     .le32 => ._NONE,
                     .mips => ._MIPS,
                     .mipsel => ._MIPS_RS3_LE,
@@ -960,6 +980,7 @@ pub const Target = struct {
                     .arm => .ARM,
                     .armeb => .Unknown,
                     .hexagon => .Unknown,
+                    .m68k => .Unknown,
                     .le32 => .Unknown,
                     .mips => .Unknown,
                     .mipsel => .Unknown,
@@ -1012,7 +1033,7 @@ pub const Target = struct {
                 };
             }
 
-            pub fn endian(arch: Arch) builtin.Endian {
+            pub fn endian(arch: Arch) std.builtin.Endian {
                 return switch (arch) {
                     .avr,
                     .arm,
@@ -1063,6 +1084,7 @@ pub const Target = struct {
                     .armeb,
                     .aarch64_be,
                     .bpfeb,
+                    .m68k,
                     .mips,
                     .mips64,
                     .powerpc,
@@ -1089,6 +1111,7 @@ pub const Target = struct {
                     .armeb,
                     .csky,
                     .hexagon,
+                    .m68k,
                     .le32,
                     .mips,
                     .mipsel,
@@ -1295,7 +1318,8 @@ pub const Target = struct {
         }
     };
 
-    pub const current = builtin.target;
+    /// TODO delete this deprecated declaration after 0.9.0 is released
+    pub const current = @compileError("instead of std.Target.current, use @import(\"builtin\").target");
 
     pub const stack_align = 16;
 
@@ -1402,6 +1426,10 @@ pub const Target = struct {
 
     pub fn isBSD(self: Target) bool {
         return self.os.tag.isBSD();
+    }
+
+    pub fn isBpfFreestanding(self: Target) bool {
+        return self.cpu.arch.isBpf() and self.os.tag == .freestanding;
     }
 
     pub fn isGnuLibC_os_tag_abi(os_tag: Os.Tag, abi: Abi) bool {
@@ -1588,6 +1616,7 @@ pub const Target = struct {
                 .arc,
                 .csky,
                 .hexagon,
+                .m68k,
                 .msp430,
                 .r600,
                 .amdgcn,
@@ -1702,6 +1731,13 @@ pub const Target = struct {
             .mips, .mipsel => ".v",
             // ISAs without designated characters get 'X' for lack of a better option.
             else => ".X",
+        };
+    }
+
+    pub inline fn longDoubleIsF128(target: Target) bool {
+        return switch (target.cpu.arch) {
+            .riscv64, .aarch64, .aarch64_be, .aarch64_32, .s390x, .mips64, .mips64el => true,
+            else => false,
         };
     }
 };

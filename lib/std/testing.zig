@@ -1,4 +1,5 @@
 const std = @import("std.zig");
+const builtin = @import("builtin");
 
 const math = std.math;
 const print = std.debug.print;
@@ -207,9 +208,6 @@ pub fn expectFmt(expected: []const u8, comptime template: []const u8, args: anyt
     return error.TestExpectedFmt;
 }
 
-pub const expectWithinMargin = @compileError("expectWithinMargin is deprecated, use expectApproxEqAbs or expectApproxEqRel");
-pub const expectWithinEpsilon = @compileError("expectWithinEpsilon is deprecated, use expectApproxEqAbs or expectApproxEqRel");
-
 /// This function is intended to be used only in tests. When the actual value is
 /// not approximately equal to the expected value, prints diagnostics to stderr
 /// to show exactly how they are not equal, then aborts.
@@ -322,7 +320,7 @@ pub const TmpDir = struct {
 };
 
 fn getCwdOrWasiPreopen() std.fs.Dir {
-    if (std.builtin.os.tag == .wasi and !std.builtin.link_libc) {
+    if (builtin.os.tag == .wasi and !builtin.link_libc) {
         var preopens = std.fs.wasi.PreopenList.init(allocator);
         defer preopens.deinit();
         preopens.populate() catch
@@ -464,7 +462,7 @@ test {
 
 /// Given a type, reference all the declarations inside, so that the semantic analyzer sees them.
 pub fn refAllDecls(comptime T: type) void {
-    if (!std.builtin.is_test) return;
+    if (!builtin.is_test) return;
     inline for (std.meta.declarations(T)) |decl| {
         _ = decl;
     }

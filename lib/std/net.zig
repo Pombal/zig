@@ -12,7 +12,7 @@ const native_endian = builtin.target.cpu.arch.endian();
 // first release to support them.
 pub const has_unix_sockets = @hasDecl(os.sockaddr, "un") and
     (builtin.target.os.tag != .windows or
-    std.Target.current.os.version_range.windows.isAtLeast(.win10_rs4) orelse false);
+    builtin.os.version_range.windows.isAtLeast(.win10_rs4) orelse false);
 
 pub const Address = extern union {
     any: os.sockaddr,
@@ -785,7 +785,7 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
 
             if (info.canonname) |n| {
                 if (result.canon_name == null) {
-                    result.canon_name = try arena.dupe(u8, mem.spanZ(n));
+                    result.canon_name = try arena.dupe(u8, mem.sliceTo(n, 0));
                 }
             }
             i += 1;
@@ -1588,7 +1588,7 @@ fn dnsParseCallback(ctx: dpc_ctx, rr: u8, data: []const u8, packet: []const u8) 
             var tmp: [256]u8 = undefined;
             // Returns len of compressed name. strlen to get canon name.
             _ = try os.dn_expand(packet, data, &tmp);
-            const canon_name = mem.spanZ(std.meta.assumeSentinel(&tmp, 0));
+            const canon_name = mem.sliceTo(std.meta.assumeSentinel(&tmp, 0), 0);
             if (isValidHostName(canon_name)) {
                 ctx.canon.items.len = 0;
                 try ctx.canon.appendSlice(canon_name);
@@ -1623,7 +1623,7 @@ pub const Stream = struct {
     }
 
     pub fn read(self: Stream, buffer: []u8) ReadError!usize {
-        if (std.Target.current.os.tag == .windows) {
+        if (builtin.os.tag == .windows) {
             return os.windows.ReadFile(self.handle, buffer, null, io.default_mode);
         }
 
@@ -1638,7 +1638,7 @@ pub const Stream = struct {
     /// file system thread instead of non-blocking. It needs to be reworked to properly
     /// use non-blocking I/O.
     pub fn write(self: Stream, buffer: []const u8) WriteError!usize {
-        if (std.Target.current.os.tag == .windows) {
+        if (builtin.os.tag == .windows) {
             return os.windows.WriteFile(self.handle, buffer, null, io.default_mode);
         }
 

@@ -57,7 +57,7 @@ path_arena: std.heap.ArenaAllocator,
 /// of the function to know what file it came from.
 /// If we group the decls by file, it makes it really easy to do this (put the symbol in the correct place)
 fn_decl_table: std.AutoArrayHashMapUnmanaged(
-    *Module.Scope.File,
+    *Module.File,
     struct { sym_index: u32, functions: std.AutoArrayHashMapUnmanaged(*Module.Decl, FnDeclOutput) = .{} },
 ) = .{},
 data_decl_table: std.AutoArrayHashMapUnmanaged(*Module.Decl, []const u8) = .{},
@@ -71,9 +71,9 @@ entry_val: ?u64 = null,
 got_len: usize = 0,
 // A list of all the free got indexes, so when making a new decl
 // don't make a new one, just use one from here.
-got_index_free_list: std.ArrayListUnmanaged(u64) = .{},
+got_index_free_list: std.ArrayListUnmanaged(usize) = .{},
 
-syms_index_free_list: std.ArrayListUnmanaged(u64) = .{},
+syms_index_free_list: std.ArrayListUnmanaged(usize) = .{},
 
 const Bases = struct {
     text: u64,
@@ -163,11 +163,11 @@ pub fn createEmpty(gpa: *Allocator, options: link.Options) !*Plan9 {
 
 fn putFn(self: *Plan9, decl: *Module.Decl, out: FnDeclOutput) !void {
     const gpa = self.base.allocator;
-    const fn_map_res = try self.fn_decl_table.getOrPut(gpa, decl.namespace.file_scope);
+    const fn_map_res = try self.fn_decl_table.getOrPut(gpa, decl.getFileScope());
     if (fn_map_res.found_existing) {
         try fn_map_res.value_ptr.functions.put(gpa, decl, out);
     } else {
-        const file = decl.namespace.file_scope;
+        const file = decl.getFileScope();
         const arena = &self.path_arena.allocator;
         // each file gets a symbol
         fn_map_res.value_ptr.* = .{
@@ -299,7 +299,7 @@ pub fn updateDecl(self: *Plan9, module: *Module, decl: *Module.Decl) !void {
             return;
         },
     };
-    var duped_code = try std.mem.dupe(self.base.allocator, u8, code);
+    var duped_code = try self.base.allocator.dupe(u8, code);
     errdefer self.base.allocator.free(duped_code);
     try self.data_decl_table.put(self.base.allocator, decl, duped_code);
     return self.updateFinish(decl);
@@ -356,8 +356,8 @@ pub fn changeLine(l: *std.ArrayList(u8), delta_line: i32) !void {
     }
 }
 
-fn declCount(self: *Plan9) u64 {
-    var fn_decl_count: u64 = 0;
+fn declCount(self: *Plan9) usize {
+    var fn_decl_count: usize = 0;
     var itf_files = self.fn_decl_table.iterator();
     while (itf_files.next()) |ent| {
         // get the submap
@@ -548,7 +548,7 @@ pub fn freeDecl(self: *Plan9, decl: *Module.Decl) void {
     const is_fn = (decl.val.tag() == .function);
     if (is_fn) {
         var symidx_and_submap =
-            self.fn_decl_table.get(decl.namespace.file_scope).?;
+            self.fn_decl_table.get(decl.getFileScope()).?;
         var submap = symidx_and_submap.functions;
         _ = submap.swapRemove(decl);
         if (submap.count() == 0) {

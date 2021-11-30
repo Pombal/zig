@@ -3,7 +3,6 @@ const builtin = std.builtin;
 const Builder = std.build.Builder;
 const tests = @import("test/tests.zig");
 const BufMap = std.BufMap;
-const warn = std.debug.warn;
 const mem = std.mem;
 const ArrayList = std.ArrayList;
 const io = std.io;
@@ -65,6 +64,26 @@ pub fn build(b: *Builder) !void {
     const omit_stage2 = b.option(bool, "omit-stage2", "Do not include stage2 behind a feature flag inside stage1") orelse false;
     const static_llvm = b.option(bool, "static-llvm", "Disable integration with system-installed LLVM, Clang, LLD, and libc++") orelse false;
     const enable_llvm = b.option(bool, "enable-llvm", "Build self-hosted compiler with LLVM backend enabled") orelse (is_stage1 or static_llvm);
+    const llvm_has_m68k = b.option(
+        bool,
+        "llvm-has-m68k",
+        "Whether LLVM has the experimental target m68k enabled",
+    ) orelse false;
+    const llvm_has_csky = b.option(
+        bool,
+        "llvm-has-csky",
+        "Whether LLVM has the experimental target csky enabled",
+    ) orelse false;
+    const llvm_has_ve = b.option(
+        bool,
+        "llvm-has-ve",
+        "Whether LLVM has the experimental target ve enabled",
+    ) orelse false;
+    const llvm_has_arc = b.option(
+        bool,
+        "llvm-has-arc",
+        "Whether LLVM has the experimental target arc enabled",
+    ) orelse false;
     const enable_macos_sdk = b.option(bool, "enable-macos-sdk", "Run tests requiring presence of macOS SDK and frameworks") orelse false;
     const config_h_path_option = b.option([]const u8, "config_h", "Path to the generated config.h");
 
@@ -90,6 +109,8 @@ pub fn build(b: *Builder) !void {
         return;
 
     const tracy = b.option([]const u8, "tracy", "Enable Tracy integration. Supply path to Tracy source");
+    const tracy_callstack = b.option(bool, "tracy-callstack", "Include callstack information with Tracy data. Does nothing if -Dtracy is not provided") orelse false;
+    const tracy_allocation = b.option(bool, "tracy-allocation", "Include allocation information with Tracy data. Does nothing if -Dtracy is not provided") orelse false;
     const link_libc = b.option(bool, "force-link-libc", "Force self-hosted compiler to link libc") orelse enable_llvm;
     const strip = b.option(bool, "strip", "Omit debug information") orelse false;
 
@@ -124,6 +145,10 @@ pub fn build(b: *Builder) !void {
     exe_options.addOption(u32, "mem_leak_frames", mem_leak_frames);
     exe_options.addOption(bool, "skip_non_native", skip_non_native);
     exe_options.addOption(bool, "have_llvm", enable_llvm);
+    exe_options.addOption(bool, "llvm_has_m68k", llvm_has_m68k);
+    exe_options.addOption(bool, "llvm_has_csky", llvm_has_csky);
+    exe_options.addOption(bool, "llvm_has_ve", llvm_has_ve);
+    exe_options.addOption(bool, "llvm_has_arc", llvm_has_arc);
 
     if (enable_llvm) {
         const cmake_cfg = if (static_llvm) null else findAndParseConfigH(b, config_h_path_option);
@@ -181,6 +206,7 @@ pub fn build(b: *Builder) !void {
     }
 
     const enable_logging = b.option(bool, "log", "Whether to enable logging") orelse false;
+    const enable_link_snapshots = b.option(bool, "link-snapshot", "Whether to enable linker state snapshots") orelse false;
 
     const opt_version_string = b.option([]const u8, "version-string", "Override Zig version string. Default is to find out with git.");
     const version = if (opt_version_string) |version| version else v: {
@@ -237,7 +263,10 @@ pub fn build(b: *Builder) !void {
     exe_options.addOption(std.SemanticVersion, "semver", semver);
 
     exe_options.addOption(bool, "enable_logging", enable_logging);
+    exe_options.addOption(bool, "enable_link_snapshots", enable_link_snapshots);
     exe_options.addOption(bool, "enable_tracy", tracy != null);
+    exe_options.addOption(bool, "enable_tracy_callstack", tracy_callstack);
+    exe_options.addOption(bool, "enable_tracy_allocation", tracy_allocation);
     exe_options.addOption(bool, "is_stage1", is_stage1);
     exe_options.addOption(bool, "omit_stage2", omit_stage2);
     if (tracy) |tracy_path| {
@@ -277,11 +306,16 @@ pub fn build(b: *Builder) !void {
     test_stage2.addOptions("build_options", test_stage2_options);
 
     test_stage2_options.addOption(bool, "enable_logging", enable_logging);
+    test_stage2_options.addOption(bool, "enable_link_snapshots", enable_link_snapshots);
     test_stage2_options.addOption(bool, "skip_non_native", skip_non_native);
     test_stage2_options.addOption(bool, "skip_compile_errors", skip_compile_errors);
     test_stage2_options.addOption(bool, "is_stage1", is_stage1);
     test_stage2_options.addOption(bool, "omit_stage2", omit_stage2);
     test_stage2_options.addOption(bool, "have_llvm", enable_llvm);
+    test_stage2_options.addOption(bool, "llvm_has_m68k", llvm_has_m68k);
+    test_stage2_options.addOption(bool, "llvm_has_csky", llvm_has_csky);
+    test_stage2_options.addOption(bool, "llvm_has_ve", llvm_has_ve);
+    test_stage2_options.addOption(bool, "llvm_has_arc", llvm_has_arc);
     test_stage2_options.addOption(bool, "enable_qemu", is_qemu_enabled);
     test_stage2_options.addOption(bool, "enable_wine", is_wine_enabled);
     test_stage2_options.addOption(bool, "enable_wasmtime", is_wasmtime_enabled);
@@ -496,6 +530,8 @@ fn addStaticLlvmOptionsToExe(
         exe.linkSystemLibrary(lib_name);
     }
 
+    exe.linkSystemLibrary("z");
+
     // This means we rely on clang-or-zig-built LLVM, Clang, LLD libraries.
     exe.linkSystemLibrary("c++");
 
@@ -521,9 +557,9 @@ fn addCxxKnownPath(
     const path_unpadded = mem.tokenize(u8, path_padded, "\r\n").next().?;
     if (mem.eql(u8, path_unpadded, objname)) {
         if (errtxt) |msg| {
-            warn("{s}", .{msg});
+            std.debug.print("{s}", .{msg});
         } else {
-            warn("Unable to determine path to {s}\n", .{objname});
+            std.debug.print("Unable to determine path to {s}\n", .{objname});
         }
         return error.RequiredLibraryNotFound;
     }
@@ -650,7 +686,7 @@ fn findAndParseConfigH(b: *Builder, config_h_path_option: ?[]const u8) ?CMakeCon
 }
 
 fn toNativePathSep(b: *Builder, s: []const u8) []u8 {
-    const duplicated = mem.dupe(b.allocator, u8, s) catch unreachable;
+    const duplicated = b.allocator.dupe(u8, s) catch unreachable;
     for (duplicated) |*byte| switch (byte.*) {
         '/' => byte.* = fs.path.sep,
         else => {},
@@ -886,6 +922,7 @@ const llvm_libs = [_][]const u8{
     "LLVMWebAssemblyAsmParser",
     "LLVMWebAssemblyCodeGen",
     "LLVMWebAssemblyDesc",
+    "LLVMWebAssemblyUtils",
     "LLVMWebAssemblyInfo",
     "LLVMSystemZDisassembler",
     "LLVMSystemZAsmParser",
@@ -961,11 +998,12 @@ const llvm_libs = [_][]const u8{
     "LLVMOrcJIT",
     "LLVMMCJIT",
     "LLVMJITLink",
-    "LLVMOrcTargetProcess",
-    "LLVMOrcShared",
     "LLVMInterpreter",
     "LLVMExecutionEngine",
     "LLVMRuntimeDyld",
+    "LLVMOrcTargetProcess",
+    "LLVMOrcShared",
+    "LLVMDWP",
     "LLVMSymbolize",
     "LLVMDebugInfoPDB",
     "LLVMDebugInfoGSYM",
@@ -978,7 +1016,6 @@ const llvm_libs = [_][]const u8{
     "LLVMCFGuard",
     "LLVMCoroutines",
     "LLVMObjCARCOpts",
-    "LLVMHelloNew",
     "LLVMipo",
     "LLVMVectorize",
     "LLVMLinker",
@@ -990,6 +1027,7 @@ const llvm_libs = [_][]const u8{
     "LLVMGlobalISel",
     "LLVMMIRParser",
     "LLVMAsmPrinter",
+    "LLVMDebugInfoMSF",
     "LLVMDebugInfoDWARF",
     "LLVMSelectionDAG",
     "LLVMCodeGen",
@@ -1011,7 +1049,6 @@ const llvm_libs = [_][]const u8{
     "LLVMMCParser",
     "LLVMMC",
     "LLVMDebugInfoCodeView",
-    "LLVMDebugInfoMSF",
     "LLVMBitReader",
     "LLVMCore",
     "LLVMRemarks",

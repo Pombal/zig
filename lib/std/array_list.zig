@@ -56,19 +56,11 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
         }
 
         /// Initialize with capacity to hold at least `num` elements.
+        /// The resulting capacity is likely to be equal to `num`.
         /// Deinitialize with `deinit` or use `toOwnedSlice`.
         pub fn initCapacity(allocator: *Allocator, num: usize) !Self {
             var self = Self.init(allocator);
-
-            if (@sizeOf(T) > 0) {
-                const new_memory = try self.allocator.allocAdvanced(T, alignment, num, .at_least);
-                self.items.ptr = new_memory.ptr;
-                self.capacity = new_memory.len;
-            } else {
-                // If `T` is a zero-sized type, then we do not need to allocate memory.
-                self.capacity = std.math.maxInt(usize);
-            }
-
+            try self.ensureTotalCapacityPrecise(num);
             return self;
         }
 
@@ -78,15 +70,6 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
                 self.allocator.free(self.allocatedSlice());
             }
         }
-
-        pub const span = @compileError("deprecated: use `items` field directly");
-        pub const toSlice = @compileError("deprecated: use `items` field directly");
-        pub const toSliceConst = @compileError("deprecated: use `items` field directly");
-        pub const at = @compileError("deprecated: use `list.items[i]`");
-        pub const ptrAt = @compileError("deprecated: use `&list.items[i]`");
-        pub const setOrError = @compileError("deprecated: use `if (i >= list.items.len) return error.OutOfBounds else list.items[i] = item`");
-        pub const set = @compileError("deprecated: use `list.items[i] = item`");
-        pub const swapRemoveOrError = @compileError("deprecated: use `if (i >= list.items.len) return error.OutOfBounds else list.swapRemove(i)`");
 
         /// ArrayList takes ownership of the passed in slice. The slice must have been
         /// allocated with `allocator`.
@@ -99,12 +82,7 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
             };
         }
 
-        /// Initializes an ArrayListUnmanaged with the `items` and `capacity` fields
-        /// of this ArrayList. This ArrayList retains ownership of underlying memory.
-        /// Deprecated: use `moveToUnmanaged` which has different semantics.
-        pub fn toUnmanaged(self: Self) ArrayListAlignedUnmanaged(T, alignment) {
-            return .{ .items = self.items, .capacity = self.capacity };
-        }
+        pub const toUnmanaged = @compileError("deprecated; use `moveToUnmanaged` which has different semantics.");
 
         /// Initializes an ArrayListUnmanaged with the `items` and `capacity` fields
         /// of this ArrayList. Empties this ArrayList.
@@ -315,8 +293,7 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
             self.capacity = 0;
         }
 
-        /// Deprecated: call `ensureUnusedCapacity` or `ensureTotalCapacity`.
-        pub const ensureCapacity = ensureTotalCapacity;
+        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
 
         /// Modify the array so that it can hold at least `new_capacity` items.
         /// Invalidates pointers if additional memory is needed.
@@ -330,8 +307,22 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
                     if (better_capacity >= new_capacity) break;
                 }
 
+                return self.ensureTotalCapacityPrecise(better_capacity);
+            } else {
+                self.capacity = std.math.maxInt(usize);
+            }
+        }
+
+        /// Modify the array so that it can hold at least `new_capacity` items.
+        /// Like `ensureTotalCapacity`, but the resulting capacity is much more likely
+        /// (but not guaranteed) to be equal to `new_capacity`.
+        /// Invalidates pointers if additional memory is needed.
+        pub fn ensureTotalCapacityPrecise(self: *Self, new_capacity: usize) !void {
+            if (@sizeOf(T) > 0) {
+                if (self.capacity >= new_capacity) return;
+
                 // TODO This can be optimized to avoid needlessly copying undefined memory.
-                const new_memory = try self.allocator.reallocAtLeast(self.allocatedSlice(), better_capacity);
+                const new_memory = try self.allocator.reallocAtLeast(self.allocatedSlice(), new_capacity);
                 self.items.ptr = new_memory.ptr;
                 self.capacity = new_memory.len;
             } else {
@@ -464,14 +455,11 @@ pub fn ArrayListAlignedUnmanaged(comptime T: type, comptime alignment: ?u29) typ
         pub const Slice = if (alignment) |a| ([]align(a) T) else []T;
 
         /// Initialize with capacity to hold at least num elements.
+        /// The resulting capacity is likely to be equal to `num`.
         /// Deinitialize with `deinit` or use `toOwnedSlice`.
         pub fn initCapacity(allocator: *Allocator, num: usize) !Self {
             var self = Self{};
-
-            const new_memory = try allocator.allocAdvanced(T, alignment, num, .at_least);
-            self.items.ptr = new_memory.ptr;
-            self.capacity = new_memory.len;
-
+            try self.ensureTotalCapacityPrecise(allocator, num);
             return self;
         }
 
@@ -530,7 +518,7 @@ pub fn ArrayListAlignedUnmanaged(comptime T: type, comptime alignment: ?u29) typ
         pub fn replaceRange(self: *Self, allocator: *Allocator, start: usize, len: usize, new_items: []const T) !void {
             var managed = self.toManaged(allocator);
             try managed.replaceRange(start, len, new_items);
-            self.* = managed.toUnmanaged();
+            self.* = managed.moveToUnmanaged();
         }
 
         /// Extend the list by 1 element. Allocates more memory as necessary.
@@ -588,6 +576,29 @@ pub fn ArrayListAlignedUnmanaged(comptime T: type, comptime alignment: ?u29) typ
             assert(new_len <= self.capacity);
             self.items.len = new_len;
             mem.copy(T, self.items[old_len..], items);
+        }
+
+        pub const WriterContext = struct {
+            self: *Self,
+            allocator: *Allocator,
+        };
+
+        pub const Writer = if (T != u8)
+            @compileError("The Writer interface is only defined for ArrayList(u8) " ++
+                "but the given type is ArrayList(" ++ @typeName(T) ++ ")")
+        else
+            std.io.Writer(WriterContext, error{OutOfMemory}, appendWrite);
+
+        /// Initializes a Writer which will append to the list.
+        pub fn writer(self: *Self, allocator: *Allocator) Writer {
+            return .{ .context = .{ .self = self, .allocator = allocator } };
+        }
+
+        /// Same as `append` except it returns the number of bytes written, which is always the same
+        /// as `m.len`. The purpose of this function existing is to match `std.io.Writer` API.
+        fn appendWrite(context: WriterContext, m: []const u8) !usize {
+            try context.self.appendSlice(context.allocator, m);
+            return m.len;
         }
 
         /// Append a value to the list `n` times.
@@ -648,8 +659,7 @@ pub fn ArrayListAlignedUnmanaged(comptime T: type, comptime alignment: ?u29) typ
             self.capacity = 0;
         }
 
-        /// Deprecated: call `ensureUnusedCapacity` or `ensureTotalCapacity`.
-        pub const ensureCapacity = ensureTotalCapacity;
+        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
 
         /// Modify the array so that it can hold at least `new_capacity` items.
         /// Invalidates pointers if additional memory is needed.
@@ -662,7 +672,17 @@ pub fn ArrayListAlignedUnmanaged(comptime T: type, comptime alignment: ?u29) typ
                 if (better_capacity >= new_capacity) break;
             }
 
-            const new_memory = try allocator.reallocAtLeast(self.allocatedSlice(), better_capacity);
+            return self.ensureTotalCapacityPrecise(allocator, better_capacity);
+        }
+
+        /// Modify the array so that it can hold at least `new_capacity` items.
+        /// Like `ensureTotalCapacity`, but the resulting capacity is much more likely
+        /// (but not guaranteed) to be equal to `new_capacity`.
+        /// Invalidates pointers if additional memory is needed.
+        pub fn ensureTotalCapacityPrecise(self: *Self, allocator: *Allocator, new_capacity: usize) !void {
+            if (self.capacity >= new_capacity) return;
+
+            const new_memory = try allocator.reallocAtLeast(self.allocatedSlice(), new_capacity);
             self.items.ptr = new_memory.ptr;
             self.capacity = new_memory.len;
         }
@@ -1212,6 +1232,33 @@ test "std.ArrayList(u8)/ArrayListAligned implements writer" {
     }
 }
 
+test "std.ArrayListUnmanaged(u8) implements writer" {
+    const a = testing.allocator;
+
+    {
+        var buffer: ArrayListUnmanaged(u8) = .{};
+        defer buffer.deinit(a);
+
+        const x: i32 = 42;
+        const y: i32 = 1234;
+        try buffer.writer(a).print("x: {}\ny: {}\n", .{ x, y });
+
+        try testing.expectEqualSlices(u8, "x: 42\ny: 1234\n", buffer.items);
+    }
+    {
+        var list: ArrayListAlignedUnmanaged(u8, 2) = .{};
+        defer list.deinit(a);
+
+        const writer = list.writer(a);
+        try writer.writeAll("a");
+        try writer.writeAll("bc");
+        try writer.writeAll("d");
+        try writer.writeAll("efg");
+
+        try testing.expectEqualSlices(u8, list.items, "abcdefg");
+    }
+}
+
 test "std.ArrayList/ArrayListUnmanaged.shrink still sets length on error.OutOfMemory" {
     // use an arena allocator to make sure realloc returns error.OutOfMemory
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1274,7 +1321,7 @@ test "std.ArrayList/ArrayListUnmanaged.toOwnedSliceSentinel" {
 
         const result = try list.toOwnedSliceSentinel(0);
         defer a.free(result);
-        try testing.expectEqualStrings(result, mem.spanZ(result.ptr));
+        try testing.expectEqualStrings(result, mem.sliceTo(result.ptr, 0));
     }
     {
         var list = ArrayListUnmanaged(u8){};
@@ -1284,7 +1331,7 @@ test "std.ArrayList/ArrayListUnmanaged.toOwnedSliceSentinel" {
 
         const result = try list.toOwnedSliceSentinel(a, 0);
         defer a.free(result);
-        try testing.expectEqualStrings(result, mem.spanZ(result.ptr));
+        try testing.expectEqualStrings(result, mem.sliceTo(result.ptr, 0));
     }
 }
 

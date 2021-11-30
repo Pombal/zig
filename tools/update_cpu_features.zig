@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const fs = std.fs;
 const mem = std.mem;
 const json = std.json;
@@ -219,7 +220,6 @@ const llvm_targets = [_]LlvmTarget{
                     "use_postra_scheduler",
                     "use_reciprocal_square_root",
                     "v8a",
-                    "zcz_fp",
                 },
             },
             .{
@@ -236,7 +236,6 @@ const llvm_targets = [_]LlvmTarget{
                     "slow_paired_128",
                     "use_postra_scheduler",
                     "v8a",
-                    "zcz_fp",
                 },
             },
             .{
@@ -805,7 +804,7 @@ pub fn main() anyerror!void {
     const root_progress = try progress.start("", llvm_targets.len);
     defer root_progress.end();
 
-    if (std.builtin.single_threaded) {
+    if (builtin.single_threaded) {
         for (llvm_targets) |llvm_target| {
             try processOneTarget(Job{
                 .llvm_tblgen_exe = llvm_tblgen_exe,
@@ -876,16 +875,16 @@ fn processOneTarget(job: Job) anyerror!void {
     });
     tblgen_progress.end();
     if (child_result.stderr.len != 0) {
-        std.debug.warn("{s}\n", .{child_result.stderr});
+        std.debug.print("{s}\n", .{child_result.stderr});
     }
 
     const json_text = switch (child_result.term) {
         .Exited => |code| if (code == 0) child_result.stdout else {
-            std.debug.warn("llvm-tblgen exited with code {d}\n", .{code});
+            std.debug.print("llvm-tblgen exited with code {d}\n", .{code});
             std.process.exit(1);
         },
         else => {
-            std.debug.warn("llvm-tblgen crashed\n", .{});
+            std.debug.print("llvm-tblgen crashed\n", .{});
             std.process.exit(1);
         },
     };

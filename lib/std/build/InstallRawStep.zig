@@ -12,7 +12,6 @@ const elf = std.elf;
 const fs = std.fs;
 const io = std.io;
 const sort = std.sort;
-const warn = std.debug.warn;
 
 const BinaryElfSection = struct {
     elfOffset: u64,
@@ -96,8 +95,7 @@ const BinaryElfOutput = struct {
 
         sort.sort(*BinaryElfSegment, self.segments.items, {}, segmentSortCompare);
 
-        if (self.segments.items.len > 0) {
-            const firstSegment = self.segments.items[0];
+        for (self.segments.items) |firstSegment, i| {
             if (firstSegment.firstSection) |firstSection| {
                 const diff = firstSection.elfOffset - firstSegment.elfOffset;
 
@@ -107,9 +105,10 @@ const BinaryElfOutput = struct {
 
                 const basePhysicalAddress = firstSegment.physicalAddress;
 
-                for (self.segments.items) |segment| {
+                for (self.segments.items[i + 1 ..]) |segment| {
                     segment.binaryOffset = segment.physicalAddress - basePhysicalAddress;
                 }
+                break;
             }
         }
 
@@ -387,7 +386,7 @@ fn make(step: *Step) !void {
     const builder = self.builder;
 
     if (self.artifact.target.getObjectFormat() != .elf) {
-        warn("InstallRawStep only works with ELF format.\n", .{});
+        std.debug.print("InstallRawStep only works with ELF format.\n", .{});
         return error.InvalidObjectFormat;
     }
 

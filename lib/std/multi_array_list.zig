@@ -151,7 +151,7 @@ pub fn MultiArrayList(comptime S: type) type {
         }
 
         /// Obtain all the data for one array element.
-        pub fn get(self: *Self, index: usize) S {
+        pub fn get(self: Self, index: usize) S {
             const slices = self.slice();
             var result: S = undefined;
             inline for (fields) |field_info, i| {
@@ -309,8 +309,7 @@ pub fn MultiArrayList(comptime S: type) type {
             self.len = new_len;
         }
 
-        /// Deprecated: call `ensureUnusedCapacity` or `ensureTotalCapacity`.
-        pub const ensureCapacity = ensureTotalCapacity;
+        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
 
         /// Modify the array so that it can hold at least `new_capacity` items.
         /// Implements super-linear growth to achieve amortized O(1) append operations.
