@@ -5033,18 +5033,21 @@ pub fn addCases(ctx: *TestContext) !void {
         "tmp.zig:2:5: note: control flow is diverted here",
     });
 
-    ctx.objErrStage1("unreachable code - multiple things",
+    ctx.objErrStage1("unreachable code - nested returns",
         \\export fn a() i32 {
         \\    return return 1;
-        \\}
-        \\export fn b(value: u32) bool {
-        \\    return 1 < value < 1000;
         \\}
     , &[_][]const u8{
         "tmp.zig:2:5: error: unreachable code",
         "tmp.zig:2:12: note: control flow is diverted here",
-        "tmp.zig:5:22: error: unreachable code",
-        "tmp.zig:5:5: note: control flow is diverted here",
+    });
+
+    ctx.objErrStage1("chained comparison operators",
+        \\export fn a(value: u32) bool {
+        \\    return 1 < value < 1000;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:22: error: comparison operators cannot be chained",
     });
 
     ctx.objErrStage1("bad import",
@@ -7569,7 +7572,7 @@ pub fn addCases(ctx: *TestContext) !void {
         \\
         \\export fn entry() void {
         \\    const a = MdNode.Header {
-        \\        .text = MdText.init(&std.testing.allocator),
+        \\        .text = MdText.init(std.testing.allocator),
         \\        .weight = HeaderWeight.H1,
         \\    };
         \\    _ = a;
@@ -8910,7 +8913,7 @@ pub fn addCases(ctx: *TestContext) !void {
     });
 
     ctx.objErrStage1("saturating arithmetic does not allow floats",
-        \\pub fn main() !void {
+        \\export fn a() void {
         \\    _ = @as(f32, 1.0) +| @as(f32, 1.0);
         \\}
     , &[_][]const u8{
@@ -8918,7 +8921,7 @@ pub fn addCases(ctx: *TestContext) !void {
     });
 
     ctx.objErrStage1("saturating shl does not allow negative rhs at comptime",
-        \\pub fn main() !void {
+        \\export fn a() void {
         \\    _ = @as(i32, 1) <<| @as(i32, -2);
         \\}
     , &[_][]const u8{
@@ -8926,7 +8929,7 @@ pub fn addCases(ctx: *TestContext) !void {
     });
 
     ctx.objErrStage1("saturating shl assign does not allow negative rhs at comptime",
-        \\pub fn main() !void {
+        \\export fn a() void {
         \\    comptime {
         \\      var x = @as(i32, 1);
         \\      x <<|= @as(i32, -2);

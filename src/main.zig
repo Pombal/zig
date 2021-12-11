@@ -139,7 +139,7 @@ pub fn main() anyerror!void {
     const gpa = gpa: {
         if (!builtin.link_libc) {
             gpa_need_deinit = true;
-            break :gpa &general_purpose_allocator.allocator;
+            break :gpa general_purpose_allocator.allocator();
         }
         // We would prefer to use raw libc allocator here, but cannot
         // use it if it won't support the alignment we need.
@@ -153,19 +153,19 @@ pub fn main() anyerror!void {
     };
     var arena_instance = std.heap.ArenaAllocator.init(gpa);
     defer arena_instance.deinit();
-    const arena = &arena_instance.allocator;
+    const arena = arena_instance.allocator();
 
     const args = try process.argsAlloc(arena);
 
     if (tracy.enable_allocation) {
         var gpa_tracy = tracy.tracyAllocator(gpa);
-        return mainArgs(&gpa_tracy.allocator, arena, args);
+        return mainArgs(gpa_tracy.allocator(), arena, args);
     }
 
     return mainArgs(gpa, arena, args);
 }
 
-pub fn mainArgs(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !void {
+pub fn mainArgs(gpa: Allocator, arena: Allocator, args: []const []const u8) !void {
     if (args.len <= 1) {
         std.log.info("{s}", .{usage});
         fatal("expected command argument", .{});
@@ -369,8 +369,9 @@ const usage_build_generic =
     \\  -fno-Clang                Prevent using Clang as the C/C++ compilation backend
     \\  -fstage1                  Force using bootstrap compiler as the codegen backend
     \\  -fno-stage1               Prevent using bootstrap compiler as the codegen backend
+    \\  -fsingle-threaded         Code assumes there is only one thread
+    \\  -fno-single-threaded      Code may not assume there is only one thread
     \\  --strip                   Omit debug symbols
-    \\  --single-threaded         Code assumes it is only used single-threaded
     \\  -ofmt=[mode]              Override target object format
     \\    elf                     Executable and Linking Format
     \\    c                       C source code
@@ -535,7 +536,7 @@ const Emit = union(enum) {
     }
 };
 
-fn optionalStringEnvVar(arena: *Allocator, name: []const u8) !?[]const u8 {
+fn optionalStringEnvVar(arena: Allocator, name: []const u8) !?[]const u8 {
     if (std.process.getEnvVarOwned(arena, name)) |value| {
         return value;
     } else |err| switch (err) {
@@ -554,8 +555,8 @@ const ArgMode = union(enum) {
 };
 
 fn buildOutputType(
-    gpa: *Allocator,
-    arena: *Allocator,
+    gpa: Allocator,
+    arena: Allocator,
     all_args: []const []const u8,
     arg_mode: ArgMode,
 ) !void {
@@ -564,12 +565,12 @@ fn buildOutputType(
     var provided_name: ?[]const u8 = null;
     var link_mode: ?std.builtin.LinkMode = null;
     var dll_export_fns: ?bool = null;
+    var single_threaded: ?bool = null;
     var root_src_file: ?[]const u8 = null;
     var version: std.builtin.Version = .{ .major = 0, .minor = 0, .patch = 0 };
     var have_version = false;
     var compatibility_version: ?std.builtin.Version = null;
     var strip = false;
-    var single_threaded = false;
     var function_sections = false;
     var watch = false;
     var debug_compile_errors = false;
@@ -1129,8 +1130,10 @@ fn buildOutputType(
                         emit_bin = .no;
                     } else if (mem.eql(u8, arg, "--strip")) {
                         strip = true;
-                    } else if (mem.eql(u8, arg, "--single-threaded")) {
+                    } else if (mem.eql(u8, arg, "-fsingle-threaded")) {
                         single_threaded = true;
+                    } else if (mem.eql(u8, arg, "-fno-single-threaded")) {
+                        single_threaded = false;
                     } else if (mem.eql(u8, arg, "-ffunction-sections")) {
                         function_sections = true;
                     } else if (mem.eql(u8, arg, "--eh-frame-hdr")) {
@@ -2234,11 +2237,14 @@ fn buildOutputType(
     };
     defer emit_docs_resolved.deinit();
 
-    const is_dyn_lib = switch (output_mode) {
-        .Obj, .Exe => false,
+    const is_exe_or_dyn_lib = switch (output_mode) {
+        .Obj => false,
         .Lib => (link_mode orelse .Static) == .Dynamic,
+        .Exe => true,
     };
-    const implib_eligible = is_dyn_lib and
+    // Note that cmake when targeting Windows will try to execute
+    // zig cc to make an executable and output an implib too.
+    const implib_eligible = is_exe_or_dyn_lib and
         emit_bin_loc != null and target_info.target.os.tag == .windows;
     if (!implib_eligible) {
         if (!emit_implib_arg_provided) {
@@ -2531,11 +2537,12 @@ fn buildOutputType(
             test_exec_args.items,
             self_exe_path,
             arg_mode,
-            target_info.target,
+            target_info,
             watch,
             &comp_destroyed,
             all_args,
             runtime_args_start,
+            link_libc,
         );
     }
 
@@ -2603,11 +2610,12 @@ fn buildOutputType(
                         test_exec_args.items,
                         self_exe_path,
                         arg_mode,
-                        target_info.target,
+                        target_info,
                         watch,
                         &comp_destroyed,
                         all_args,
                         runtime_args_start,
+                        link_libc,
                     );
                 },
                 .update_and_run => {
@@ -2628,11 +2636,12 @@ fn buildOutputType(
                         test_exec_args.items,
                         self_exe_path,
                         arg_mode,
-                        target_info.target,
+                        target_info,
                         watch,
                         &comp_destroyed,
                         all_args,
                         runtime_args_start,
+                        link_libc,
                     );
                 },
             }
@@ -2645,7 +2654,7 @@ fn buildOutputType(
 }
 
 fn parseCrossTargetOrReportFatalError(
-    allocator: *Allocator,
+    allocator: Allocator,
     opts: std.zig.CrossTarget.ParseOptions,
 ) !std.zig.CrossTarget {
     var opts_with_diags = opts;
@@ -2686,17 +2695,18 @@ fn parseCrossTargetOrReportFatalError(
 
 fn runOrTest(
     comp: *Compilation,
-    gpa: *Allocator,
-    arena: *Allocator,
+    gpa: Allocator,
+    arena: Allocator,
     emit_bin_loc: ?Compilation.EmitLoc,
     test_exec_args: []const ?[]const u8,
     self_exe_path: []const u8,
     arg_mode: ArgMode,
-    target: std.Target,
+    target_info: std.zig.system.NativeTargetInfo,
     watch: bool,
     comp_destroyed: *bool,
     all_args: []const []const u8,
     runtime_args_start: ?usize,
+    link_libc: bool,
 ) !void {
     const exe_loc = emit_bin_loc orelse return;
     const exe_directory = exe_loc.directory orelse comp.bin_file.options.emit.?.directory;
@@ -2708,20 +2718,6 @@ fn runOrTest(
     defer argv.deinit();
 
     if (test_exec_args.len == 0) {
-        if (!builtin.target.canExecBinariesOf(target)) {
-            switch (arg_mode) {
-                .zig_test => {
-                    warn("created {s} but skipping execution because it is non-native", .{exe_path});
-                    if (!watch) return cleanExit();
-                    return;
-                },
-                else => {
-                    std.log.err("unable to execute {s}: non-native", .{exe_path});
-                    if (!watch) process.exit(1);
-                    return;
-                },
-            }
-        }
         // when testing pass the zig_exe_path to argv
         if (arg_mode == .zig_test)
             try argv.appendSlice(&[_][]const u8{
@@ -2751,6 +2747,7 @@ fn runOrTest(
     if (std.process.can_execv and arg_mode == .run and !watch) {
         // execv releases the locks; no need to destroy the Compilation here.
         const err = std.process.execv(gpa, argv.items);
+        try warnAboutForeignBinaries(gpa, arena, arg_mode, target_info, link_libc);
         const cmd = try argvCmd(arena, argv.items);
         fatal("the following command failed to execve with '{s}':\n{s}", .{ @errorName(err), cmd });
     } else {
@@ -2768,7 +2765,11 @@ fn runOrTest(
             comp_destroyed.* = true;
         }
 
-        const term = try child.spawnAndWait();
+        const term = child.spawnAndWait() catch |err| {
+            try warnAboutForeignBinaries(gpa, arena, arg_mode, target_info, link_libc);
+            const cmd = try argvCmd(arena, argv.items);
+            fatal("the following command failed with '{s}':\n{s}", .{ @errorName(err), cmd });
+        };
         switch (arg_mode) {
             .run, .build => {
                 switch (term) {
@@ -2818,7 +2819,7 @@ const AfterUpdateHook = union(enum) {
     update: []const u8,
 };
 
-fn updateModule(gpa: *Allocator, comp: *Compilation, hook: AfterUpdateHook) !void {
+fn updateModule(gpa: Allocator, comp: *Compilation, hook: AfterUpdateHook) !void {
     try comp.update();
 
     var errors = try comp.getAllErrorsAlloc();
@@ -2872,7 +2873,7 @@ fn updateModule(gpa: *Allocator, comp: *Compilation, hook: AfterUpdateHook) !voi
     }
 }
 
-fn freePkgTree(gpa: *Allocator, pkg: *Package, free_parent: bool) void {
+fn freePkgTree(gpa: Allocator, pkg: *Package, free_parent: bool) void {
     {
         var it = pkg.table.valueIterator();
         while (it.next()) |value| {
@@ -2884,7 +2885,7 @@ fn freePkgTree(gpa: *Allocator, pkg: *Package, free_parent: bool) void {
     }
 }
 
-fn cmdTranslateC(comp: *Compilation, arena: *Allocator, enable_cache: bool) !void {
+fn cmdTranslateC(comp: *Compilation, arena: Allocator, enable_cache: bool) !void {
     if (!build_options.have_llvm)
         fatal("cannot translate-c: compiler built without LLVM extensions", .{});
 
@@ -3031,7 +3032,7 @@ pub const usage_libc =
     \\
 ;
 
-pub fn cmdLibC(gpa: *Allocator, args: []const []const u8) !void {
+pub fn cmdLibC(gpa: Allocator, args: []const []const u8) !void {
     var input_file: ?[]const u8 = null;
     var target_arch_os_abi: []const u8 = "native";
     {
@@ -3100,8 +3101,8 @@ pub const usage_init =
 ;
 
 pub fn cmdInit(
-    gpa: *Allocator,
-    arena: *Allocator,
+    gpa: Allocator,
+    arena: Allocator,
     args: []const []const u8,
     output_mode: std.builtin.OutputMode,
 ) !void {
@@ -3196,7 +3197,7 @@ pub const usage_build =
     \\
 ;
 
-pub fn cmdBuild(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !void {
+pub fn cmdBuild(gpa: Allocator, arena: Allocator, args: []const []const u8) !void {
     var prominent_compile_errors: bool = false;
 
     // We want to release all the locks before executing the child process, so we make a nice
@@ -3436,7 +3437,7 @@ pub fn cmdBuild(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !v
     }
 }
 
-fn argvCmd(allocator: *Allocator, argv: []const []const u8) ![]u8 {
+fn argvCmd(allocator: Allocator, argv: []const []const u8) ![]u8 {
     var cmd = std.ArrayList(u8).init(allocator);
     defer cmd.deinit();
     for (argv[0 .. argv.len - 1]) |arg| {
@@ -3448,7 +3449,7 @@ fn argvCmd(allocator: *Allocator, argv: []const []const u8) ![]u8 {
 }
 
 fn readSourceFileToEndAlloc(
-    allocator: *mem.Allocator,
+    allocator: mem.Allocator,
     input: *const fs.File,
     size_hint: ?usize,
 ) ![:0]u8 {
@@ -3518,14 +3519,14 @@ const Fmt = struct {
     any_error: bool,
     check_ast: bool,
     color: Color,
-    gpa: *Allocator,
-    arena: *Allocator,
+    gpa: Allocator,
+    arena: Allocator,
     out_buffer: std.ArrayList(u8),
 
     const SeenMap = std.AutoHashMap(fs.File.INode, void);
 };
 
-pub fn cmdFmt(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !void {
+pub fn cmdFmt(gpa: Allocator, arena: Allocator, args: []const []const u8) !void {
     var color: Color = .auto;
     var stdin_flag: bool = false;
     var check_flag: bool = false;
@@ -3619,7 +3620,7 @@ pub fn cmdFmt(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !voi
                 var errors = std.ArrayList(Compilation.AllErrors.Message).init(gpa);
                 defer errors.deinit();
 
-                try Compilation.AllErrors.addZir(&arena_instance.allocator, &errors, &file);
+                try Compilation.AllErrors.addZir(arena_instance.allocator(), &errors, &file);
                 const ttyconf: std.debug.TTY.Config = switch (color) {
                     .auto => std.debug.detectTTYConfig(),
                     .on => .escape_codes,
@@ -3818,7 +3819,7 @@ fn fmtPathFile(
             var errors = std.ArrayList(Compilation.AllErrors.Message).init(fmt.gpa);
             defer errors.deinit();
 
-            try Compilation.AllErrors.addZir(&arena_instance.allocator, &errors, &file);
+            try Compilation.AllErrors.addZir(arena_instance.allocator(), &errors, &file);
             const ttyconf: std.debug.TTY.Config = switch (fmt.color) {
                 .auto => std.debug.detectTTYConfig(),
                 .on => .escape_codes,
@@ -3855,8 +3856,8 @@ fn fmtPathFile(
 }
 
 fn printErrMsgToStdErr(
-    gpa: *mem.Allocator,
-    arena: *mem.Allocator,
+    gpa: mem.Allocator,
+    arena: mem.Allocator,
     parse_error: Ast.Error,
     tree: Ast,
     path: []const u8,
@@ -3938,7 +3939,7 @@ extern "c" fn ZigClang_main(argc: c_int, argv: [*:null]?[*:0]u8) c_int;
 extern "c" fn ZigLlvmAr_main(argc: c_int, argv: [*:null]?[*:0]u8) c_int;
 
 /// TODO https://github.com/ziglang/zig/issues/3257
-fn punt_to_clang(arena: *Allocator, args: []const []const u8) error{OutOfMemory} {
+fn punt_to_clang(arena: Allocator, args: []const []const u8) error{OutOfMemory} {
     if (!build_options.have_llvm)
         fatal("`zig cc` and `zig c++` unavailable: compiler built without LLVM extensions", .{});
     // Convert the args to the format Clang expects.
@@ -3952,7 +3953,7 @@ fn punt_to_clang(arena: *Allocator, args: []const []const u8) error{OutOfMemory}
 }
 
 /// TODO https://github.com/ziglang/zig/issues/3257
-fn punt_to_llvm_ar(arena: *Allocator, args: []const []const u8) error{OutOfMemory} {
+fn punt_to_llvm_ar(arena: Allocator, args: []const []const u8) error{OutOfMemory} {
     if (!build_options.have_llvm)
         fatal("`zig ar`, `zig dlltool`, `zig ranlib', and `zig lib` unavailable: compiler built without LLVM extensions", .{});
 
@@ -3973,7 +3974,7 @@ fn punt_to_llvm_ar(arena: *Allocator, args: []const []const u8) error{OutOfMemor
 /// * `lld-link` - COFF
 /// * `wasm-ld` - WebAssembly
 /// TODO https://github.com/ziglang/zig/issues/3257
-pub fn punt_to_lld(arena: *Allocator, args: []const []const u8) error{OutOfMemory} {
+pub fn punt_to_lld(arena: Allocator, args: []const []const u8) error{OutOfMemory} {
     if (!build_options.have_llvm)
         fatal("`zig {s}` unavailable: compiler built without LLVM extensions", .{args[0]});
     // Convert the args to the format LLD expects.
@@ -4009,7 +4010,7 @@ pub const ClangArgIterator = struct {
     argv: []const []const u8,
     next_index: usize,
     root_args: ?*Args,
-    allocator: *Allocator,
+    allocator: Allocator,
 
     pub const ZigEquivalent = enum {
         target,
@@ -4069,7 +4070,7 @@ pub const ClangArgIterator = struct {
         argv: []const []const u8,
     };
 
-    fn init(allocator: *Allocator, argv: []const []const u8) ClangArgIterator {
+    fn init(allocator: Allocator, argv: []const []const u8) ClangArgIterator {
         return .{
             .next_index = 2, // `zig cc foo` this points to `foo`
             .has_next = argv.len > 2,
@@ -4308,7 +4309,7 @@ test "fds" {
     gimmeMoreOfThoseSweetSweetFileDescriptors();
 }
 
-fn detectNativeTargetInfo(gpa: *Allocator, cross_target: std.zig.CrossTarget) !std.zig.system.NativeTargetInfo {
+fn detectNativeTargetInfo(gpa: Allocator, cross_target: std.zig.CrossTarget) !std.zig.system.NativeTargetInfo {
     return std.zig.system.NativeTargetInfo.detect(gpa, cross_target);
 }
 
@@ -4343,8 +4344,8 @@ const usage_ast_check =
 ;
 
 pub fn cmdAstCheck(
-    gpa: *Allocator,
-    arena: *Allocator,
+    gpa: Allocator,
+    arena: Allocator,
     args: []const []const u8,
 ) !void {
     const Module = @import("Module.zig");
@@ -4513,8 +4514,8 @@ pub fn cmdAstCheck(
 
 /// This is only enabled for debug builds.
 pub fn cmdChangelist(
-    gpa: *Allocator,
-    arena: *Allocator,
+    gpa: Allocator,
+    arena: Allocator,
     args: []const []const u8,
 ) !void {
     const Module = @import("Module.zig");
@@ -4661,4 +4662,115 @@ fn parseIntSuffix(arg: []const u8, prefix_len: usize) u64 {
     return std.fmt.parseUnsigned(u64, arg[prefix_len..], 0) catch |err| {
         fatal("unable to parse '{s}': {s}", .{ arg, @errorName(err) });
     };
+}
+
+fn warnAboutForeignBinaries(
+    gpa: Allocator,
+    arena: Allocator,
+    arg_mode: ArgMode,
+    target_info: std.zig.system.NativeTargetInfo,
+    link_libc: bool,
+) !void {
+    const host_cross_target: std.zig.CrossTarget = .{};
+    const host_target_info = try detectNativeTargetInfo(gpa, host_cross_target);
+
+    switch (host_target_info.getExternalExecutor(target_info, .{ .link_libc = link_libc })) {
+        .native => return,
+        .rosetta => {
+            const host_name = try host_target_info.target.zigTriple(arena);
+            const foreign_name = try target_info.target.zigTriple(arena);
+            warn("the host system ({s}) does not appear to be capable of executing binaries from the target ({s}). Consider installing Rosetta.", .{
+                host_name, foreign_name,
+            });
+        },
+        .qemu => |qemu| {
+            const host_name = try host_target_info.target.zigTriple(arena);
+            const foreign_name = try target_info.target.zigTriple(arena);
+            switch (arg_mode) {
+                .zig_test => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '--test-cmd {s} --test-cmd-bin' " ++
+                        "to run the tests",
+                    .{ host_name, foreign_name, qemu },
+                ),
+                else => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '{s}' to run the binary",
+                    .{ host_name, foreign_name, qemu },
+                ),
+            }
+        },
+        .wine => |wine| {
+            const host_name = try host_target_info.target.zigTriple(arena);
+            const foreign_name = try target_info.target.zigTriple(arena);
+            switch (arg_mode) {
+                .zig_test => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '--test-cmd {s} --test-cmd-bin' " ++
+                        "to run the tests",
+                    .{ host_name, foreign_name, wine },
+                ),
+                else => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '{s}' to run the binary",
+                    .{ host_name, foreign_name, wine },
+                ),
+            }
+        },
+        .wasmtime => |wasmtime| {
+            const host_name = try host_target_info.target.zigTriple(arena);
+            const foreign_name = try target_info.target.zigTriple(arena);
+            switch (arg_mode) {
+                .zig_test => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '--test-cmd {s} --test-cmd-bin' " ++
+                        "to run the tests",
+                    .{ host_name, foreign_name, wasmtime },
+                ),
+                else => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '{s}' to run the binary",
+                    .{ host_name, foreign_name, wasmtime },
+                ),
+            }
+        },
+        .darling => |darling| {
+            const host_name = try host_target_info.target.zigTriple(arena);
+            const foreign_name = try target_info.target.zigTriple(arena);
+            switch (arg_mode) {
+                .zig_test => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '--test-cmd {s} --test-cmd-bin' " ++
+                        "to run the tests",
+                    .{ host_name, foreign_name, darling },
+                ),
+                else => warn(
+                    "the host system ({s}) does not appear to be capable of executing binaries " ++
+                        "from the target ({s}). Consider using '{s}' to run the binary",
+                    .{ host_name, foreign_name, darling },
+                ),
+            }
+        },
+        .bad_dl => |foreign_dl| {
+            const host_dl = host_target_info.dynamic_linker.get() orelse "(none)";
+            const tip_suffix = switch (arg_mode) {
+                .zig_test => ", '--test-no-exec', or '--test-cmd'",
+                else => "",
+            };
+            warn("the host system does not appear to be capable of executing binaries from the target because the host dynamic linker is '{s}', while the target dynamic linker is '{s}'. Consider using '--dynamic-linker'{s}", .{
+                host_dl, foreign_dl, tip_suffix,
+            });
+        },
+        .bad_os_or_cpu => {
+            const host_name = try host_target_info.target.zigTriple(arena);
+            const foreign_name = try target_info.target.zigTriple(arena);
+            const tip_suffix = switch (arg_mode) {
+                .zig_test => ". Consider using '--test-no-exec' or '--test-cmd'",
+                else => "",
+            };
+            warn("the host system ({s}) does not appear to be capable of executing binaries from the target ({s}){s}", .{
+                host_name, foreign_name, tip_suffix,
+            });
+        },
+    }
 }

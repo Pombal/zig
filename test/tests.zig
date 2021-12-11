@@ -270,8 +270,14 @@ const test_targets = blk: {
                 .os_tag = .macos,
                 .abi = .gnu,
             },
-            // https://github.com/ziglang/zig/issues/3295
-            .disable_native = true,
+        },
+
+        TestTarget{
+            .target = .{
+                .cpu_arch = .aarch64,
+                .os_tag = .macos,
+                .abi = .gnu,
+            },
         },
 
         TestTarget{
@@ -507,11 +513,6 @@ pub fn addPkgTests(
     skip_single_threaded: bool,
     skip_non_native: bool,
     skip_libc: bool,
-    is_wine_enabled: bool,
-    is_qemu_enabled: bool,
-    is_wasmtime_enabled: bool,
-    is_darling_enabled: bool,
-    glibc_dir: ?[]const u8,
 ) *build.Step {
     const step = b.step(b.fmt("test-{s}", .{name}), desc);
 
@@ -568,11 +569,6 @@ pub fn addPkgTests(
             these_tests.linkSystemLibrary("c");
         }
         these_tests.overrideZigLibDir("lib");
-        these_tests.enable_wine = is_wine_enabled;
-        these_tests.enable_qemu = is_qemu_enabled;
-        these_tests.enable_wasmtime = is_wasmtime_enabled;
-        these_tests.enable_darling = is_darling_enabled;
-        these_tests.glibc_multi_install_dir = glibc_dir;
         these_tests.addIncludeDir("test");
 
         step.dependOn(&these_tests.step);

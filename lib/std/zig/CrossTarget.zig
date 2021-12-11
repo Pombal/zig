@@ -520,7 +520,7 @@ pub fn isNative(self: CrossTarget) bool {
     return self.isNativeCpu() and self.isNativeOs() and self.isNativeAbi();
 }
 
-pub fn zigTriple(self: CrossTarget, allocator: *mem.Allocator) error{OutOfMemory}![]u8 {
+pub fn zigTriple(self: CrossTarget, allocator: mem.Allocator) error{OutOfMemory}![]u8 {
     if (self.isNative()) {
         return allocator.dupe(u8, "native");
     }
@@ -559,13 +559,13 @@ pub fn zigTriple(self: CrossTarget, allocator: *mem.Allocator) error{OutOfMemory
     return result.toOwnedSlice();
 }
 
-pub fn allocDescription(self: CrossTarget, allocator: *mem.Allocator) ![]u8 {
+pub fn allocDescription(self: CrossTarget, allocator: mem.Allocator) ![]u8 {
     // TODO is there anything else worthy of the description that is not
     // already captured in the triple?
     return self.zigTriple(allocator);
 }
 
-pub fn linuxTriple(self: CrossTarget, allocator: *mem.Allocator) ![]u8 {
+pub fn linuxTriple(self: CrossTarget, allocator: mem.Allocator) ![]u8 {
     return Target.linuxTripleSimple(allocator, self.getCpuArch(), self.getOsTag(), self.getAbi());
 }
 
@@ -576,7 +576,7 @@ pub fn wantSharedLibSymLinks(self: CrossTarget) bool {
 pub const VcpkgLinkage = std.builtin.LinkMode;
 
 /// Returned slice must be freed by the caller.
-pub fn vcpkgTriplet(self: CrossTarget, allocator: *mem.Allocator, linkage: VcpkgLinkage) ![]u8 {
+pub fn vcpkgTriplet(self: CrossTarget, allocator: mem.Allocator, linkage: VcpkgLinkage) ![]u8 {
     const arch = switch (self.getCpuArch()) {
         .i386 => "x86",
         .x86_64 => "x64",
@@ -608,86 +608,6 @@ pub fn vcpkgTriplet(self: CrossTarget, allocator: *mem.Allocator, linkage: Vcpkg
     };
 
     return std.fmt.allocPrint(allocator, "{s}-{s}{s}", .{ arch, os, static_suffix });
-}
-
-pub const Executor = union(enum) {
-    native,
-    qemu: []const u8,
-    wine: []const u8,
-    wasmtime: []const u8,
-    darling: []const u8,
-    unavailable,
-};
-
-/// Note that even a `CrossTarget` which returns `false` for `isNative` could still be natively executed.
-/// For example `-target arm-native` running on an aarch64 host.
-pub fn getExternalExecutor(self: CrossTarget) Executor {
-    const cpu_arch = self.getCpuArch();
-    const os_tag = self.getOsTag();
-    const os_match = os_tag == builtin.os.tag;
-
-    // If the OS and CPU arch match, the binary can be considered native.
-    // TODO additionally match the CPU features. This `getExternalExecutor` function should
-    // be moved to std.Target and match any chosen target against the native target.
-    if (os_match and cpu_arch == builtin.cpu.arch) {
-        // However, we also need to verify that the dynamic linker path is valid.
-        if (self.os_tag == null) {
-            return .native;
-        }
-        // TODO here we call toTarget, a deprecated function, because of the above TODO about moving
-        // this code to std.Target.
-        const opt_dl = self.dynamic_linker.get() orelse self.toTarget().standardDynamicLinkerPath().get();
-        if (opt_dl) |dl| blk: {
-            std.fs.cwd().access(dl, .{}) catch break :blk;
-            return .native;
-        }
-    }
-
-    // If the OS matches, we can use QEMU to emulate a foreign architecture.
-    if (os_match) {
-        return switch (cpu_arch) {
-            .aarch64 => Executor{ .qemu = "qemu-aarch64" },
-            .aarch64_be => Executor{ .qemu = "qemu-aarch64_be" },
-            .arm => Executor{ .qemu = "qemu-arm" },
-            .armeb => Executor{ .qemu = "qemu-armeb" },
-            .i386 => Executor{ .qemu = "qemu-i386" },
-            .mips => Executor{ .qemu = "qemu-mips" },
-            .mipsel => Executor{ .qemu = "qemu-mipsel" },
-            .mips64 => Executor{ .qemu = "qemu-mips64" },
-            .mips64el => Executor{ .qemu = "qemu-mips64el" },
-            .powerpc => Executor{ .qemu = "qemu-ppc" },
-            .powerpc64 => Executor{ .qemu = "qemu-ppc64" },
-            .powerpc64le => Executor{ .qemu = "qemu-ppc64le" },
-            .riscv32 => Executor{ .qemu = "qemu-riscv32" },
-            .riscv64 => Executor{ .qemu = "qemu-riscv64" },
-            .s390x => Executor{ .qemu = "qemu-s390x" },
-            .sparc => Executor{ .qemu = "qemu-sparc" },
-            .x86_64 => Executor{ .qemu = "qemu-x86_64" },
-            else => return .unavailable,
-        };
-    }
-
-    switch (os_tag) {
-        .windows => switch (cpu_arch.ptrBitWidth()) {
-            32 => return Executor{ .wine = "wine" },
-            64 => return Executor{ .wine = "wine64" },
-            else => return .unavailable,
-        },
-        .wasi => switch (cpu_arch.ptrBitWidth()) {
-            32 => return Executor{ .wasmtime = "wasmtime" },
-            else => return .unavailable,
-        },
-        .macos => {
-            // TODO loosen this check once upstream adds QEMU-based emulation
-            // layer for non-host architectures:
-            // https://github.com/darlinghq/darling/issues/863
-            if (cpu_arch != builtin.cpu.arch) {
-                return .unavailable;
-            }
-            return Executor{ .darling = "darling" };
-        },
-        else => return .unavailable,
-    }
 }
 
 pub fn isGnuLibC(self: CrossTarget) bool {

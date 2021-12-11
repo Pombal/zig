@@ -61,11 +61,17 @@ pub const Type = extern union {
             .c_longdouble,
             => return .Float,
 
+            .error_set,
+            .error_set_single,
+            .anyerror,
+            .error_set_inferred,
+            .error_set_merged,
+            => return .ErrorSet,
+
             .c_void, .@"opaque" => return .Opaque,
             .bool => return .Bool,
             .void => return .Void,
             .type => return .Type,
-            .error_set, .error_set_single, .anyerror, .error_set_inferred => return .ErrorSet,
             .comptime_int => return .ComptimeInt,
             .comptime_float => return .ComptimeFloat,
             .noreturn => return .NoReturn,
@@ -117,6 +123,7 @@ pub const Type = extern union {
             .empty_struct_literal,
             .@"struct",
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             => return .Struct,
@@ -608,6 +615,9 @@ pub const Type = extern union {
                 return true;
             },
             .ErrorSet => {
+                // TODO: revisit the language specification for how to evaluate equality
+                // for error set types.
+
                 if (a.tag() == .anyerror and b.tag() == .anyerror) {
                     return true;
                 }
@@ -728,7 +738,7 @@ pub const Type = extern union {
         }
     };
 
-    pub fn copy(self: Type, allocator: *Allocator) error{OutOfMemory}!Type {
+    pub fn copy(self: Type, allocator: Allocator) error{OutOfMemory}!Type {
         if (@enumToInt(self.tag_if_small_enough) < Tag.no_payload_count) {
             return Type{ .tag_if_small_enough = self.tag_if_small_enough };
         } else switch (self.ptr_otherwise.tag) {
@@ -789,6 +799,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .type_info,
@@ -892,6 +903,14 @@ pub const Type = extern union {
                     .payload = try payload.payload.copy(allocator),
                 });
             },
+            .error_set_merged => {
+                const names = self.castTag(.error_set_merged).?.data;
+                const duped_names = try allocator.alloc([]const u8, names.len);
+                for (duped_names) |*name, i| {
+                    name.* = try allocator.dupe(u8, names[i]);
+                }
+                return Tag.error_set_merged.create(allocator, duped_names);
+            },
             .error_set => return self.copyPayloadShallow(allocator, Payload.ErrorSet),
             .error_set_inferred => return self.copyPayloadShallow(allocator, Payload.ErrorSetInferred),
             .error_set_single => return self.copyPayloadShallow(allocator, Payload.Name),
@@ -905,7 +924,7 @@ pub const Type = extern union {
         }
     }
 
-    fn copyPayloadShallow(self: Type, allocator: *Allocator, comptime T: type) error{OutOfMemory}!Type {
+    fn copyPayloadShallow(self: Type, allocator: Allocator, comptime T: type) error{OutOfMemory}!Type {
         const payload = self.cast(T).?;
         const new_payload = try allocator.create(T);
         new_payload.* = payload.*;
@@ -1010,6 +1029,7 @@ pub const Type = extern union {
                 .float_mode => return writer.writeAll("std.builtin.FloatMode"),
                 .reduce_op => return writer.writeAll("std.builtin.ReduceOp"),
                 .call_options => return writer.writeAll("std.builtin.CallOptions"),
+                .prefetch_options => return writer.writeAll("std.builtin.PrefetchOptions"),
                 .export_options => return writer.writeAll("std.builtin.ExportOptions"),
                 .extern_options => return writer.writeAll("std.builtin.ExternOptions"),
                 .type_info => return writer.writeAll("std.builtin.TypeInfo"),
@@ -1185,6 +1205,16 @@ pub const Type = extern union {
                     const func = ty.castTag(.error_set_inferred).?.data.func;
                     return writer.print("(inferred error set of {s})", .{func.owner_decl.name});
                 },
+                .error_set_merged => {
+                    const names = ty.castTag(.error_set_merged).?.data;
+                    try writer.writeAll("error{");
+                    for (names) |name, i| {
+                        if (i != 0) try writer.writeByte(',');
+                        try writer.writeAll(name);
+                    }
+                    try writer.writeAll("}");
+                    return;
+                },
                 .error_set_single => {
                     const name = ty.castTag(.error_set_single).?.data;
                     return writer.print("error{{{s}}}", .{name});
@@ -1198,7 +1228,7 @@ pub const Type = extern union {
     }
 
     /// Returns a name suitable for `@typeName`.
-    pub fn nameAlloc(ty: Type, arena: *Allocator) Allocator.Error![:0]const u8 {
+    pub fn nameAlloc(ty: Type, arena: Allocator) Allocator.Error![:0]const u8 {
         const t = ty.tag();
         switch (t) {
             .inferred_alloc_const => unreachable,
@@ -1291,6 +1321,7 @@ pub const Type = extern union {
             .float_mode => return "FloatMode",
             .reduce_op => return "ReduceOp",
             .call_options => return "CallOptions",
+            .prefetch_options => return "PrefetchOptions",
             .export_options => return "ExportOptions",
             .extern_options => return "ExternOptions",
             .type_info => return "TypeInfo",
@@ -1349,6 +1380,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .manyptr_u8,
@@ -1365,6 +1397,7 @@ pub const Type = extern union {
             .error_set,
             .error_set_single,
             .error_set_inferred,
+            .error_set_merged,
             .@"opaque",
             .generic_poison,
             .array_u8,
@@ -1421,7 +1454,7 @@ pub const Type = extern union {
         };
     }
 
-    pub fn toValue(self: Type, allocator: *Allocator) Allocator.Error!Value {
+    pub fn toValue(self: Type, allocator: Allocator) Allocator.Error!Value {
         switch (self.tag()) {
             .u1 => return Value.initTag(.u1_type),
             .u8 => return Value.initTag(.u8_type),
@@ -1474,6 +1507,7 @@ pub const Type = extern union {
             .float_mode => return Value.initTag(.float_mode_type),
             .reduce_op => return Value.initTag(.reduce_op_type),
             .call_options => return Value.initTag(.call_options_type),
+            .prefetch_options => return Value.initTag(.prefetch_options_type),
             .export_options => return Value.initTag(.export_options_type),
             .extern_options => return Value.initTag(.extern_options_type),
             .type_info => return Value.initTag(.type_info_type),
@@ -1525,6 +1559,7 @@ pub const Type = extern union {
             .error_set,
             .error_set_single,
             .error_set_inferred,
+            .error_set_merged,
             .manyptr_u8,
             .manyptr_const_u8,
             .atomic_order,
@@ -1534,6 +1569,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .@"anyframe",
@@ -1721,6 +1757,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             => return 1,
@@ -1783,6 +1820,7 @@ pub const Type = extern union {
             .anyerror_void_error_union,
             .anyerror,
             .error_set_inferred,
+            .error_set_merged,
             => return 2, // TODO revisit this when we have the concept of the error tag type
 
             .array, .array_sentinel => return self.elemType().abiAlignment(target),
@@ -1899,6 +1937,7 @@ pub const Type = extern union {
             .var_args_param => unreachable,
             .generic_poison => unreachable,
             .call_options => unreachable, // missing call to resolveTypeFields
+            .prefetch_options => unreachable, // missing call to resolveTypeFields
             .export_options => unreachable, // missing call to resolveTypeFields
             .extern_options => unreachable, // missing call to resolveTypeFields
             .type_info => unreachable, // missing call to resolveTypeFields
@@ -2021,6 +2060,7 @@ pub const Type = extern union {
             .anyerror_void_error_union,
             .anyerror,
             .error_set_inferred,
+            .error_set_merged,
             => return 2, // TODO revisit this when we have the concept of the error tag type
 
             .int_signed, .int_unsigned => {
@@ -2199,6 +2239,7 @@ pub const Type = extern union {
             .anyerror_void_error_union,
             .anyerror,
             .error_set_inferred,
+            .error_set_merged,
             => return 16, // TODO revisit this when we have the concept of the error tag type
 
             .int_signed, .int_unsigned => self.cast(Payload.Bits).?.data,
@@ -2237,6 +2278,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .type_info,
@@ -2676,7 +2718,7 @@ pub const Type = extern union {
     /// For [*]T, returns *T
     /// For []T, returns *T
     /// Handles const-ness and address spaces in particular.
-    pub fn elemPtrType(ptr_ty: Type, arena: *Allocator) !Type {
+    pub fn elemPtrType(ptr_ty: Type, arena: Allocator) !Type {
         return try Type.ptr(arena, .{
             .pointee_type = ptr_ty.elemType2(),
             .mutable = ptr_ty.ptrIsMutable(),
@@ -2731,7 +2773,7 @@ pub const Type = extern union {
 
     /// Asserts that the type is an optional.
     /// Same as `optionalChild` but allocates the buffer if needed.
-    pub fn optionalChildAlloc(ty: Type, allocator: *Allocator) !Type {
+    pub fn optionalChildAlloc(ty: Type, allocator: Allocator) !Type {
         switch (ty.tag()) {
             .optional => return ty.castTag(.optional).?.data,
             .optional_single_mut_pointer => {
@@ -2762,6 +2804,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .type_info,
@@ -2961,7 +3004,7 @@ pub const Type = extern union {
                 return .{ .signedness = .unsigned, .bits = smallestUnsignedBits(field_count - 1) };
             },
 
-            .error_set, .error_set_single, .anyerror, .error_set_inferred => {
+            .error_set, .error_set_single, .anyerror, .error_set_inferred, .error_set_merged => {
                 // TODO revisit this when error sets support custom int types
                 return .{ .signedness = .unsigned, .bits = 16 };
             },
@@ -3250,6 +3293,7 @@ pub const Type = extern union {
             .error_set,
             .error_set_single,
             .error_set_inferred,
+            .error_set_merged,
             .@"opaque",
             .var_args_param,
             .manyptr_u8,
@@ -3261,6 +3305,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .type_info,
@@ -3379,7 +3424,7 @@ pub const Type = extern union {
     }
 
     /// Asserts that self.zigTypeTag() == .Int.
-    pub fn minInt(self: Type, arena: *Allocator, target: Target) !Value {
+    pub fn minInt(self: Type, arena: Allocator, target: Target) !Value {
         assert(self.zigTypeTag() == .Int);
         const info = self.intInfo(target);
 
@@ -3404,7 +3449,7 @@ pub const Type = extern union {
     }
 
     /// Asserts that self.zigTypeTag() == .Int.
-    pub fn maxInt(self: Type, arena: *Allocator, target: Target) !Value {
+    pub fn maxInt(self: Type, arena: Allocator, target: Target) !Value {
         assert(self.zigTypeTag() == .Int);
         const info = self.intInfo(target);
 
@@ -3469,6 +3514,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             => @panic("TODO resolve std.builtin types"),
@@ -3544,6 +3590,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             => @panic("TODO resolve std.builtin types"),
@@ -3668,6 +3715,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .type_info,
@@ -3708,6 +3756,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             .type_info,
@@ -3768,6 +3817,7 @@ pub const Type = extern union {
             .float_mode,
             .reduce_op,
             .call_options,
+            .prefetch_options,
             .export_options,
             .extern_options,
             => @panic("TODO resolve std.builtin types"),
@@ -3829,6 +3879,7 @@ pub const Type = extern union {
         float_mode,
         reduce_op,
         call_options,
+        prefetch_options,
         export_options,
         extern_options,
         type_info,
@@ -3882,6 +3933,7 @@ pub const Type = extern union {
         error_set_single,
         /// The type is the inferred error set of a specific function.
         error_set_inferred,
+        error_set_merged,
         empty_struct,
         @"opaque",
         @"struct",
@@ -3955,6 +4007,7 @@ pub const Type = extern union {
                 .float_mode,
                 .reduce_op,
                 .call_options,
+                .prefetch_options,
                 .export_options,
                 .extern_options,
                 .type_info,
@@ -3986,6 +4039,7 @@ pub const Type = extern union {
 
                 .error_set => Payload.ErrorSet,
                 .error_set_inferred => Payload.ErrorSetInferred,
+                .error_set_merged => Payload.ErrorSetMerged,
 
                 .array, .vector => Payload.Array,
                 .array_sentinel => Payload.ArraySentinel,
@@ -4008,7 +4062,7 @@ pub const Type = extern union {
             return .{ .tag_if_small_enough = t };
         }
 
-        pub fn create(comptime t: Tag, ally: *Allocator, data: Data(t)) error{OutOfMemory}!file_struct.Type {
+        pub fn create(comptime t: Tag, ally: Allocator, data: Data(t)) error{OutOfMemory}!file_struct.Type {
             const p = try ally.create(t.Type());
             p.* = .{
                 .base = .{ .tag = t },
@@ -4090,6 +4144,13 @@ pub const Type = extern union {
             data: *Module.ErrorSet,
         };
 
+        pub const ErrorSetMerged = struct {
+            pub const base_tag = Tag.error_set_merged;
+
+            base: Payload = Payload{ .tag = base_tag },
+            data: []const []const u8,
+        };
+
         pub const ErrorSetInferred = struct {
             pub const base_tag = Tag.error_set_inferred;
 
@@ -4104,7 +4165,7 @@ pub const Type = extern union {
                 functions: std.AutoHashMapUnmanaged(*Module.Fn, void),
                 is_anyerror: bool,
 
-                pub fn addErrorSet(self: *Data, gpa: *Allocator, err_set_ty: Type) !void {
+                pub fn addErrorSet(self: *Data, gpa: Allocator, err_set_ty: Type) !void {
                     switch (err_set_ty.tag()) {
                         .error_set => {
                             const names = err_set_ty.castTag(.error_set).?.data.names();
@@ -4123,6 +4184,12 @@ pub const Type = extern union {
                                 .castTag(.error_set_inferred).?.data.map.iterator();
                             while (it.next()) |entry| {
                                 try self.map.put(gpa, entry.key_ptr.*, {});
+                            }
+                        },
+                        .error_set_merged => {
+                            const names = err_set_ty.castTag(.error_set_merged).?.data;
+                            for (names) |name| {
+                                try self.map.put(gpa, name, {});
                             }
                         },
                         .anyerror => {
@@ -4225,7 +4292,7 @@ pub const Type = extern union {
     pub const @"type" = initTag(.type);
     pub const @"anyerror" = initTag(.anyerror);
 
-    pub fn ptr(arena: *Allocator, d: Payload.Pointer.Data) !Type {
+    pub fn ptr(arena: Allocator, d: Payload.Pointer.Data) !Type {
         assert(d.host_size == 0 or d.bit_offset < d.host_size * 8);
 
         if (d.sentinel != null or d.@"align" != 0 or d.@"addrspace" != .generic or
@@ -4260,7 +4327,7 @@ pub const Type = extern union {
     }
 
     pub fn array(
-        arena: *Allocator,
+        arena: Allocator,
         len: u64,
         sent: ?Value,
         elem_type: Type,
@@ -4289,14 +4356,14 @@ pub const Type = extern union {
         });
     }
 
-    pub fn vector(arena: *Allocator, len: u64, elem_type: Type) Allocator.Error!Type {
+    pub fn vector(arena: Allocator, len: u64, elem_type: Type) Allocator.Error!Type {
         return Tag.vector.create(arena, .{
             .len = len,
             .elem_type = elem_type,
         });
     }
 
-    pub fn optional(arena: *Allocator, child_type: Type) Allocator.Error!Type {
+    pub fn optional(arena: Allocator, child_type: Type) Allocator.Error!Type {
         switch (child_type.tag()) {
             .single_const_pointer => return Type.Tag.optional_single_const_pointer.create(
                 arena,
@@ -4317,7 +4384,7 @@ pub const Type = extern union {
         return @intCast(u16, base + @boolToInt(upper < max));
     }
 
-    pub fn smallestUnsignedInt(arena: *Allocator, max: u64) !Type {
+    pub fn smallestUnsignedInt(arena: Allocator, max: u64) !Type {
         const bits = smallestUnsignedBits(max);
         return switch (bits) {
             1 => initTag(.u1),

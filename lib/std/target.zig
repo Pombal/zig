@@ -1323,15 +1323,15 @@ pub const Target = struct {
 
     pub const stack_align = 16;
 
-    pub fn zigTriple(self: Target, allocator: *mem.Allocator) ![]u8 {
+    pub fn zigTriple(self: Target, allocator: mem.Allocator) ![]u8 {
         return std.zig.CrossTarget.fromTarget(self).zigTriple(allocator);
     }
 
-    pub fn linuxTripleSimple(allocator: *mem.Allocator, cpu_arch: Cpu.Arch, os_tag: Os.Tag, abi: Abi) ![]u8 {
+    pub fn linuxTripleSimple(allocator: mem.Allocator, cpu_arch: Cpu.Arch, os_tag: Os.Tag, abi: Abi) ![]u8 {
         return std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ @tagName(cpu_arch), @tagName(os_tag), @tagName(abi) });
     }
 
-    pub fn linuxTriple(self: Target, allocator: *mem.Allocator) ![]u8 {
+    pub fn linuxTriple(self: Target, allocator: mem.Allocator) ![]u8 {
         return linuxTripleSimple(allocator, self.cpu.arch, self.os.tag, self.abi);
     }
 
@@ -1687,27 +1687,6 @@ pub const Target = struct {
             .hurd,
             => return result,
         }
-    }
-
-    /// Return whether or not the given host target is capable of executing natively executables
-    /// of the other target.
-    pub fn canExecBinariesOf(host_target: Target, binary_target: Target) bool {
-        if (host_target.os.tag != binary_target.os.tag)
-            return false;
-
-        if (host_target.cpu.arch == binary_target.cpu.arch)
-            return true;
-
-        if (host_target.cpu.arch == .x86_64 and binary_target.cpu.arch == .i386)
-            return true;
-
-        if (host_target.cpu.arch == .aarch64 and binary_target.cpu.arch == .arm)
-            return true;
-
-        if (host_target.cpu.arch == .aarch64_be and binary_target.cpu.arch == .armeb)
-            return true;
-
-        return false;
     }
 
     /// 0c spim    little-endian MIPS 3000 family

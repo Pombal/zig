@@ -38,7 +38,7 @@ pub fn main(argc: c_int, argv: [*][*:0]u8) callconv(.C) c_int {
     const gpa = std.heap.c_allocator;
     var arena_instance = std.heap.ArenaAllocator.init(gpa);
     defer arena_instance.deinit();
-    const arena = &arena_instance.allocator;
+    const arena = arena_instance.allocator();
 
     const args = arena.alloc([]const u8, @intCast(usize, argc)) catch fatal("{s}", .{"OutOfMemory"});
     for (args) |*arg, i| {
@@ -364,6 +364,7 @@ pub const Stage2Target = extern struct {
 
     llvm_cpu_name: ?[*:0]const u8,
     llvm_cpu_features: ?[*:0]const u8,
+    llvm_target_abi: ?[*:0]const u8,
 };
 
 // ABI warning

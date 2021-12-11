@@ -16,7 +16,7 @@ const indexToRef = Zir.indexToRef;
 const trace = @import("tracy.zig").trace;
 const BuiltinFn = @import("BuiltinFn.zig");
 
-gpa: *Allocator,
+gpa: Allocator,
 tree: *const Ast,
 instructions: std.MultiArrayList(Zir.Inst) = .{},
 extra: ArrayListUnmanaged(u32) = .{},
@@ -33,7 +33,7 @@ source_line: u32 = 0,
 source_column: u32 = 0,
 /// Used for temporary allocations; freed after AstGen is complete.
 /// The resulting ZIR code has no references to anything in this arena.
-arena: *Allocator,
+arena: Allocator,
 string_table: std.HashMapUnmanaged(u32, void, StringIndexContext, std.hash_map.default_max_load_percentage) = .{},
 compile_errors: ArrayListUnmanaged(Zir.Inst.CompileErrors.Item) = .{},
 /// The topmost block of the current function.
@@ -92,13 +92,13 @@ fn appendRefsAssumeCapacity(astgen: *AstGen, refs: []const Zir.Inst.Ref) void {
     astgen.extra.appendSliceAssumeCapacity(coerced);
 }
 
-pub fn generate(gpa: *Allocator, tree: Ast) Allocator.Error!Zir {
+pub fn generate(gpa: Allocator, tree: Ast) Allocator.Error!Zir {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
     var astgen: AstGen = .{
         .gpa = gpa,
-        .arena = &arena.allocator,
+        .arena = arena.allocator(),
         .tree = &tree,
     };
     defer astgen.deinit(gpa);
@@ -196,7 +196,7 @@ pub fn generate(gpa: *Allocator, tree: Ast) Allocator.Error!Zir {
     };
 }
 
-pub fn deinit(astgen: *AstGen, gpa: *Allocator) void {
+pub fn deinit(astgen: *AstGen, gpa: Allocator) void {
     astgen.instructions.deinit(gpa);
     astgen.extra.deinit(gpa);
     astgen.string_table.deinit(gpa);
@@ -1939,6 +1939,7 @@ fn blockExprStmts(gz: *GenZir, parent_scope: *Scope, statements: []const Ast.Nod
 
     var block_arena = std.heap.ArenaAllocator.init(gz.astgen.gpa);
     defer block_arena.deinit();
+    const block_arena_allocator = block_arena.allocator();
 
     var noreturn_src_node: Ast.Node.Index = 0;
     var scope = parent_scope;
@@ -1959,13 +1960,13 @@ fn blockExprStmts(gz: *GenZir, parent_scope: *Scope, statements: []const Ast.Nod
         }
         switch (node_tags[statement]) {
             // zig fmt: off
-            .global_var_decl  => scope = try varDecl(gz, scope, statement, &block_arena.allocator, tree.globalVarDecl(statement)),
-            .local_var_decl   => scope = try varDecl(gz, scope, statement, &block_arena.allocator, tree.localVarDecl(statement)),
-            .simple_var_decl  => scope = try varDecl(gz, scope, statement, &block_arena.allocator, tree.simpleVarDecl(statement)),
-            .aligned_var_decl => scope = try varDecl(gz, scope, statement, &block_arena.allocator, tree.alignedVarDecl(statement)),
+            .global_var_decl  => scope = try varDecl(gz, scope, statement, block_arena_allocator, tree.globalVarDecl(statement)),
+            .local_var_decl   => scope = try varDecl(gz, scope, statement, block_arena_allocator, tree.localVarDecl(statement)),
+            .simple_var_decl  => scope = try varDecl(gz, scope, statement, block_arena_allocator, tree.simpleVarDecl(statement)),
+            .aligned_var_decl => scope = try varDecl(gz, scope, statement, block_arena_allocator, tree.alignedVarDecl(statement)),
 
-            .@"defer"    => scope = try makeDeferScope(gz.astgen, scope, statement, &block_arena.allocator, .defer_normal),
-            .@"errdefer" => scope = try makeDeferScope(gz.astgen, scope, statement, &block_arena.allocator, .defer_error),
+            .@"defer"    => scope = try makeDeferScope(gz.astgen, scope, statement, block_arena_allocator, .defer_normal),
+            .@"errdefer" => scope = try makeDeferScope(gz.astgen, scope, statement, block_arena_allocator, .defer_error),
 
             .assign => try assign(gz, scope, statement),
 
@@ -2460,7 +2461,7 @@ fn makeDeferScope(
     astgen: *AstGen,
     scope: *Scope,
     node: Ast.Node.Index,
-    block_arena: *Allocator,
+    block_arena: Allocator,
     scope_tag: Scope.Tag,
 ) InnerError!*Scope {
     const tree = astgen.tree;
@@ -2486,7 +2487,7 @@ fn varDecl(
     gz: *GenZir,
     scope: *Scope,
     node: Ast.Node.Index,
-    block_arena: *Allocator,
+    block_arena: Allocator,
     var_decl: Ast.full.VarDecl,
 ) InnerError!*Scope {
     try emitDbgNode(gz, node);
@@ -3030,7 +3031,7 @@ const WipMembers = struct {
     /// (4 for src_hash + line + name + value + align + link_section + address_space)
     const max_decl_size = 10;
 
-    pub fn init(gpa: *Allocator, payload: *ArrayListUnmanaged(u32), decl_count: u32, field_count: u32, comptime bits_per_field: u32, comptime max_field_size: u32) Allocator.Error!Self {
+    pub fn init(gpa: Allocator, payload: *ArrayListUnmanaged(u32), decl_count: u32, field_count: u32, comptime bits_per_field: u32, comptime max_field_size: u32) Allocator.Error!Self {
         const payload_top = @intCast(u32, payload.items.len);
         const decls_start = payload_top + (decl_count + decls_per_u32 - 1) / decls_per_u32;
         const field_bits_start = decls_start + decl_count * max_decl_size;
@@ -6178,7 +6179,7 @@ fn tunnelThroughClosure(
     ns: ?*Scope.Namespace,
     value: Zir.Inst.Ref,
     token: Ast.TokenIndex,
-    gpa: *Allocator,
+    gpa: Allocator,
 ) !Zir.Inst.Ref {
     // For trivial values, we don't need a tunnel.
     // Just return the ref.
@@ -6421,7 +6422,19 @@ fn asmExpr(
     const asm_source = switch (node_tags[full.ast.template]) {
         .string_literal => try astgen.strLitAsString(main_tokens[full.ast.template]),
         .multiline_string_literal => try astgen.strLitNodeAsString(full.ast.template),
-        else => return astgen.failNode(full.ast.template, "assembly code must use string literal syntax", .{}),
+        else => blk: {
+            // stage1 allows this, and until we do another design iteration on inline assembly
+            // in stage2 to improve support for the various needed use cases, we allow inline
+            // assembly templates to be an expression. Once stage2 addresses the real world needs
+            // of people using inline assembly (primarily OS developers) then we can re-institute
+            // the rule into AstGen that assembly code must use string literal syntax.
+            //return astgen.failNode(full.ast.template, "assembly code must use string literal syntax", .{}),
+            // We still need to trigger all the expr() calls here to avoid errors for unused things.
+            // So we pass 0 as the asm source and stage2 Sema will notice this and
+            // report the error.
+            _ = try comptimeExpr(gz, scope, .none, full.ast.template);
+            break :blk IndexSlice{ .index = 0, .len = 0 };
+        },
     };
 
     // See https://github.com/ziglang/zig/issues/215 and related issues discussing
@@ -6726,7 +6739,6 @@ fn builtinCall(
         }
     }
 
-    // zig fmt: off
     switch (info.tag) {
         .import => {
             const node_tags = tree.nodes.items(.tag);
@@ -6755,7 +6767,7 @@ fn builtinCall(
                 astgen.extra.items[extra_index] = @enumToInt(param_ref);
                 extra_index += 1;
             }
-            const result = try gz.addExtendedMultiOpPayloadIndex(.compile_log,payload_index, params.len);
+            const result = try gz.addExtendedMultiOpPayloadIndex(.compile_log, payload_index, params.len);
             return rvalue(gz, rl, result, node);
         },
         .field => {
@@ -6771,11 +6783,14 @@ fn builtinCall(
             });
             return rvalue(gz, rl, result, node);
         },
+
+        // zig fmt: off
         .as         => return as(       gz, scope, rl, node, params[0], params[1]),
         .bit_cast   => return bitCast(  gz, scope, rl, node, params[0], params[1]),
         .TypeOf     => return typeOf(   gz, scope, rl, node, params),
         .union_init => return unionInit(gz, scope, rl, node, params),
         .c_import   => return cImport(  gz, scope,     node, params[0]),
+        // zig fmt: on
 
         .@"export" => {
             const node_tags = tree.nodes.items(.tag);
@@ -6845,9 +6860,7 @@ fn builtinCall(
                     const field_ident = dot_token + 1;
                     decl_name = try astgen.identAsString(field_ident);
                 },
-                else => return astgen.failNode(
-                    params[0], "symbol to export must identify a declaration", .{},
-                ),
+                else => return astgen.failNode(params[0], "symbol to export must identify a declaration", .{}),
             }
             const options = try comptimeExpr(gz, scope, .{ .ty = .export_options_type }, params[1]);
             _ = try gz.addPlNode(.@"export", node, Zir.Inst.Export{
@@ -6875,6 +6888,7 @@ fn builtinCall(
 
         .breakpoint => return simpleNoOpVoid(gz, rl, node, .breakpoint),
 
+        // zig fmt: off
         .This               => return rvalue(gz, rl, try gz.addNodeExtended(.this,               node), node),
         .return_address     => return rvalue(gz, rl, try gz.addNodeExtended(.ret_addr,           node), node),
         .src                => return rvalue(gz, rl, try gz.addNodeExtended(.builtin_src,        node), node),
@@ -6929,6 +6943,8 @@ fn builtinCall(
         .err_set_cast => return typeCast(gz, scope, rl, node, params[0], params[1], .err_set_cast),
         .ptr_cast     => return typeCast(gz, scope, rl, node, params[0], params[1], .ptr_cast),
         .truncate     => return typeCast(gz, scope, rl, node, params[0], params[1], .truncate),
+        // zig fmt: on
+
         .align_cast => {
             const dest_align = try comptimeExpr(gz, scope, align_rl, params[0]);
             const rhs = try expr(gz, scope, .none, params[1]);
@@ -6939,6 +6955,7 @@ fn builtinCall(
             return rvalue(gz, rl, result, node);
         },
 
+        // zig fmt: off
         .has_decl  => return hasDeclOrField(gz, scope, rl, node, params[0], params[1], .has_decl),
         .has_field => return hasDeclOrField(gz, scope, rl, node, params[0], params[1], .has_field),
 
@@ -6965,6 +6982,7 @@ fn builtinCall(
 
         .cmpxchg_strong => return cmpxchg(gz, scope, rl, node, params, .cmpxchg_strong),
         .cmpxchg_weak   => return cmpxchg(gz, scope, rl, node, params, .cmpxchg_weak),
+        // zig fmt: on
 
         .wasm_memory_size => {
             const operand = try expr(gz, scope, .{ .ty = .u32_type }, params[0]);
@@ -7208,8 +7226,17 @@ fn builtinCall(
             });
             return rvalue(gz, rl, result, node);
         },
+        .prefetch => {
+            const ptr = try expr(gz, scope, .none, params[0]);
+            const options = try comptimeExpr(gz, scope, .{ .ty = .prefetch_options_type }, params[1]);
+            const result = try gz.addExtendedPayload(.prefetch, Zir.Inst.BinNode{
+                .node = gz.nodeIndexToRelative(node),
+                .lhs = ptr,
+                .rhs = options,
+            });
+            return rvalue(gz, rl, result, node);
+        },
     }
-    // zig fmt: on
 }
 
 fn simpleNoOpVoid(
@@ -8806,7 +8833,7 @@ const Scope = struct {
         /// ref of the capture for decls in this namespace
         captures: std.AutoArrayHashMapUnmanaged(Zir.Inst.Index, Zir.Inst.Index) = .{},
 
-        pub fn deinit(self: *Namespace, gpa: *Allocator) void {
+        pub fn deinit(self: *Namespace, gpa: Allocator) void {
             self.decls.deinit(gpa);
             self.captures.deinit(gpa);
             self.* = undefined;

@@ -75,7 +75,7 @@ pub const StackTrace = struct {
         };
         const tty_config = std.debug.detectTTYConfig();
         try writer.writeAll("\n");
-        std.debug.writeStackTrace(self, writer, &arena.allocator, debug_info, tty_config) catch |err| {
+        std.debug.writeStackTrace(self, writer, arena.allocator(), debug_info, tty_config) catch |err| {
             try writer.print("Unable to print stack trace: {s}\n", .{@errorName(err)});
         };
         try writer.writeAll("\n");
@@ -648,6 +648,31 @@ pub const CallOptions = struct {
         /// Evaluates the call at compile-time. If the call cannot be completed at
         /// compile-time, a compile error is emitted instead.
         compile_time,
+    };
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const PrefetchOptions = struct {
+    /// Whether the prefetch should prepare for a read or a write.
+    rw: Rw = .read,
+    /// 0 means no temporal locality. That is, the data can be immediately
+    /// dropped from the cache after it is accessed.
+    ///
+    /// 3 means high temporal locality. That is, the data should be kept in
+    /// the cache as it is likely to be accessed again soon.
+    locality: u2 = 3,
+    /// The cache that the prefetch should be preformed on.
+    cache: Cache = .data,
+
+    pub const Rw = enum {
+        read,
+        write,
+    };
+
+    pub const Cache = enum {
+        instruction,
+        data,
     };
 };
 
