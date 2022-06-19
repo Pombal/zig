@@ -9,8 +9,8 @@ pub const SimpleTextInputExProtocol = extern struct {
     _read_key_stroke_ex: fn (*const SimpleTextInputExProtocol, *KeyData) callconv(.C) Status,
     wait_for_key_ex: Event,
     _set_state: fn (*const SimpleTextInputExProtocol, *const u8) callconv(.C) Status,
-    _register_key_notify: fn (*const SimpleTextInputExProtocol, *const KeyData, fn (*const KeyData) callconv(.C) usize, **c_void) callconv(.C) Status,
-    _unregister_key_notify: fn (*const SimpleTextInputExProtocol, *const c_void) callconv(.C) Status,
+    _register_key_notify: fn (*const SimpleTextInputExProtocol, *const KeyData, fn (*const KeyData) callconv(.C) usize, **anyopaque) callconv(.C) Status,
+    _unregister_key_notify: fn (*const SimpleTextInputExProtocol, *const anyopaque) callconv(.C) Status,
 
     /// Resets the input device hardware.
     pub fn reset(self: *const SimpleTextInputExProtocol, verify: bool) Status {
@@ -28,12 +28,12 @@ pub const SimpleTextInputExProtocol = extern struct {
     }
 
     /// Register a notification function for a particular keystroke for the input device.
-    pub fn registerKeyNotify(self: *const SimpleTextInputExProtocol, key_data: *const KeyData, notify: fn (*const KeyData) callconv(.C) usize, handle: **c_void) Status {
+    pub fn registerKeyNotify(self: *const SimpleTextInputExProtocol, key_data: *const KeyData, notify: fn (*const KeyData) callconv(.C) usize, handle: **anyopaque) Status {
         return self._register_key_notify(self, key_data, notify, handle);
     }
 
     /// Remove the notification that was previously registered.
-    pub fn unregisterKeyNotify(self: *const SimpleTextInputExProtocol, handle: *const c_void) Status {
+    pub fn unregisterKeyNotify(self: *const SimpleTextInputExProtocol, handle: *const anyopaque) Status {
         return self._unregister_key_notify(self, handle);
     }
 
@@ -64,14 +64,14 @@ pub const KeyState = extern struct {
         left_logo_pressed: bool,
         menu_key_pressed: bool,
         sys_req_pressed: bool,
-        _pad1: u21,
+        _pad: u21 = 0,
         shift_state_valid: bool,
     },
     key_toggle_state: packed struct {
         scroll_lock_active: bool,
         num_lock_active: bool,
         caps_lock_active: bool,
-        _pad1: u3,
+        _pad: u3 = 0,
         key_state_exposed: bool,
         toggle_state_valid: bool,
     },

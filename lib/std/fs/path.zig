@@ -8,17 +8,24 @@ const fmt = std.fmt;
 const Allocator = mem.Allocator;
 const math = std.math;
 const windows = std.os.windows;
+const os = std.os;
 const fs = std.fs;
 const process = std.process;
 const native_os = builtin.target.os.tag;
 
 pub const sep_windows = '\\';
 pub const sep_posix = '/';
-pub const sep = if (native_os == .windows) sep_windows else sep_posix;
+pub const sep = switch (native_os) {
+    .windows, .uefi => sep_windows,
+    else => sep_posix,
+};
 
 pub const sep_str_windows = "\\";
 pub const sep_str_posix = "/";
-pub const sep_str = if (native_os == .windows) sep_str_windows else sep_str_posix;
+pub const sep_str = switch (native_os) {
+    .windows, .uefi => sep_str_windows,
+    else => sep_str_posix,
+};
 
 pub const delimiter_windows = ';';
 pub const delimiter_posix = ':';
@@ -26,11 +33,11 @@ pub const delimiter = if (native_os == .windows) delimiter_windows else delimite
 
 /// Returns if the given byte is a valid path separator
 pub fn isSep(byte: u8) bool {
-    if (native_os == .windows) {
-        return byte == '/' or byte == '\\';
-    } else {
-        return byte == '/';
-    }
+    return switch (native_os) {
+        .windows => byte == '/' or byte == '\\',
+        .uefi => byte == '\\',
+        else => byte == '/',
+    };
 }
 
 /// This is different from mem.join in that the separator will not be repeated if
@@ -110,6 +117,17 @@ pub fn joinZ(allocator: Allocator, paths: []const []const u8) ![:0]u8 {
     return out[0 .. out.len - 1 :0];
 }
 
+fn testJoinMaybeZUefi(paths: []const []const u8, expected: []const u8, zero: bool) !void {
+    const uefiIsSep = struct {
+        fn isSep(byte: u8) bool {
+            return byte == '\\';
+        }
+    }.isSep;
+    const actual = try joinSepMaybeZ(testing.allocator, sep_windows, uefiIsSep, paths, zero);
+    defer testing.allocator.free(actual);
+    try testing.expectEqualSlices(u8, expected, if (zero) actual[0 .. actual.len - 1 :0] else actual);
+}
+
 fn testJoinMaybeZWindows(paths: []const []const u8, expected: []const u8, zero: bool) !void {
     const windowsIsSep = struct {
         fn isSep(byte: u8) bool {
@@ -157,6 +175,11 @@ test "join" {
             "c:\\home\\andy\\dev\\zig\\build\\lib\\zig\\std\\io.zig",
             zero,
         );
+
+        try testJoinMaybeZUefi(&[_][]const u8{ "EFI", "Boot", "bootx64.efi" }, "EFI\\Boot\\bootx64.efi", zero);
+        try testJoinMaybeZUefi(&[_][]const u8{ "EFI\\Boot", "bootx64.efi" }, "EFI\\Boot\\bootx64.efi", zero);
+        try testJoinMaybeZUefi(&[_][]const u8{ "EFI\\", "\\Boot", "bootx64.efi" }, "EFI\\Boot\\bootx64.efi", zero);
+        try testJoinMaybeZUefi(&[_][]const u8{ "EFI\\", "\\Boot\\", "\\bootx64.efi" }, "EFI\\Boot\\bootx64.efi", zero);
 
         try testJoinMaybeZWindows(&[_][]const u8{ "c:\\", "a", "b/", "c" }, "c:\\a\\b/c", zero);
         try testJoinMaybeZWindows(&[_][]const u8{ "c:\\a/", "b\\", "/c" }, "c:\\a/b\\c", zero);
@@ -711,7 +734,8 @@ pub fn resolvePosix(allocator: Allocator, paths: []const []const u8) ![]u8 {
 }
 
 test "resolve" {
-    if (native_os == .wasi) return error.SkipZigTest;
+    if (native_os == .wasi and builtin.link_libc) return error.SkipZigTest;
+    if (native_os == .wasi and !builtin.link_libc) try os.initPreopensWasi(std.heap.page_allocator, "/");
 
     const cwd = try process.getCwdAlloc(testing.allocator);
     defer testing.allocator.free(cwd);
@@ -731,7 +755,8 @@ test "resolveWindows" {
         // TODO https://github.com/ziglang/zig/issues/3288
         return error.SkipZigTest;
     }
-    if (native_os == .wasi) return error.SkipZigTest;
+    if (native_os == .wasi and builtin.link_libc) return error.SkipZigTest;
+    if (native_os == .wasi and !builtin.link_libc) try os.initPreopensWasi(std.heap.page_allocator, "/");
     if (native_os == .windows) {
         const cwd = try process.getCwdAlloc(testing.allocator);
         defer testing.allocator.free(cwd);
@@ -776,7 +801,8 @@ test "resolveWindows" {
 }
 
 test "resolvePosix" {
-    if (native_os == .wasi) return error.SkipZigTest;
+    if (native_os == .wasi and builtin.link_libc) return error.SkipZigTest;
+    if (native_os == .wasi and !builtin.link_libc) try os.initPreopensWasi(std.heap.page_allocator, "/");
 
     try testResolvePosix(&[_][]const u8{ "/a/b", "c" }, "/a/b/c");
     try testResolvePosix(&[_][]const u8{ "/a/b", "c", "//d", "e///" }, "/d/e");
@@ -1189,7 +1215,8 @@ test "relative" {
         // TODO https://github.com/ziglang/zig/issues/3288
         return error.SkipZigTest;
     }
-    if (native_os == .wasi) return error.SkipZigTest;
+    if (native_os == .wasi and builtin.link_libc) return error.SkipZigTest;
+    if (native_os == .wasi and !builtin.link_libc) try os.initPreopensWasi(std.heap.page_allocator, "/");
 
     try testRelativeWindows("c:/blah\\blah", "d:/games", "D:\\games");
     try testRelativeWindows("c:/aaaa/bbbb", "c:/aaaa", "..");

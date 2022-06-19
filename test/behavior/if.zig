@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
@@ -43,6 +44,9 @@ var global_with_val: anyerror!u32 = 0;
 var global_with_err: anyerror!u32 = error.SomeError;
 
 test "unwrap mutable global var" {
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+
     if (global_with_val) |v| {
         try expect(v == 0);
     } else |_| {
@@ -75,6 +79,10 @@ test "const result loc, runtime if cond, else unreachable" {
 }
 
 test "if copies its payload" {
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+
     const S = struct {
         fn doTheTest() !void {
             var tmp: ?i32 = 10;
@@ -87,4 +95,20 @@ test "if copies its payload" {
     };
     try S.doTheTest();
     comptime try S.doTheTest();
+}
+
+test "if prongs cast to expected type instead of peer type resolution" {
+    const S = struct {
+        fn doTheTest(f: bool) !void {
+            var x: i32 = 0;
+            x = if (f) 1 else 2;
+            try expect(x == 2);
+
+            var b = true;
+            const y: i32 = if (b) 1 else 2;
+            try expect(y == 1);
+        }
+    };
+    try S.doTheTest(false);
+    comptime try S.doTheTest(false);
 }

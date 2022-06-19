@@ -8,10 +8,19 @@ pub fn cast(comptime DestType: type, target: anytype) DestType {
     // this function should behave like transCCast in translate-c, except it's for macros
     const SourceType = @TypeOf(target);
     switch (@typeInfo(DestType)) {
-        .Fn, .Pointer => return castToPtr(DestType, SourceType, target),
+        .Fn => if (@import("builtin").zig_backend == .stage1)
+            return castToPtr(DestType, SourceType, target)
+        else
+            return castToPtr(*const DestType, SourceType, target),
+        .Pointer => return castToPtr(DestType, SourceType, target),
         .Optional => |dest_opt| {
-            if (@typeInfo(dest_opt.child) == .Pointer or @typeInfo(dest_opt.child) == .Fn) {
+            if (@typeInfo(dest_opt.child) == .Pointer) {
                 return castToPtr(DestType, SourceType, target);
+            } else if (@typeInfo(dest_opt.child) == .Fn) {
+                if (@import("builtin").zig_backend == .stage1)
+                    return castToPtr(DestType, SourceType, target)
+                else
+                    return castToPtr(?*const dest_opt.child, SourceType, target);
             }
         },
         .Int => {
@@ -29,6 +38,12 @@ pub fn cast(comptime DestType: type, target: anytype) DestType {
                 },
                 else => {},
             }
+        },
+        .Union => |info| {
+            inline for (info.fields) |field| {
+                if (field.field_type == SourceType) return @unionInit(DestType, field.name, target);
+            }
+            @compileError("cast to union type '" ++ @typeName(DestType) ++ "' from type '" ++ @typeName(SourceType) ++ "' which is not present in union");
         },
         else => {},
     }
@@ -82,7 +97,7 @@ fn castToPtr(comptime DestType: type, comptime SourceType: type, target: anytype
     return @as(DestType, target);
 }
 
-fn ptrInfo(comptime PtrType: type) std.builtin.TypeInfo.Pointer {
+fn ptrInfo(comptime PtrType: type) std.builtin.Type.Pointer {
     return switch (@typeInfo(PtrType)) {
         .Optional => |opt_info| @typeInfo(opt_info.child).Pointer,
         .Pointer => |ptr_info| ptr_info,
@@ -110,15 +125,18 @@ test "cast" {
     try testing.expectEqual(@intToPtr(*u8, 2), cast(*u8, @intToPtr(*const u8, 2)));
     try testing.expectEqual(@intToPtr(*u8, 2), cast(*u8, @intToPtr(*volatile u8, 2)));
 
-    try testing.expectEqual(@intToPtr(?*c_void, 2), cast(?*c_void, @intToPtr(*u8, 2)));
+    try testing.expectEqual(@intToPtr(?*anyopaque, 2), cast(?*anyopaque, @intToPtr(*u8, 2)));
 
     var foo: c_int = -1;
-    try testing.expect(cast(*c_void, -1) == @intToPtr(*c_void, @bitCast(usize, @as(isize, -1))));
-    try testing.expect(cast(*c_void, foo) == @intToPtr(*c_void, @bitCast(usize, @as(isize, -1))));
-    try testing.expect(cast(?*c_void, -1) == @intToPtr(?*c_void, @bitCast(usize, @as(isize, -1))));
-    try testing.expect(cast(?*c_void, foo) == @intToPtr(?*c_void, @bitCast(usize, @as(isize, -1))));
+    try testing.expect(cast(*anyopaque, -1) == @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -1))));
+    try testing.expect(cast(*anyopaque, foo) == @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -1))));
+    try testing.expect(cast(?*anyopaque, -1) == @intToPtr(?*anyopaque, @bitCast(usize, @as(isize, -1))));
+    try testing.expect(cast(?*anyopaque, foo) == @intToPtr(?*anyopaque, @bitCast(usize, @as(isize, -1))));
 
-    const FnPtr = ?fn (*c_void) void;
+    const FnPtr = if (@import("builtin").zig_backend == .stage1)
+        ?fn (*anyopaque) void
+    else
+        ?*const fn (*anyopaque) void;
     try testing.expect(cast(FnPtr, 0) == @intToPtr(FnPtr, @as(usize, 0)));
     try testing.expect(cast(FnPtr, foo) == @intToPtr(FnPtr, @bitCast(usize, @as(isize, -1))));
 }
@@ -129,17 +147,22 @@ pub fn sizeof(target: anytype) usize {
     switch (@typeInfo(T)) {
         .Float, .Int, .Struct, .Union, .Array, .Bool, .Vector => return @sizeOf(T),
         .Fn => {
-            // sizeof(main) returns 1, sizeof(&main) returns pointer size.
-            // We cannot distinguish those types in Zig, so use pointer size.
-            return @sizeOf(T);
+            if (@import("builtin").zig_backend == .stage1) {
+                // sizeof(main) returns 1, sizeof(&main) returns pointer size.
+                // We cannot distinguish those types in Zig, so use pointer size.
+                return @sizeOf(T);
+            }
+
+            // sizeof(main) in C returns 1
+            return 1;
         },
-        .Null => return @sizeOf(*c_void),
+        .Null => return @sizeOf(*anyopaque),
         .Void => {
             // Note: sizeof(void) is 1 on clang/gcc and 0 on MSVC.
             return 1;
         },
         .Opaque => {
-            if (T == c_void) {
+            if (T == anyopaque) {
                 // Note: sizeof(void) is 1 on clang/gcc and 0 on MSVC.
                 return 1;
             } else {
@@ -166,7 +189,7 @@ pub fn sizeof(target: anytype) usize {
                 const array_info = @typeInfo(ptr.child).Array;
                 if ((array_info.child == u8 or array_info.child == u16) and
                     array_info.sentinel != null and
-                    array_info.sentinel.? == 0)
+                    @ptrCast(*const array_info.child, array_info.sentinel.?).* == 0)
                 {
                     // length of the string plus one for the null terminator.
                     return (array_info.len + 1) * @sizeOf(array_info.child);
@@ -175,7 +198,7 @@ pub fn sizeof(target: anytype) usize {
             // When zero sized pointers are removed, this case will no
             // longer be reachable and can be deleted.
             if (@sizeOf(T) == 0) {
-                return @sizeOf(*c_void);
+                return @sizeOf(*anyopaque);
             }
             return @sizeOf(T);
         },
@@ -195,7 +218,7 @@ pub fn sizeof(target: anytype) usize {
 test "sizeof" {
     const S = extern struct { a: u32 };
 
-    const ptr_size = @sizeOf(*c_void);
+    const ptr_size = @sizeOf(*anyopaque);
 
     try testing.expect(sizeof(u32) == 4);
     try testing.expect(sizeof(@as(u32, 2)) == 4);
@@ -215,7 +238,7 @@ test "sizeof" {
     try testing.expect(sizeof([*c]u32) == ptr_size);
     try testing.expect(sizeof(?*u32) == ptr_size);
     try testing.expect(sizeof(?[*]u32) == ptr_size);
-    try testing.expect(sizeof(*c_void) == ptr_size);
+    try testing.expect(sizeof(*anyopaque) == ptr_size);
     try testing.expect(sizeof(*void) == ptr_size);
     try testing.expect(sizeof(null) == ptr_size);
 
@@ -227,10 +250,15 @@ test "sizeof" {
     try testing.expect(sizeof(*const *const [4:0]u8) == ptr_size);
     try testing.expect(sizeof(*const [4]u8) == ptr_size);
 
-    try testing.expect(sizeof(sizeof) == @sizeOf(@TypeOf(sizeof)));
+    if (@import("builtin").zig_backend == .stage1) {
+        try testing.expect(sizeof(sizeof) == @sizeOf(@TypeOf(sizeof)));
+    } else if (false) { // TODO
+        try testing.expect(sizeof(&sizeof) == @sizeOf(@TypeOf(&sizeof)));
+        try testing.expect(sizeof(sizeof) == 1);
+    }
 
     try testing.expect(sizeof(void) == 1);
-    try testing.expect(sizeof(c_void) == 1);
+    try testing.expect(sizeof(anyopaque) == 1);
 }
 
 pub const CIntLiteralRadix = enum { decimal, octal, hexadecimal };

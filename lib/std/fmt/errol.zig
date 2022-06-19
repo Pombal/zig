@@ -92,7 +92,10 @@ pub fn errol3(value: f64, buffer: []u8) FloatDecimal {
         };
     }
 
-    return errol3u(value, buffer);
+    // We generate digits starting at index 1. If rounding a buffer later then it may be
+    // required to generate a preceding digit in some cases (9.999) in which case we use
+    // the 0-index for this extra digit.
+    return errol3u(value, buffer[1..]);
 }
 
 /// Uncorrected Errol3 double to ASCII conversion.
@@ -103,11 +106,14 @@ fn errol3u(val: f64, buffer: []u8) FloatDecimal {
     } else if (val >= 16.0 and val < 9.007199254740992e15) {
         return errolFixed(val, buffer);
     }
+    return errolSlow(val, buffer);
+}
 
+fn errolSlow(val: f64, buffer: []u8) FloatDecimal {
     // normalize the midpoint
 
     const e = math.frexp(val).exponent;
-    var exp = @floatToInt(i16, math.floor(307 + @intToFloat(f64, e) * 0.30103));
+    var exp = @floatToInt(i16, @floor(307 + @intToFloat(f64, e) * 0.30103));
     if (exp < 20) {
         exp = 20;
     } else if (@intCast(usize, exp) >= lookup_table.len) {
@@ -162,16 +168,12 @@ fn errol3u(val: f64, buffer: []u8) FloatDecimal {
     }
 
     // digit generation
-
-    // We generate digits starting at index 1. If rounding a buffer later then it may be
-    // required to generate a preceding digit in some cases (9.999) in which case we use
-    // the 0-index for this extra digit.
-    var buf_index: usize = 1;
+    var buf_index: usize = 0;
     while (true) {
-        var hdig = @floatToInt(u8, math.floor(high.val));
+        var hdig = @floatToInt(u8, @floor(high.val));
         if ((high.val == @intToFloat(f64, hdig)) and (high.off < 0)) hdig -= 1;
 
-        var ldig = @floatToInt(u8, math.floor(low.val));
+        var ldig = @floatToInt(u8, @floor(low.val));
         if ((low.val == @intToFloat(f64, ldig)) and (low.off < 0)) ldig -= 1;
 
         if (ldig != hdig) break;
@@ -185,14 +187,14 @@ fn errol3u(val: f64, buffer: []u8) FloatDecimal {
     }
 
     const tmp = (high.val + low.val) / 2.0;
-    var mdig = @floatToInt(u8, math.floor(tmp + 0.5));
+    var mdig = @floatToInt(u8, @floor(tmp + 0.5));
     if ((@intToFloat(f64, mdig) - tmp) == 0.5 and (mdig & 0x1) != 0) mdig -= 1;
 
     buffer[buf_index] = mdig + '0';
     buf_index += 1;
 
     return FloatDecimal{
-        .digits = buffer[1..buf_index],
+        .digits = buffer[0..buf_index],
         .exp = exp,
     };
 }
@@ -337,7 +339,9 @@ fn errolInt(val: f64, buffer: []u8) FloatDecimal {
     var buf_index = u64toa(m64, buffer) - 1;
 
     if (mi != 0) {
-        buffer[buf_index - 1] += @boolToInt(buffer[buf_index] >= '5');
+        const round_up = buffer[buf_index] >= '5';
+        if (buf_index == 0 or (round_up and buffer[buf_index - 1] == '9')) return errolSlow(val, buffer);
+        buffer[buf_index - 1] += @boolToInt(round_up);
     } else {
         buf_index += 1;
     }

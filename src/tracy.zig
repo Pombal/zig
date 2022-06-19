@@ -1,9 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
-pub const enable = if (builtin.is_test) false else @import("build_options").enable_tracy;
-pub const enable_allocation = enable and @import("build_options").enable_tracy_allocation;
-pub const enable_callstack = enable and @import("build_options").enable_tracy_callstack;
+pub const enable = if (builtin.is_test) false else build_options.enable_tracy;
+pub const enable_allocation = enable and build_options.enable_tracy_allocation;
+pub const enable_callstack = enable and build_options.enable_tracy_callstack;
 
 // TODO: make this configurable
 const callstack_depth = 10;
@@ -145,8 +146,8 @@ pub fn TracyAllocator(comptime name: ?[:0]const u8) type {
                     freeNamed(buf.ptr, n);
                     allocNamed(buf.ptr, resized_len, n);
                 } else {
-                    alloc(buf.ptr, resized_len);
                     free(buf.ptr);
+                    alloc(buf.ptr, resized_len);
                 }
 
                 return resized_len;
@@ -284,14 +285,14 @@ extern fn ___tracy_emit_zone_name(ctx: ___tracy_c_zone_context, txt: [*]const u8
 extern fn ___tracy_emit_zone_color(ctx: ___tracy_c_zone_context, color: u32) void;
 extern fn ___tracy_emit_zone_value(ctx: ___tracy_c_zone_context, value: u64) void;
 extern fn ___tracy_emit_zone_end(ctx: ___tracy_c_zone_context) void;
-extern fn ___tracy_emit_memory_alloc(ptr: *const c_void, size: usize, secure: c_int) void;
-extern fn ___tracy_emit_memory_alloc_callstack(ptr: *const c_void, size: usize, depth: c_int, secure: c_int) void;
-extern fn ___tracy_emit_memory_free(ptr: *const c_void, secure: c_int) void;
-extern fn ___tracy_emit_memory_free_callstack(ptr: *const c_void, depth: c_int, secure: c_int) void;
-extern fn ___tracy_emit_memory_alloc_named(ptr: *const c_void, size: usize, secure: c_int, name: [*:0]const u8) void;
-extern fn ___tracy_emit_memory_alloc_callstack_named(ptr: *const c_void, size: usize, depth: c_int, secure: c_int, name: [*:0]const u8) void;
-extern fn ___tracy_emit_memory_free_named(ptr: *const c_void, secure: c_int, name: [*:0]const u8) void;
-extern fn ___tracy_emit_memory_free_callstack_named(ptr: *const c_void, depth: c_int, secure: c_int, name: [*:0]const u8) void;
+extern fn ___tracy_emit_memory_alloc(ptr: *const anyopaque, size: usize, secure: c_int) void;
+extern fn ___tracy_emit_memory_alloc_callstack(ptr: *const anyopaque, size: usize, depth: c_int, secure: c_int) void;
+extern fn ___tracy_emit_memory_free(ptr: *const anyopaque, secure: c_int) void;
+extern fn ___tracy_emit_memory_free_callstack(ptr: *const anyopaque, depth: c_int, secure: c_int) void;
+extern fn ___tracy_emit_memory_alloc_named(ptr: *const anyopaque, size: usize, secure: c_int, name: [*:0]const u8) void;
+extern fn ___tracy_emit_memory_alloc_callstack_named(ptr: *const anyopaque, size: usize, depth: c_int, secure: c_int, name: [*:0]const u8) void;
+extern fn ___tracy_emit_memory_free_named(ptr: *const anyopaque, secure: c_int, name: [*:0]const u8) void;
+extern fn ___tracy_emit_memory_free_callstack_named(ptr: *const anyopaque, depth: c_int, secure: c_int, name: [*:0]const u8) void;
 extern fn ___tracy_emit_message(txt: [*]const u8, size: usize, callstack: c_int) void;
 extern fn ___tracy_emit_messageL(txt: [*:0]const u8, callstack: c_int) void;
 extern fn ___tracy_emit_messageC(txt: [*]const u8, size: usize, color: u32, callstack: c_int) void;

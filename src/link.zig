@@ -1,26 +1,29 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const builtin = @import("builtin");
-const mem = std.mem;
-const Allocator = std.mem.Allocator;
-const fs = std.fs;
-const log = std.log.scoped(.link);
 const assert = std.debug.assert;
-
-const Compilation = @import("Compilation.zig");
-const Module = @import("Module.zig");
+const fs = std.fs;
+const mem = std.mem;
+const log = std.log.scoped(.link);
 const trace = @import("tracy.zig").trace;
+const wasi_libc = @import("wasi_libc.zig");
+
+const Air = @import("Air.zig");
+const Allocator = std.mem.Allocator;
+const Cache = @import("Cache.zig");
+const Compilation = @import("Compilation.zig");
+const LibCInstallation = @import("libc_installation.zig").LibCInstallation;
+const Liveness = @import("Liveness.zig");
+const Module = @import("Module.zig");
 const Package = @import("Package.zig");
 const Type = @import("type.zig").Type;
-const Cache = @import("Cache.zig");
-const build_options = @import("build_options");
-const LibCInstallation = @import("libc_installation.zig").LibCInstallation;
-const wasi_libc = @import("wasi_libc.zig");
-const Air = @import("Air.zig");
-const Liveness = @import("Liveness.zig");
+const TypedValue = @import("TypedValue.zig");
 
 pub const SystemLib = struct {
     needed: bool = false,
 };
+
+pub const CacheMode = enum { incremental, whole };
 
 pub fn hashAddSystemLibs(
     hh: *Cache.HashHelper,
@@ -41,13 +44,27 @@ pub const Emit = struct {
     directory: Compilation.Directory,
     /// Path to the output file, relative to `directory`.
     sub_path: []const u8,
+
+    /// Returns the full path to `basename` if it were in the same directory as the
+    /// `Emit` sub_path.
+    pub fn basenamePath(emit: Emit, arena: Allocator, basename: [:0]const u8) ![:0]const u8 {
+        const full_path = if (emit.directory.path) |p|
+            try fs.path.join(arena, &[_][]const u8{ p, emit.sub_path })
+        else
+            emit.sub_path;
+
+        if (fs.path.dirname(full_path)) |dirname| {
+            return try fs.path.joinZ(arena, &.{ dirname, basename });
+        } else {
+            return basename;
+        }
+    }
 };
 
 pub const Options = struct {
-    /// This is `null` when -fno-emit-bin is used. When `openPath` or `flush` is called,
-    /// it will have already been null-checked.
+    /// This is `null` when `-fno-emit-bin` is used.
     emit: ?Emit,
-    /// This is `null` not building a Windows DLL, or when -fno-emit-implib is used.
+    /// This is `null` not building a Windows DLL, or when `-fno-emit-implib` is used.
     implib_emit: ?Emit,
     target: std.Target,
     output_mode: std.builtin.OutputMode,
@@ -55,7 +72,7 @@ pub const Options = struct {
     object_format: std.Target.ObjectFormat,
     optimize_mode: std.builtin.Mode,
     machine_code_model: std.builtin.CodeModel,
-    root_name: []const u8,
+    root_name: [:0]const u8,
     /// Not every Compilation compiles .zig code! For example you could do `zig build-exe foo.o`.
     module: ?*Module,
     dynamic_linker: ?[]const u8,
@@ -68,8 +85,10 @@ pub const Options = struct {
     /// the binary file does not already have such a section.
     program_code_size_hint: u64 = 256 * 1024,
     entry_addr: ?u64 = null,
+    entry: ?[]const u8,
     stack_size_override: ?u64,
     image_base_override: ?u64,
+    cache_mode: CacheMode,
     include_compiler_rt: bool,
     /// Set to `true` to omit debug info.
     strip: bool,
@@ -93,7 +112,7 @@ pub const Options = struct {
     z_notext: bool,
     z_defs: bool,
     z_origin: bool,
-    z_noexecstack: bool,
+    z_nocopyreloc: bool,
     z_now: bool,
     z_relro: bool,
     tsaware: bool,
@@ -102,8 +121,12 @@ pub const Options = struct {
     linker_optimization: u8,
     bind_global_refs_locally: bool,
     import_memory: bool,
+    import_table: bool,
+    export_table: bool,
     initial_memory: ?u64,
     max_memory: ?u64,
+    shared_memory: bool,
+    export_symbol_names: []const []const u8,
     global_base: ?u64,
     is_native_os: bool,
     is_native_abi: bool,
@@ -122,9 +145,11 @@ pub const Options = struct {
     skip_linker_dependencies: bool,
     parent_compilation_link_libc: bool,
     each_lib_rpath: bool,
+    build_id: bool,
     disable_lld_caching: bool,
     is_test: bool,
     use_stage1: bool,
+    hash_style: HashStyle,
     major_subsystem_version: ?u32,
     minor_subsystem_version: ?u32,
     gc_sections: ?bool = null,
@@ -135,7 +160,7 @@ pub const Options = struct {
     soname: ?[]const u8,
     llvm_cpu_features: ?[*:0]const u8,
 
-    objects: []const []const u8,
+    objects: []Compilation.LinkObject,
     framework_dirs: []const []const u8,
     frameworks: []const []const u8,
     system_libs: std.StringArrayHashMapUnmanaged(SystemLib),
@@ -156,10 +181,24 @@ pub const Options = struct {
     /// (Darwin) Path and version of the native SDK if detected.
     native_darwin_sdk: ?std.zig.system.darwin.DarwinSDK = null,
 
+    /// (Darwin) Install name for the dylib
+    install_name: ?[]const u8 = null,
+
+    /// (Darwin) Path to entitlements file
+    entitlements: ?[]const u8 = null,
+
     pub fn effectiveOutputMode(options: Options) std.builtin.OutputMode {
         return if (options.use_lld) .Obj else options.output_mode;
     }
+
+    pub fn move(self: *Options) Options {
+        const copied_state = self.*;
+        self.system_libs = .{};
+        return copied_state;
+    }
 };
+
+pub const HashStyle = enum { sysv, gnu, both };
 
 pub const File = struct {
     tag: Tag,
@@ -182,16 +221,18 @@ pub const File = struct {
         c: void,
         wasm: Wasm.DeclBlock,
         spirv: void,
+        nvptx: void,
     };
 
     pub const LinkFn = union {
-        elf: Elf.SrcFn,
+        elf: Dwarf.SrcFn,
         coff: Coff.SrcFn,
-        macho: MachO.SrcFn,
+        macho: Dwarf.SrcFn,
         plan9: void,
         c: void,
         wasm: Wasm.FnData,
         spirv: SpirV.FnData,
+        nvptx: void,
     };
 
     pub const Export = union {
@@ -200,21 +241,9 @@ pub const File = struct {
         macho: MachO.Export,
         plan9: Plan9.Export,
         c: void,
-        wasm: void,
+        wasm: Wasm.Export,
         spirv: void,
-    };
-
-    /// For DWARF .debug_info.
-    pub const DbgInfoTypeRelocsTable = std.HashMapUnmanaged(Type, DbgInfoTypeReloc, Type.HashContext64, std.hash_map.default_max_load_percentage);
-
-    /// For DWARF .debug_info.
-    pub const DbgInfoTypeReloc = struct {
-        /// Offset from `TextBlock.dbg_info_off` (the buffer that is local to a Decl).
-        /// This is where the .debug_info tag for the type is.
-        off: u32,
-        /// Offset from `TextBlock.dbg_info_off` (the buffer that is local to a Decl).
-        /// List of DW.AT.type / DW.FORM.ref4 that points to the type.
-        relocs: std.ArrayListUnmanaged(u32),
+        nvptx: void,
     };
 
     /// Attempts incremental linking, if the file already exists. If
@@ -236,6 +265,7 @@ pub const File = struct {
                 .plan9 => return &(try Plan9.createEmpty(allocator, options)).base,
                 .c => unreachable, // Reported error earlier.
                 .spirv => &(try SpirV.createEmpty(allocator, options)).base,
+                .nvptx => &(try NvPtx.createEmpty(allocator, options)).base,
                 .hex => return error.HexObjectFormatUnimplemented,
                 .raw => return error.RawObjectFormatUnimplemented,
             };
@@ -254,6 +284,7 @@ pub const File = struct {
                     .wasm => &(try Wasm.createEmpty(allocator, options)).base,
                     .c => unreachable, // Reported error earlier.
                     .spirv => &(try SpirV.createEmpty(allocator, options)).base,
+                    .nvptx => &(try NvPtx.createEmpty(allocator, options)).base,
                     .hex => return error.HexObjectFormatUnimplemented,
                     .raw => return error.RawObjectFormatUnimplemented,
                 };
@@ -274,6 +305,7 @@ pub const File = struct {
             .wasm => &(try Wasm.openPath(allocator, sub_path, options)).base,
             .c => &(try C.openPath(allocator, sub_path, options)).base,
             .spirv => &(try SpirV.openPath(allocator, sub_path, options)).base,
+            .nvptx => &(try NvPtx.openPath(allocator, sub_path, options)).base,
             .hex => return error.HexObjectFormatUnimplemented,
             .raw => return error.RawObjectFormatUnimplemented,
         };
@@ -306,7 +338,7 @@ pub const File = struct {
                     .mode = determineMode(base.options),
                 });
             },
-            .c, .wasm, .spirv => {},
+            .c, .wasm, .spirv, .nvptx => {},
         }
     }
 
@@ -321,26 +353,24 @@ pub const File = struct {
         }
         switch (base.tag) {
             .macho => if (base.file) |f| {
-                if (base.intermediary_basename != null) {
-                    // The file we have open is not the final file that we want to
-                    // make executable, so we don't have to close it.
-                    return;
-                }
                 if (comptime builtin.target.isDarwin() and builtin.target.cpu.arch == .aarch64) {
-                    if (base.options.target.cpu.arch != .aarch64) return; // If we're not targeting aarch64, nothing to do.
-                    // XNU starting with Big Sur running on arm64 is caching inodes of running binaries.
-                    // Any change to the binary will effectively invalidate the kernel's cache
-                    // resulting in a SIGKILL on each subsequent run. Since when doing incremental
-                    // linking we're modifying a binary in-place, this will end up with the kernel
-                    // killing it on every subsequent run. To circumvent it, we will copy the file
-                    // into a new inode, remove the original file, and rename the copy to match
-                    // the original file. This is super messy, but there doesn't seem any other
-                    // way to please the XNU.
-                    const emit = base.options.emit orelse return;
-                    try emit.directory.handle.copyFile(emit.sub_path, emit.directory.handle, emit.sub_path, .{});
+                    if (base.options.target.cpu.arch == .aarch64) {
+                        // XNU starting with Big Sur running on arm64 is caching inodes of running binaries.
+                        // Any change to the binary will effectively invalidate the kernel's cache
+                        // resulting in a SIGKILL on each subsequent run. Since when doing incremental
+                        // linking we're modifying a binary in-place, this will end up with the kernel
+                        // killing it on every subsequent run. To circumvent it, we will copy the file
+                        // into a new inode, remove the original file, and rename the copy to match
+                        // the original file. This is super messy, but there doesn't seem any other
+                        // way to please the XNU.
+                        const emit = base.options.emit orelse return;
+                        try emit.directory.handle.copyFile(emit.sub_path, emit.directory.handle, emit.sub_path, .{});
+                    }
                 }
-                f.close();
-                base.file = null;
+                if (base.intermediary_basename == null) {
+                    f.close();
+                    base.file = null;
+                }
             },
             .coff, .elf, .plan9 => if (base.file) |f| {
                 if (base.intermediary_basename != null) {
@@ -351,7 +381,7 @@ pub const File = struct {
                 f.close();
                 base.file = null;
             },
-            .c, .wasm, .spirv => {},
+            .c, .wasm, .spirv, .nvptx => {},
         }
     }
 
@@ -385,20 +415,42 @@ pub const File = struct {
         CurrentWorkingDirectoryUnlinked,
     };
 
+    /// Called from within the CodeGen to lower a local variable instantion as an unnamed
+    /// constant. Returns the symbol index of the lowered constant in the read-only section
+    /// of the final binary.
+    pub fn lowerUnnamedConst(base: *File, tv: TypedValue, decl_index: Module.Decl.Index) UpdateDeclError!u32 {
+        const decl = base.options.module.?.declPtr(decl_index);
+        log.debug("lowerUnnamedConst {*} ({s})", .{ decl, decl.name });
+        switch (base.tag) {
+            // zig fmt: off
+            .coff  => return @fieldParentPtr(Coff,  "base", base).lowerUnnamedConst(tv, decl_index),
+            .elf   => return @fieldParentPtr(Elf,   "base", base).lowerUnnamedConst(tv, decl_index),
+            .macho => return @fieldParentPtr(MachO, "base", base).lowerUnnamedConst(tv, decl_index),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).lowerUnnamedConst(tv, decl_index),
+            .spirv => unreachable,
+            .c     => unreachable,
+            .wasm  => return @fieldParentPtr(Wasm,  "base", base).lowerUnnamedConst(tv, decl_index),
+            .nvptx => unreachable,
+            // zig fmt: on
+        }
+    }
+
     /// May be called before or after updateDeclExports but must be called
     /// after allocateDeclIndexes for any given Decl.
-    pub fn updateDecl(base: *File, module: *Module, decl: *Module.Decl) UpdateDeclError!void {
-        log.debug("updateDecl {*} ({s}), type={}", .{ decl, decl.name, decl.ty });
+    pub fn updateDecl(base: *File, module: *Module, decl_index: Module.Decl.Index) UpdateDeclError!void {
+        const decl = module.declPtr(decl_index);
+        log.debug("updateDecl {*} ({s}), type={}", .{ decl, decl.name, decl.ty.fmtDebug() });
         assert(decl.has_tv);
         switch (base.tag) {
             // zig fmt: off
-            .coff  => return @fieldParentPtr(Coff,  "base", base).updateDecl(module, decl),
-            .elf   => return @fieldParentPtr(Elf,   "base", base).updateDecl(module, decl),
-            .macho => return @fieldParentPtr(MachO, "base", base).updateDecl(module, decl),
-            .c     => return @fieldParentPtr(C,     "base", base).updateDecl(module, decl),
-            .wasm  => return @fieldParentPtr(Wasm,  "base", base).updateDecl(module, decl),
-            .spirv => return @fieldParentPtr(SpirV, "base", base).updateDecl(module, decl),
-            .plan9 => return @fieldParentPtr(Plan9, "base", base).updateDecl(module, decl),
+            .coff  => return @fieldParentPtr(Coff,  "base", base).updateDecl(module, decl_index),
+            .elf   => return @fieldParentPtr(Elf,   "base", base).updateDecl(module, decl_index),
+            .macho => return @fieldParentPtr(MachO, "base", base).updateDecl(module, decl_index),
+            .c     => return @fieldParentPtr(C,     "base", base).updateDecl(module, decl_index),
+            .wasm  => return @fieldParentPtr(Wasm,  "base", base).updateDecl(module, decl_index),
+            .spirv => return @fieldParentPtr(SpirV, "base", base).updateDecl(module, decl_index),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).updateDecl(module, decl_index),
+            .nvptx => return @fieldParentPtr(NvPtx, "base", base).updateDecl(module, decl_index),
             // zig fmt: on
         }
     }
@@ -406,8 +458,9 @@ pub const File = struct {
     /// May be called before or after updateDeclExports but must be called
     /// after allocateDeclIndexes for any given Decl.
     pub fn updateFunc(base: *File, module: *Module, func: *Module.Fn, air: Air, liveness: Liveness) UpdateDeclError!void {
+        const owner_decl = module.declPtr(func.owner_decl);
         log.debug("updateFunc {*} ({s}), type={}", .{
-            func.owner_decl, func.owner_decl.name, func.owner_decl.ty,
+            owner_decl, owner_decl.name, owner_decl.ty.fmtDebug(),
         });
         switch (base.tag) {
             // zig fmt: off
@@ -418,6 +471,7 @@ pub const File = struct {
             .wasm  => return @fieldParentPtr(Wasm,  "base", base).updateFunc(module, func, air, liveness),
             .spirv => return @fieldParentPtr(SpirV, "base", base).updateFunc(module, func, air, liveness),
             .plan9 => return @fieldParentPtr(Plan9, "base", base).updateFunc(module, func, air, liveness),
+            .nvptx => return @fieldParentPtr(NvPtx, "base", base).updateFunc(module, func, air, liveness),
             // zig fmt: on
         }
     }
@@ -432,8 +486,9 @@ pub const File = struct {
             .elf => return @fieldParentPtr(Elf, "base", base).updateDeclLineNumber(module, decl),
             .macho => return @fieldParentPtr(MachO, "base", base).updateDeclLineNumber(module, decl),
             .c => return @fieldParentPtr(C, "base", base).updateDeclLineNumber(module, decl),
+            .wasm => return @fieldParentPtr(Wasm, "base", base).updateDeclLineNumber(module, decl),
             .plan9 => @panic("TODO: implement updateDeclLineNumber for plan9"),
-            .wasm, .spirv => {},
+            .spirv, .nvptx => {},
         }
     }
 
@@ -442,20 +497,21 @@ pub const File = struct {
     /// TODO we're transitioning to deleting this function and instead having
     /// each linker backend notice the first time updateDecl or updateFunc is called, or
     /// a callee referenced from AIR.
-    pub fn allocateDeclIndexes(base: *File, decl: *Module.Decl) error{OutOfMemory}!void {
+    pub fn allocateDeclIndexes(base: *File, decl_index: Module.Decl.Index) error{OutOfMemory}!void {
+        const decl = base.options.module.?.declPtr(decl_index);
         log.debug("allocateDeclIndexes {*} ({s})", .{ decl, decl.name });
         switch (base.tag) {
-            .coff => return @fieldParentPtr(Coff, "base", base).allocateDeclIndexes(decl),
-            .elf => return @fieldParentPtr(Elf, "base", base).allocateDeclIndexes(decl),
-            .macho => return @fieldParentPtr(MachO, "base", base).allocateDeclIndexes(decl) catch |err| switch (err) {
+            .coff => return @fieldParentPtr(Coff, "base", base).allocateDeclIndexes(decl_index),
+            .elf => return @fieldParentPtr(Elf, "base", base).allocateDeclIndexes(decl_index),
+            .macho => return @fieldParentPtr(MachO, "base", base).allocateDeclIndexes(decl_index) catch |err| switch (err) {
                 // remap this error code because we are transitioning away from
                 // `allocateDeclIndexes`.
                 error.Overflow => return error.OutOfMemory,
                 error.OutOfMemory => return error.OutOfMemory,
             },
-            .wasm => return @fieldParentPtr(Wasm, "base", base).allocateDeclIndexes(decl),
-            .plan9 => return @fieldParentPtr(Plan9, "base", base).allocateDeclIndexes(decl),
-            .c, .spirv => {},
+            .wasm => return @fieldParentPtr(Wasm, "base", base).allocateDeclIndexes(decl_index),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).allocateDeclIndexes(decl_index),
+            .c, .spirv, .nvptx => {},
         }
     }
 
@@ -513,15 +569,19 @@ pub const File = struct {
                 parent.deinit();
                 base.allocator.destroy(parent);
             },
+            .nvptx => {
+                const parent = @fieldParentPtr(NvPtx, "base", base);
+                parent.deinit();
+                base.allocator.destroy(parent);
+            },
         }
     }
 
     /// Commit pending changes and write headers. Takes into account final output mode
     /// and `use_lld`, not only `effectiveOutputMode`.
-    pub fn flush(base: *File, comp: *Compilation) !void {
-        const emit = base.options.emit orelse return; // -fno-emit-bin
-
+    pub fn flush(base: *File, comp: *Compilation, prog_node: *std.Progress.Node) !void {
         if (comp.clang_preprocessor_mode == .yes) {
+            const emit = base.options.emit orelse return; // -fno-emit-bin
             // TODO: avoid extra link step when it's just 1 object file (the `zig cc -c` case)
             // Until then, we do `lld -r -o output.o input.o` even though the output is the same
             // as the input. For the preprocessing case (`zig cc -E -o foo`) we copy the file
@@ -537,44 +597,46 @@ pub const File = struct {
 
         const use_lld = build_options.have_llvm and base.options.use_lld;
         if (use_lld and base.options.output_mode == .Lib and base.options.link_mode == .Static) {
-            return base.linkAsArchive(comp);
+            return base.linkAsArchive(comp, prog_node);
         }
         switch (base.tag) {
-            .coff => return @fieldParentPtr(Coff, "base", base).flush(comp),
-            .elf => return @fieldParentPtr(Elf, "base", base).flush(comp),
-            .macho => return @fieldParentPtr(MachO, "base", base).flush(comp),
-            .c => return @fieldParentPtr(C, "base", base).flush(comp),
-            .wasm => return @fieldParentPtr(Wasm, "base", base).flush(comp),
-            .spirv => return @fieldParentPtr(SpirV, "base", base).flush(comp),
-            .plan9 => return @fieldParentPtr(Plan9, "base", base).flush(comp),
+            .coff => return @fieldParentPtr(Coff, "base", base).flush(comp, prog_node),
+            .elf => return @fieldParentPtr(Elf, "base", base).flush(comp, prog_node),
+            .macho => return @fieldParentPtr(MachO, "base", base).flush(comp, prog_node),
+            .c => return @fieldParentPtr(C, "base", base).flush(comp, prog_node),
+            .wasm => return @fieldParentPtr(Wasm, "base", base).flush(comp, prog_node),
+            .spirv => return @fieldParentPtr(SpirV, "base", base).flush(comp, prog_node),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).flush(comp, prog_node),
+            .nvptx => return @fieldParentPtr(NvPtx, "base", base).flush(comp, prog_node),
         }
     }
 
     /// Commit pending changes and write headers. Works based on `effectiveOutputMode`
     /// rather than final output mode.
-    pub fn flushModule(base: *File, comp: *Compilation) !void {
+    pub fn flushModule(base: *File, comp: *Compilation, prog_node: *std.Progress.Node) !void {
         switch (base.tag) {
-            .coff => return @fieldParentPtr(Coff, "base", base).flushModule(comp),
-            .elf => return @fieldParentPtr(Elf, "base", base).flushModule(comp),
-            .macho => return @fieldParentPtr(MachO, "base", base).flushModule(comp),
-            .c => return @fieldParentPtr(C, "base", base).flushModule(comp),
-            .wasm => return @fieldParentPtr(Wasm, "base", base).flushModule(comp),
-            .spirv => return @fieldParentPtr(SpirV, "base", base).flushModule(comp),
-            .plan9 => return @fieldParentPtr(Plan9, "base", base).flushModule(comp),
+            .coff => return @fieldParentPtr(Coff, "base", base).flushModule(comp, prog_node),
+            .elf => return @fieldParentPtr(Elf, "base", base).flushModule(comp, prog_node),
+            .macho => return @fieldParentPtr(MachO, "base", base).flushModule(comp, prog_node),
+            .c => return @fieldParentPtr(C, "base", base).flushModule(comp, prog_node),
+            .wasm => return @fieldParentPtr(Wasm, "base", base).flushModule(comp, prog_node),
+            .spirv => return @fieldParentPtr(SpirV, "base", base).flushModule(comp, prog_node),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).flushModule(comp, prog_node),
+            .nvptx => return @fieldParentPtr(NvPtx, "base", base).flushModule(comp, prog_node),
         }
     }
 
     /// Called when a Decl is deleted from the Module.
-    pub fn freeDecl(base: *File, decl: *Module.Decl) void {
-        log.debug("freeDecl {*} ({s})", .{ decl, decl.name });
+    pub fn freeDecl(base: *File, decl_index: Module.Decl.Index) void {
         switch (base.tag) {
-            .coff => @fieldParentPtr(Coff, "base", base).freeDecl(decl),
-            .elf => @fieldParentPtr(Elf, "base", base).freeDecl(decl),
-            .macho => @fieldParentPtr(MachO, "base", base).freeDecl(decl),
-            .c => @fieldParentPtr(C, "base", base).freeDecl(decl),
-            .wasm => @fieldParentPtr(Wasm, "base", base).freeDecl(decl),
-            .spirv => @fieldParentPtr(SpirV, "base", base).freeDecl(decl),
-            .plan9 => @fieldParentPtr(Plan9, "base", base).freeDecl(decl),
+            .coff => @fieldParentPtr(Coff, "base", base).freeDecl(decl_index),
+            .elf => @fieldParentPtr(Elf, "base", base).freeDecl(decl_index),
+            .macho => @fieldParentPtr(MachO, "base", base).freeDecl(decl_index),
+            .c => @fieldParentPtr(C, "base", base).freeDecl(decl_index),
+            .wasm => @fieldParentPtr(Wasm, "base", base).freeDecl(decl_index),
+            .spirv => @fieldParentPtr(SpirV, "base", base).freeDecl(decl_index),
+            .plan9 => @fieldParentPtr(Plan9, "base", base).freeDecl(decl_index),
+            .nvptx => @fieldParentPtr(NvPtx, "base", base).freeDecl(decl_index),
         }
     }
 
@@ -585,44 +647,120 @@ pub const File = struct {
             .macho => return @fieldParentPtr(MachO, "base", base).error_flags,
             .plan9 => return @fieldParentPtr(Plan9, "base", base).error_flags,
             .c => return .{ .no_entry_point_found = false },
-            .wasm, .spirv => return ErrorFlags{},
+            .wasm, .spirv, .nvptx => return ErrorFlags{},
         }
     }
+
+    pub const UpdateDeclExportsError = error{
+        OutOfMemory,
+        AnalysisFail,
+    };
 
     /// May be called before or after updateDecl, but must be called after
     /// allocateDeclIndexes for any given Decl.
     pub fn updateDeclExports(
         base: *File,
         module: *Module,
-        decl: *Module.Decl,
+        decl_index: Module.Decl.Index,
         exports: []const *Module.Export,
-    ) !void {
+    ) UpdateDeclExportsError!void {
+        const decl = module.declPtr(decl_index);
         log.debug("updateDeclExports {*} ({s})", .{ decl, decl.name });
         assert(decl.has_tv);
         switch (base.tag) {
-            .coff => return @fieldParentPtr(Coff, "base", base).updateDeclExports(module, decl, exports),
-            .elf => return @fieldParentPtr(Elf, "base", base).updateDeclExports(module, decl, exports),
-            .macho => return @fieldParentPtr(MachO, "base", base).updateDeclExports(module, decl, exports),
-            .c => return @fieldParentPtr(C, "base", base).updateDeclExports(module, decl, exports),
-            .wasm => return @fieldParentPtr(Wasm, "base", base).updateDeclExports(module, decl, exports),
-            .spirv => return @fieldParentPtr(SpirV, "base", base).updateDeclExports(module, decl, exports),
-            .plan9 => return @fieldParentPtr(Plan9, "base", base).updateDeclExports(module, decl, exports),
+            .coff => return @fieldParentPtr(Coff, "base", base).updateDeclExports(module, decl_index, exports),
+            .elf => return @fieldParentPtr(Elf, "base", base).updateDeclExports(module, decl_index, exports),
+            .macho => return @fieldParentPtr(MachO, "base", base).updateDeclExports(module, decl_index, exports),
+            .c => return @fieldParentPtr(C, "base", base).updateDeclExports(module, decl_index, exports),
+            .wasm => return @fieldParentPtr(Wasm, "base", base).updateDeclExports(module, decl_index, exports),
+            .spirv => return @fieldParentPtr(SpirV, "base", base).updateDeclExports(module, decl_index, exports),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).updateDeclExports(module, decl_index, exports),
+            .nvptx => return @fieldParentPtr(NvPtx, "base", base).updateDeclExports(module, decl_index, exports),
         }
     }
 
-    pub fn getDeclVAddr(base: *File, decl: *const Module.Decl) u64 {
+    pub const RelocInfo = struct {
+        parent_atom_index: u32,
+        offset: u64,
+        addend: u32,
+    };
+
+    /// Get allocated `Decl`'s address in virtual memory.
+    /// The linker is passed information about the containing atom, `parent_atom_index`, and offset within it's
+    /// memory buffer, `offset`, so that it can make a note of potential relocation sites, should the
+    /// `Decl`'s address was not yet resolved, or the containing atom gets moved in virtual memory.
+    pub fn getDeclVAddr(base: *File, decl_index: Module.Decl.Index, reloc_info: RelocInfo) !u64 {
         switch (base.tag) {
-            .coff => return @fieldParentPtr(Coff, "base", base).getDeclVAddr(decl),
-            .elf => return @fieldParentPtr(Elf, "base", base).getDeclVAddr(decl),
-            .macho => return @fieldParentPtr(MachO, "base", base).getDeclVAddr(decl),
-            .plan9 => @panic("GET VADDR"),
+            .coff => return @fieldParentPtr(Coff, "base", base).getDeclVAddr(decl_index, reloc_info),
+            .elf => return @fieldParentPtr(Elf, "base", base).getDeclVAddr(decl_index, reloc_info),
+            .macho => return @fieldParentPtr(MachO, "base", base).getDeclVAddr(decl_index, reloc_info),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).getDeclVAddr(decl_index, reloc_info),
             .c => unreachable,
-            .wasm => unreachable,
+            .wasm => return @fieldParentPtr(Wasm, "base", base).getDeclVAddr(decl_index, reloc_info),
             .spirv => unreachable,
+            .nvptx => unreachable,
         }
     }
 
-    pub fn linkAsArchive(base: *File, comp: *Compilation) !void {
+    /// This function is called by the frontend before flush(). It communicates that
+    /// `options.bin_file.emit` directory needs to be renamed from
+    /// `[zig-cache]/tmp/[random]` to `[zig-cache]/o/[digest]`.
+    /// The frontend would like to simply perform a file system rename, however,
+    /// some linker backends care about the file paths of the objects they are linking.
+    /// So this function call tells linker backends to rename the paths of object files
+    /// to observe the new directory path.
+    /// Linker backends which do not have this requirement can fall back to the simple
+    /// implementation at the bottom of this function.
+    /// This function is only called when CacheMode is `whole`.
+    pub fn renameTmpIntoCache(
+        base: *File,
+        cache_directory: Compilation.Directory,
+        tmp_dir_sub_path: []const u8,
+        o_sub_path: []const u8,
+    ) !void {
+        // So far, none of the linker backends need to respond to this event, however,
+        // it makes sense that they might want to. So we leave this mechanism here
+        // for now. Once the linker backends get more mature, if it turns out this
+        // is not needed we can refactor this into having the frontend do the rename
+        // directly, and remove this function from link.zig.
+        _ = base;
+        while (true) {
+            if (builtin.os.tag == .windows) {
+                // workaround windows `renameW` can't fail with `PathAlreadyExists`
+                // See https://github.com/ziglang/zig/issues/8362
+                if (cache_directory.handle.access(o_sub_path, .{})) |_| {
+                    try cache_directory.handle.deleteTree(o_sub_path);
+                    continue;
+                } else |err| switch (err) {
+                    error.FileNotFound => {},
+                    else => |e| return e,
+                }
+                try std.fs.rename(
+                    cache_directory.handle,
+                    tmp_dir_sub_path,
+                    cache_directory.handle,
+                    o_sub_path,
+                );
+                break;
+            } else {
+                std.fs.rename(
+                    cache_directory.handle,
+                    tmp_dir_sub_path,
+                    cache_directory.handle,
+                    o_sub_path,
+                ) catch |err| switch (err) {
+                    error.PathAlreadyExists => {
+                        try cache_directory.handle.deleteTree(o_sub_path);
+                        continue;
+                    },
+                    else => |e| return e,
+                };
+                break;
+            }
+        }
+    }
+
+    pub fn linkAsArchive(base: *File, comp: *Compilation, prog_node: *std.Progress.Node) !void {
         const tracy = trace(@src());
         defer tracy.end();
 
@@ -631,9 +769,11 @@ pub const File = struct {
         const arena = arena_allocator.allocator();
 
         const directory = base.options.emit.?.directory; // Just an alias to make it shorter to type.
+        const full_out_path = try directory.join(arena, &[_][]const u8{base.options.emit.?.sub_path});
+        const full_out_path_z = try arena.dupeZ(u8, full_out_path);
 
-        // If there is no Zig code to compile, then we should skip flushing the output file because it
-        // will not be part of the linker line anyway.
+        // If there is no Zig code to compile, then we should skip flushing the output file
+        // because it will not be part of the linker line anyway.
         const module_obj_path: ?[]const u8 = if (base.options.module) |module| blk: {
             const use_stage1 = build_options.is_stage1 and base.options.use_stage1;
             if (use_stage1) {
@@ -642,19 +782,26 @@ pub const File = struct {
                     .target = base.options.target,
                     .output_mode = .Obj,
                 });
-                const o_directory = module.zig_cache_artifact_directory;
-                const full_obj_path = try o_directory.join(arena, &[_][]const u8{obj_basename});
-                break :blk full_obj_path;
+                switch (base.options.cache_mode) {
+                    .incremental => break :blk try module.zig_cache_artifact_directory.join(
+                        arena,
+                        &[_][]const u8{obj_basename},
+                    ),
+                    .whole => break :blk try fs.path.join(arena, &.{
+                        fs.path.dirname(full_out_path_z).?, obj_basename,
+                    }),
+                }
             }
             if (base.options.object_format == .macho) {
-                try base.cast(MachO).?.flushObject(comp);
+                try base.cast(MachO).?.flushObject(comp, prog_node);
             } else {
-                try base.flushModule(comp);
+                try base.flushModule(comp, prog_node);
             }
-            const obj_basename = base.intermediary_basename.?;
-            const full_obj_path = try directory.join(arena, &[_][]const u8{obj_basename});
-            break :blk full_obj_path;
+            const dirname = fs.path.dirname(full_out_path_z) orelse ".";
+            break :blk try fs.path.join(arena, &.{ dirname, base.intermediary_basename.? });
         } else null;
+
+        log.debug("module_obj_path={s}", .{if (module_obj_path) |s| s else "(null)"});
 
         const compiler_rt_path: ?[]const u8 = if (base.options.include_compiler_rt)
             comp.compiler_rt_obj.?.full_object_path
@@ -678,7 +825,10 @@ pub const File = struct {
             // We are about to obtain this lock, so here we give other processes a chance first.
             base.releaseLock();
 
-            try man.addListOfFiles(base.options.objects);
+            for (base.options.objects) |obj| {
+                _ = try man.addFile(obj.path, null);
+                man.hash.add(obj.must_link);
+            }
             for (comp.c_object_table.keys()) |key| {
                 _ = try man.addFile(key.status.success.object_path, null);
             }
@@ -715,8 +865,8 @@ pub const File = struct {
         var object_files = try std.ArrayList([*:0]const u8).initCapacity(base.allocator, num_object_files);
         defer object_files.deinit();
 
-        for (base.options.objects) |obj_path| {
-            object_files.appendAssumeCapacity(try arena.dupeZ(u8, obj_path));
+        for (base.options.objects) |obj| {
+            object_files.appendAssumeCapacity(try arena.dupeZ(u8, obj.path));
         }
         for (comp.c_object_table.keys()) |key| {
             object_files.appendAssumeCapacity(try arena.dupeZ(u8, key.status.success.object_path));
@@ -727,9 +877,6 @@ pub const File = struct {
         if (compiler_rt_path) |p| {
             object_files.appendAssumeCapacity(try arena.dupeZ(u8, p));
         }
-
-        const full_out_path = try directory.join(arena, &[_][]const u8{base.options.emit.?.sub_path});
-        const full_out_path_z = try arena.dupeZ(u8, full_out_path);
 
         if (base.options.verbose_link) {
             std.debug.print("ar rcs {s}", .{full_out_path_z});
@@ -765,6 +912,7 @@ pub const File = struct {
         wasm,
         spirv,
         plan9,
+        nvptx,
     };
 
     pub const ErrorFlags = struct {
@@ -778,6 +926,8 @@ pub const File = struct {
     pub const MachO = @import("link/MachO.zig");
     pub const SpirV = @import("link/SpirV.zig");
     pub const Wasm = @import("link/Wasm.zig");
+    pub const NvPtx = @import("link/NvPtx.zig");
+    pub const Dwarf = @import("link/Dwarf.zig");
 };
 
 pub fn determineMode(options: Options) fs.File.Mode {

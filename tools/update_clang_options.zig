@@ -333,6 +333,14 @@ const known_options = [_]KnownOpt{
         .ident = "no_color_diagnostics",
     },
     .{
+        .name = "fstack-check",
+        .ident = "stack_check",
+    },
+    .{
+        .name = "fno-stack-check",
+        .ident = "no_stack_check",
+    },
+    .{
         .name = "MD",
         .ident = "dep_file",
     },
@@ -411,6 +419,18 @@ const known_options = [_]KnownOpt{
     .{
         .name = "emit-llvm",
         .ident = "emit_llvm",
+    },
+    .{
+        .name = "sysroot",
+        .ident = "sysroot",
+    },
+    .{
+        .name = "entry",
+        .ident = "entry",
+    },
+    .{
+        .name = "e",
+        .ident = "entry",
     },
 };
 

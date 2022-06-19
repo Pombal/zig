@@ -151,7 +151,8 @@ fn renderMember(gpa: Allocator, ais: *Ais, tree: Ast, decl: Ast.Node.Index, spac
         .test_decl => {
             const test_token = main_tokens[decl];
             try renderToken(ais, tree, test_token, .space);
-            if (token_tags[test_token + 1] == .string_literal) {
+            const test_name_tag = token_tags[test_token + 1];
+            if (test_name_tag == .string_literal or test_name_tag == .identifier) {
                 try renderToken(ais, tree, test_token + 1, .space);
             }
             try renderExpression(gpa, ais, tree, datas[decl].rhs, space);
@@ -183,7 +184,21 @@ fn renderExpression(gpa: Allocator, ais: *Ais, tree: Ast, node: Ast.Node.Index, 
     const node_tags = tree.nodes.items(.tag);
     const datas = tree.nodes.items(.data);
     switch (node_tags[node]) {
-        .identifier,
+        // TODO remove this c_void -> anyopaque rewrite after the 0.10.0 release.
+        // Also get rid of renderSpace() as it will no longer be necessary.
+        .identifier => {
+            const token_index = main_tokens[node];
+
+            const lexeme = tokenSliceForRender(tree, token_index);
+            if (mem.eql(u8, lexeme, "c_void")) {
+                try ais.writer().writeAll("anyopaque");
+            } else {
+                try ais.writer().writeAll(lexeme);
+            }
+
+            return renderSpace(ais, tree, token_index, lexeme.len, space);
+        },
+
         .integer_literal,
         .float_literal,
         .char_literal,
@@ -214,8 +229,6 @@ fn renderExpression(gpa: Allocator, ais: *Ais, tree: Ast, node: Ast.Node.Index, 
             try renderToken(ais, tree, main_tokens[node] + 1, .none);
             return renderToken(ais, tree, main_tokens[node] + 2, space);
         },
-
-        .@"anytype" => return renderToken(ais, tree, main_tokens[node], space),
 
         .block_two,
         .block_two_semicolon,
@@ -1224,12 +1237,7 @@ fn renderBuiltinCall(
 ) Error!void {
     const token_tags = tree.tokens.items(.tag);
 
-    const builtin_name = tokenSliceForRender(tree, builtin_token);
-    if (mem.eql(u8, builtin_name, "@byteOffsetOf")) {
-        try ais.writer().writeAll("@offsetOf");
-    } else {
-        try renderToken(ais, tree, builtin_token, .none); // @name
-    }
+    try renderToken(ais, tree, builtin_token, .none); // @name
 
     if (params.len == 0) {
         try renderToken(ais, tree, builtin_token + 1, .none); // (
@@ -1497,16 +1505,18 @@ fn renderSwitchCase(
     const node_tags = tree.nodes.items(.tag);
     const token_tags = tree.tokens.items(.tag);
     const trailing_comma = token_tags[switch_case.ast.arrow_token - 1] == .comma;
+    const has_comment_before_arrow = blk: {
+        if (switch_case.ast.values.len == 0) break :blk false;
+        break :blk hasComment(tree, tree.firstToken(switch_case.ast.values[0]), switch_case.ast.arrow_token);
+    };
 
     // Render everything before the arrow
     if (switch_case.ast.values.len == 0) {
         try renderToken(ais, tree, switch_case.ast.arrow_token - 1, .space); // else keyword
-    } else if (switch_case.ast.values.len == 1) {
+    } else if (switch_case.ast.values.len == 1 and !has_comment_before_arrow) {
         // render on one line and drop the trailing comma if any
         try renderExpression(gpa, ais, tree, switch_case.ast.values[0], .space);
-    } else if (trailing_comma or
-        hasComment(tree, tree.firstToken(switch_case.ast.values[0]), switch_case.ast.arrow_token))
-    {
+    } else if (trailing_comma or has_comment_before_arrow) {
         // Render each value on a new line
         try renderExpressions(gpa, ais, tree, switch_case.ast.values, .comma);
     } else {
@@ -1916,15 +1926,24 @@ fn renderContainerDecl(
 
     const src_has_trailing_comma = token_tags[rbrace - 1] == .comma;
     if (!src_has_trailing_comma) one_line: {
-        // We can only print all the members in-line if there are no comments or multiline strings,
-        // and all the members are fields.
+        // We print all the members in-line unless one of the following conditions are true:
+
+        // 1. The container has comments or multiline strings.
         if (hasComment(tree, lbrace, rbrace) or hasMultilineString(tree, lbrace, rbrace)) {
             break :one_line;
         }
+
+        // 2. A member of the container has a doc comment.
+        for (token_tags[lbrace + 1 .. rbrace - 1]) |tag| {
+            if (tag == .doc_comment) break :one_line;
+        }
+
+        // 3. The container has non-field members.
         for (container_decl.ast.members) |member| {
             if (!node_tags[member].isContainerField()) break :one_line;
         }
-        // All the declarations on the same line.
+
+        // Print all the declarations on the same line.
         try renderToken(ais, tree, lbrace, .space); // lbrace
         for (container_decl.ast.members) |member| {
             try renderMember(gpa, ais, tree, member, .space);
@@ -2284,13 +2303,16 @@ const Space = enum {
 };
 
 fn renderToken(ais: *Ais, tree: Ast, token_index: Ast.TokenIndex, space: Space) Error!void {
+    const lexeme = tokenSliceForRender(tree, token_index);
+    try ais.writer().writeAll(lexeme);
+    try renderSpace(ais, tree, token_index, lexeme.len, space);
+}
+
+fn renderSpace(ais: *Ais, tree: Ast, token_index: Ast.TokenIndex, lexeme_len: usize, space: Space) Error!void {
     const token_tags = tree.tokens.items(.tag);
     const token_starts = tree.tokens.items(.start);
 
     const token_start = token_starts[token_index];
-    const lexeme = tokenSliceForRender(tree, token_index);
-
-    try ais.writer().writeAll(lexeme);
 
     if (space == .skip) return;
 
@@ -2298,7 +2320,7 @@ fn renderToken(ais: *Ais, tree: Ast, token_index: Ast.TokenIndex, space: Space) 
         try ais.writer().writeByte(',');
     }
 
-    const comment = try renderComments(ais, tree, token_start + lexeme.len, token_starts[token_index + 1]);
+    const comment = try renderComments(ais, tree, token_start + lexeme_len, token_starts[token_index + 1]);
     switch (space) {
         .none => {},
         .space => if (!comment) try ais.writer().writeByte(' '),
@@ -2484,9 +2506,15 @@ fn renderContainerDocComments(ais: *Ais, tree: Ast, start_token: Ast.TokenIndex)
 
 fn tokenSliceForRender(tree: Ast, token_index: Ast.TokenIndex) []const u8 {
     var ret = tree.tokenSlice(token_index);
-    if (tree.tokens.items(.tag)[token_index] == .multiline_string_literal_line) {
-        assert(ret[ret.len - 1] == '\n');
-        ret.len -= 1;
+    switch (tree.tokens.items(.tag)[token_index]) {
+        .multiline_string_literal_line => {
+            assert(ret[ret.len - 1] == '\n');
+            ret.len -= 1;
+        },
+        .container_doc_comment, .doc_comment => {
+            ret = mem.trimRight(u8, ret, &std.ascii.spaces);
+        },
+        else => {},
     }
     return ret;
 }

@@ -64,7 +64,7 @@ pub const Id = struct {
         };
     }
 
-    pub fn deinit(id: *Id, allocator: Allocator) void {
+    pub fn deinit(id: Id, allocator: Allocator) void {
         allocator.free(id.name);
     }
 
@@ -83,7 +83,7 @@ pub const Id = struct {
             switch (version) {
                 .int => |int| {
                     var out: u32 = 0;
-                    const major = try math.cast(u16, int);
+                    const major = math.cast(u16, int) orelse return error.Overflow;
                     out += @intCast(u32, major) << 16;
                     return out;
                 },
@@ -177,16 +177,16 @@ fn readLoadCommands(self: *Dylib, allocator: Allocator, reader: anytype, depende
     while (i < self.header.?.ncmds) : (i += 1) {
         var cmd = try macho.LoadCommand.read(allocator, reader);
         switch (cmd.cmd()) {
-            macho.LC_SYMTAB => {
+            .SYMTAB => {
                 self.symtab_cmd_index = i;
             },
-            macho.LC_DYSYMTAB => {
+            .DYSYMTAB => {
                 self.dysymtab_cmd_index = i;
             },
-            macho.LC_ID_DYLIB => {
+            .ID_DYLIB => {
                 self.id_cmd_index = i;
             },
-            macho.LC_REEXPORT_DYLIB => {
+            .REEXPORT_DYLIB => {
                 if (should_lookup_reexports) {
                     // Parse install_name to dependent dylib.
                     var id = try Id.fromLoadCommand(allocator, cmd.dylib);
@@ -214,12 +214,12 @@ fn parseSymbols(self: *Dylib, allocator: Allocator) !void {
     const index = self.symtab_cmd_index orelse return;
     const symtab_cmd = self.load_commands.items[index].symtab;
 
-    var symtab = try allocator.alloc(u8, @sizeOf(macho.nlist_64) * symtab_cmd.nsyms);
+    const symtab = try allocator.alloc(u8, @sizeOf(macho.nlist_64) * symtab_cmd.nsyms);
     defer allocator.free(symtab);
     _ = try self.file.preadAll(symtab, symtab_cmd.symoff + self.library_offset);
     const slice = @alignCast(@alignOf(macho.nlist_64), mem.bytesAsSlice(macho.nlist_64, symtab));
 
-    var strtab = try allocator.alloc(u8, symtab_cmd.strsize);
+    const strtab = try allocator.alloc(u8, symtab_cmd.strsize);
     defer allocator.free(strtab);
     _ = try self.file.preadAll(strtab, symtab_cmd.stroff + self.library_offset);
 
@@ -242,20 +242,20 @@ fn addObjCClassSymbol(self: *Dylib, allocator: Allocator, sym_name: []const u8) 
 
     for (expanded) |sym| {
         if (self.symbols.contains(sym)) continue;
-        try self.symbols.putNoClobber(allocator, sym, .{});
+        try self.symbols.putNoClobber(allocator, sym, {});
     }
 }
 
 fn addObjCIVarSymbol(self: *Dylib, allocator: Allocator, sym_name: []const u8) !void {
     const expanded = try std.fmt.allocPrint(allocator, "_OBJC_IVAR_$_{s}", .{sym_name});
     if (self.symbols.contains(expanded)) return;
-    try self.symbols.putNoClobber(allocator, expanded, .{});
+    try self.symbols.putNoClobber(allocator, expanded, {});
 }
 
 fn addObjCEhTypeSymbol(self: *Dylib, allocator: Allocator, sym_name: []const u8) !void {
     const expanded = try std.fmt.allocPrint(allocator, "_OBJC_EHTYPE_$_{s}", .{sym_name});
     if (self.symbols.contains(expanded)) return;
-    try self.symbols.putNoClobber(allocator, expanded, .{});
+    try self.symbols.putNoClobber(allocator, expanded, {});
 }
 
 fn addSymbol(self: *Dylib, allocator: Allocator, sym_name: []const u8) !void {
@@ -303,8 +303,9 @@ const TargetMatcher = struct {
         };
         const os = @tagName(target.os.tag);
         const abi: ?[]const u8 = switch (target.abi) {
-            .gnu => null,
+            .none => null,
             .simulator => "simulator",
+            .macabi => "maccatalyst",
             else => unreachable,
         };
         if (abi) |x| {
@@ -345,14 +346,16 @@ pub fn parseFromStub(
 
     const umbrella_lib = lib_stub.inner[0];
 
-    var id = try Id.default(allocator, umbrella_lib.installName());
-    if (umbrella_lib.currentVersion()) |version| {
-        try id.parseCurrentVersion(version);
+    {
+        var id = try Id.default(allocator, umbrella_lib.installName());
+        if (umbrella_lib.currentVersion()) |version| {
+            try id.parseCurrentVersion(version);
+        }
+        if (umbrella_lib.compatibilityVersion()) |version| {
+            try id.parseCompatibilityVersion(version);
+        }
+        self.id = id;
     }
-    if (umbrella_lib.compatibilityVersion()) |version| {
-        try id.parseCompatibilityVersion(version);
-    }
-    self.id = id;
 
     var umbrella_libs = std.StringHashMap(void).init(allocator);
     defer umbrella_libs.deinit();
@@ -373,7 +376,7 @@ pub fn parseFromStub(
             // TODO I thought that we could switch on presence of `parent-umbrella` map;
             // however, turns out `libsystem_notify.dylib` is fully reexported by `libSystem.dylib`
             // BUT does not feature a `parent-umbrella` map as the only sublib. Apple's bug perhaps?
-            try umbrella_libs.put(elem.installName(), .{});
+            try umbrella_libs.put(elem.installName(), {});
         }
 
         switch (elem) {

@@ -122,12 +122,22 @@ const glibc_targets = [_]LibCTarget{
     LibCTarget{
         .name = "mipsel-linux-gnu",
         .arch = MultiArch{ .specific = Arch.mipsel },
-        .abi = MultiAbi{ .specific = Abi.gnu },
+        .abi = MultiAbi{ .specific = Abi.gnueabihf },
+    },
+    LibCTarget{
+        .name = "mipsel-linux-gnu-soft",
+        .arch = MultiArch{ .specific = Arch.mipsel },
+        .abi = MultiAbi{ .specific = Abi.gnueabi },
     },
     LibCTarget{
         .name = "mips-linux-gnu",
         .arch = MultiArch{ .specific = Arch.mips },
-        .abi = MultiAbi{ .specific = Abi.gnu },
+        .abi = MultiAbi{ .specific = Abi.gnueabihf },
+    },
+    LibCTarget{
+        .name = "mips-linux-gnu-soft",
+        .arch = MultiArch{ .specific = Arch.mips },
+        .abi = MultiAbi{ .specific = Abi.gnueabi },
     },
     LibCTarget{
         .name = "powerpc64le-linux-gnu",
@@ -142,7 +152,12 @@ const glibc_targets = [_]LibCTarget{
     LibCTarget{
         .name = "powerpc-linux-gnu",
         .arch = MultiArch{ .specific = Arch.powerpc },
-        .abi = MultiAbi{ .specific = Abi.gnu },
+        .abi = MultiAbi{ .specific = Abi.gnueabihf },
+    },
+    LibCTarget{
+        .name = "powerpc-linux-gnu-soft",
+        .arch = MultiArch{ .specific = Arch.powerpc },
+        .abi = MultiAbi{ .specific = Abi.gnueabi },
     },
     LibCTarget{
         .name = "riscv64-linux-gnu-rv64imac-lp64",
@@ -155,13 +170,13 @@ const glibc_targets = [_]LibCTarget{
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
     LibCTarget{
-        .name = "sparc64-linux-gnu",
+        .name = "sparc-linux-gnu",
         .arch = MultiArch{ .specific = Arch.sparc },
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
     LibCTarget{
         .name = "sparcv9-linux-gnu",
-        .arch = MultiArch{ .specific = Arch.sparcv9 },
+        .arch = MultiArch{ .specific = Arch.sparc64 },
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
     LibCTarget{
@@ -252,8 +267,9 @@ const DestTarget = struct {
                 (@enumToInt(a.abi) *% @as(u32, 4082223418));
         }
 
-        pub fn eql(self: @This(), a: DestTarget, b: DestTarget) bool {
+        pub fn eql(self: @This(), a: DestTarget, b: DestTarget, b_index: usize) bool {
             _ = self;
+            _ = b_index;
             return a.arch.eql(b.arch) and
                 a.os == b.os and
                 a.abi == b.abi;

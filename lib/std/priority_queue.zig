@@ -8,26 +8,28 @@ const expectEqual = testing.expectEqual;
 const expectError = testing.expectError;
 
 /// Priority queue for storing generic data. Initialize with `init`.
-/// Provide `compareFn` that returns `Order.lt` when its first
-/// argument should get popped before its second argument,
+/// Provide `compareFn` that returns `Order.lt` when its second
+/// argument should get popped before its third argument,
 /// `Order.eq` if the arguments are of equal priority, or `Order.gt`
-/// if the second argument should be popped first.
+/// if the third argument should be popped first.
 /// For example, to make `pop` return the smallest number, provide
-/// `fn lessThan(a: T, b: T) Order { return std.math.order(a, b); }`
-pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order) type {
+/// `fn lessThan(context: void, a: T, b: T) Order { _ = context; return std.math.order(a, b); }`
+pub fn PriorityQueue(comptime T: type, comptime Context: type, comptime compareFn: fn (context: Context, a: T, b: T) Order) type {
     return struct {
         const Self = @This();
 
         items: []T,
         len: usize,
         allocator: Allocator,
+        context: Context,
 
         /// Initialize and return a priority queue.
-        pub fn init(allocator: Allocator) Self {
+        pub fn init(allocator: Allocator, context: Context) Self {
             return Self{
                 .items = &[_]T{},
                 .len = 0,
                 .allocator = allocator,
+                .context = context,
             };
         }
 
@@ -55,7 +57,7 @@ pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order
                 const child = self.items[child_index];
                 const parent = self.items[parent_index];
 
-                if (compareFn(child, parent) != .lt) break;
+                if (compareFn(self.context, child, parent) != .lt) break;
 
                 self.items[parent_index] = child;
                 self.items[child_index] = parent;
@@ -98,7 +100,19 @@ pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order
             const item = self.items[index];
             self.items[index] = last;
             self.len -= 1;
-            siftDown(self, 0);
+
+            if (index == 0) {
+                siftDown(self, index);
+            } else {
+                const parent_index = ((index - 1) >> 1);
+                const parent = self.items[parent_index];
+                if (compareFn(self.context, last, parent) == .gt) {
+                    siftDown(self, index);
+                } else {
+                    siftUp(self, index);
+                }
+            }
+
             return item;
         }
 
@@ -127,14 +141,14 @@ pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order
                 var smallest = self.items[index];
 
                 if (left) |e| {
-                    if (compareFn(e, smallest) == .lt) {
+                    if (compareFn(self.context, e, smallest) == .lt) {
                         smallest_index = left_index;
                         smallest = e;
                     }
                 }
 
                 if (right) |e| {
-                    if (compareFn(e, smallest) == .lt) {
+                    if (compareFn(self.context, e, smallest) == .lt) {
                         smallest_index = right_index;
                         smallest = e;
                     }
@@ -153,11 +167,12 @@ pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order
         /// PriorityQueue takes ownership of the passed in slice. The slice must have been
         /// allocated with `allocator`.
         /// Deinitialize with `deinit`.
-        pub fn fromOwnedSlice(allocator: Allocator, items: []T) Self {
+        pub fn fromOwnedSlice(allocator: Allocator, items: []T, context: Context) Self {
             var queue = Self{
                 .items = items,
                 .len = items.len,
                 .allocator = allocator,
+                .context = context,
             };
 
             if (queue.len <= 1) return queue;
@@ -207,7 +222,7 @@ pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order
             var update_index: usize = std.mem.indexOfScalar(T, self.items[0..self.len], elem) orelse return error.ElementNotFound;
             const old_elem: T = self.items[update_index];
             self.items[update_index] = new_elem;
-            switch (compareFn(new_elem, old_elem)) {
+            switch (compareFn(self.context, new_elem, old_elem)) {
                 .lt => siftUp(self, update_index),
                 .gt => siftDown(self, update_index),
                 .eq => {}, // Nothing to do as the items have equal priority
@@ -215,7 +230,7 @@ pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order
         }
 
         pub const Iterator = struct {
-            queue: *PriorityQueue(T, compareFn),
+            queue: *PriorityQueue(T, Context, compareFn),
             count: usize,
 
             pub fn next(it: *Iterator) ?T {
@@ -258,19 +273,21 @@ pub fn PriorityQueue(comptime T: type, comptime compareFn: fn (a: T, b: T) Order
     };
 }
 
-fn lessThan(a: u32, b: u32) Order {
+fn lessThan(context: void, a: u32, b: u32) Order {
+    _ = context;
     return std.math.order(a, b);
 }
 
-fn greaterThan(a: u32, b: u32) Order {
-    return lessThan(a, b).invert();
+fn greaterThan(context: void, a: u32, b: u32) Order {
+    return lessThan(context, a, b).invert();
 }
 
-const PQlt = PriorityQueue(u32, lessThan);
-const PQgt = PriorityQueue(u32, greaterThan);
+const PQlt = PriorityQueue(u32, void, lessThan);
+const PQgt = PriorityQueue(u32, void, greaterThan);
 
 test "std.PriorityQueue: add and remove min heap" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(54);
@@ -288,7 +305,8 @@ test "std.PriorityQueue: add and remove min heap" {
 }
 
 test "std.PriorityQueue: add and remove same min heap" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -306,14 +324,14 @@ test "std.PriorityQueue: add and remove same min heap" {
 }
 
 test "std.PriorityQueue: removeOrNull on empty" {
-    var queue = PQlt.init(testing.allocator);
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try expect(queue.removeOrNull() == null);
 }
 
 test "std.PriorityQueue: edge case 3 elements" {
-    var queue = PQlt.init(testing.allocator);
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(9);
@@ -325,7 +343,7 @@ test "std.PriorityQueue: edge case 3 elements" {
 }
 
 test "std.PriorityQueue: peek" {
-    var queue = PQlt.init(testing.allocator);
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try expect(queue.peek() == null);
@@ -337,7 +355,8 @@ test "std.PriorityQueue: peek" {
 }
 
 test "std.PriorityQueue: sift up with odd indices" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     for (items) |e| {
@@ -351,7 +370,8 @@ test "std.PriorityQueue: sift up with odd indices" {
 }
 
 test "std.PriorityQueue: addSlice" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     try queue.addSlice(items[0..]);
@@ -365,7 +385,7 @@ test "std.PriorityQueue: addSlice" {
 test "std.PriorityQueue: fromOwnedSlice trivial case 0" {
     const items = [0]u32{};
     const queue_items = try testing.allocator.dupe(u32, &items);
-    var queue = PQlt.fromOwnedSlice(testing.allocator, queue_items[0..]);
+    var queue = PQlt.fromOwnedSlice(testing.allocator, queue_items[0..], {});
     defer queue.deinit();
     try expectEqual(@as(usize, 0), queue.len);
     try expect(queue.removeOrNull() == null);
@@ -374,7 +394,7 @@ test "std.PriorityQueue: fromOwnedSlice trivial case 0" {
 test "std.PriorityQueue: fromOwnedSlice trivial case 1" {
     const items = [1]u32{1};
     const queue_items = try testing.allocator.dupe(u32, &items);
-    var queue = PQlt.fromOwnedSlice(testing.allocator, queue_items[0..]);
+    var queue = PQlt.fromOwnedSlice(testing.allocator, queue_items[0..], {});
     defer queue.deinit();
 
     try expectEqual(@as(usize, 1), queue.len);
@@ -383,9 +403,10 @@ test "std.PriorityQueue: fromOwnedSlice trivial case 1" {
 }
 
 test "std.PriorityQueue: fromOwnedSlice" {
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest;
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     const heap_items = try testing.allocator.dupe(u32, items[0..]);
-    var queue = PQlt.fromOwnedSlice(testing.allocator, heap_items[0..]);
+    var queue = PQlt.fromOwnedSlice(testing.allocator, heap_items[0..], {});
     defer queue.deinit();
 
     const sorted_items = [_]u32{ 1, 2, 5, 6, 7, 7, 11, 12, 13, 14, 15, 15, 16, 21, 22, 24, 24, 25 };
@@ -395,7 +416,8 @@ test "std.PriorityQueue: fromOwnedSlice" {
 }
 
 test "std.PriorityQueue: add and remove max heap" {
-    var queue = PQgt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQgt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(54);
@@ -413,7 +435,8 @@ test "std.PriorityQueue: add and remove max heap" {
 }
 
 test "std.PriorityQueue: add and remove same max heap" {
-    var queue = PQgt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQgt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -431,7 +454,7 @@ test "std.PriorityQueue: add and remove same max heap" {
 }
 
 test "std.PriorityQueue: iterator" {
-    var queue = PQlt.init(testing.allocator);
+    var queue = PQlt.init(testing.allocator, {});
     var map = std.AutoHashMap(u32, void).init(testing.allocator);
     defer {
         queue.deinit();
@@ -453,30 +476,34 @@ test "std.PriorityQueue: iterator" {
 }
 
 test "std.PriorityQueue: remove at index" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
-    try queue.add(3);
-    try queue.add(2);
-    try queue.add(1);
+    const items = [_]u32{ 2, 1, 8, 9, 3, 4, 5 };
+    for (items) |e| {
+        _ = try queue.add(e);
+    }
 
     var it = queue.iterator();
-    var elem = it.next();
     var idx: usize = 0;
-    const two_idx = while (elem != null) : (elem = it.next()) {
-        if (elem.? == 2)
+    const two_idx = while (it.next()) |elem| {
+        if (elem == 2)
             break idx;
         idx += 1;
     } else unreachable;
-
+    var sorted_items = [_]u32{ 1, 3, 4, 5, 8, 9 };
     try expectEqual(queue.removeIndex(two_idx), 2);
-    try expectEqual(queue.remove(), 1);
-    try expectEqual(queue.remove(), 3);
+
+    var i: usize = 0;
+    while (queue.removeOrNull()) |n| : (i += 1) {
+        try expectEqual(n, sorted_items[i]);
+    }
     try expectEqual(queue.removeOrNull(), null);
 }
 
 test "std.PriorityQueue: iterator while empty" {
-    var queue = PQlt.init(testing.allocator);
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     var it = queue.iterator();
@@ -485,7 +512,8 @@ test "std.PriorityQueue: iterator while empty" {
 }
 
 test "std.PriorityQueue: shrinkAndFree" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.ensureTotalCapacity(4);
@@ -508,7 +536,8 @@ test "std.PriorityQueue: shrinkAndFree" {
 }
 
 test "std.PriorityQueue: update min heap" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(55);
@@ -523,7 +552,8 @@ test "std.PriorityQueue: update min heap" {
 }
 
 test "std.PriorityQueue: update same min heap" {
-    var queue = PQlt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -539,7 +569,8 @@ test "std.PriorityQueue: update same min heap" {
 }
 
 test "std.PriorityQueue: update max heap" {
-    var queue = PQgt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQgt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(55);
@@ -554,7 +585,8 @@ test "std.PriorityQueue: update max heap" {
 }
 
 test "std.PriorityQueue: update same max heap" {
-    var queue = PQgt.init(testing.allocator);
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQgt.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -567,4 +599,48 @@ test "std.PriorityQueue: update same max heap" {
     try expectEqual(@as(u32, 4), queue.remove());
     try expectEqual(@as(u32, 2), queue.remove());
     try expectEqual(@as(u32, 1), queue.remove());
+}
+
+test "std.PriorityQueue: siftUp in remove" {
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    var queue = PQlt.init(testing.allocator, {});
+    defer queue.deinit();
+
+    try queue.addSlice(&.{ 0, 1, 100, 2, 3, 101, 102, 4, 5, 6, 7, 103, 104, 105, 106, 8 });
+
+    _ = queue.removeIndex(std.mem.indexOfScalar(u32, queue.items[0..queue.len], 102).?);
+
+    const sorted_items = [_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 100, 101, 103, 104, 105, 106 };
+    for (sorted_items) |e| {
+        try expectEqual(e, queue.remove());
+    }
+}
+
+fn contextLessThan(context: []const u32, a: usize, b: usize) Order {
+    return std.math.order(context[a], context[b]);
+}
+
+const CPQlt = PriorityQueue(usize, []const u32, contextLessThan);
+
+test "std.PriorityQueue: add and remove min heap with contextful comparator" {
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest; // TODO
+    const context = [_]u32{ 5, 3, 4, 2, 2, 8, 0 };
+
+    var queue = CPQlt.init(testing.allocator, context[0..]);
+    defer queue.deinit();
+
+    try queue.add(0);
+    try queue.add(1);
+    try queue.add(2);
+    try queue.add(3);
+    try queue.add(4);
+    try queue.add(5);
+    try queue.add(6);
+    try expectEqual(@as(usize, 6), queue.remove());
+    try expectEqual(@as(usize, 4), queue.remove());
+    try expectEqual(@as(usize, 3), queue.remove());
+    try expectEqual(@as(usize, 1), queue.remove());
+    try expectEqual(@as(usize, 2), queue.remove());
+    try expectEqual(@as(usize, 0), queue.remove());
+    try expectEqual(@as(usize, 5), queue.remove());
 }

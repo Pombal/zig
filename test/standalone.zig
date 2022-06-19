@@ -34,6 +34,10 @@ pub fn addCases(cases: *tests.StandaloneContext) void {
     cases.addBuildFile("test/standalone/link_frameworks/build.zig", .{
         .requires_macos_sdk = true,
     });
+    cases.addBuildFile("test/standalone/link_common_symbols_alignment/build.zig", .{});
+    if (builtin.os.tag == .macos) {
+        cases.addBuildFile("test/standalone/link_import_tls_dylib/build.zig", .{});
+    }
     cases.addBuildFile("test/standalone/issue_339/build.zig", .{});
     cases.addBuildFile("test/standalone/issue_8550/build.zig", .{});
     cases.addBuildFile("test/standalone/issue_794/build.zig", .{});
@@ -45,6 +49,7 @@ pub fn addCases(cases: *tests.StandaloneContext) void {
     cases.addBuildFile("test/standalone/issue_7030/build.zig", .{});
     cases.addBuildFile("test/standalone/install_raw_hex/build.zig", .{});
     cases.addBuildFile("test/standalone/issue_9812/build.zig", .{});
+    cases.addBuildFile("test/standalone/issue_11595/build.zig", .{});
     if (builtin.os.tag != .wasi) {
         cases.addBuildFile("test/standalone/load_dynamic_library/build.zig", .{});
     }
@@ -78,6 +83,10 @@ pub fn addCases(cases: *tests.StandaloneContext) void {
     // Ensure the development tools are buildable.
     cases.add("tools/gen_spirv_spec.zig");
     cases.add("tools/gen_stubs.zig");
+    cases.add("tools/generate_linux_syscalls.zig");
+    cases.add("tools/process_headers.zig");
+    cases.add("tools/update-license-headers.zig");
+    cases.add("tools/update-linux-headers.zig");
     cases.add("tools/update_clang_options.zig");
     cases.add("tools/update_cpu_features.zig");
     cases.add("tools/update_glibc.zig");

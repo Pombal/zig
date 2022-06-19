@@ -28,8 +28,9 @@ pub const MADV = linux.MADV;
 pub const MAP = struct {
     pub usingnamespace linux.MAP;
     /// Only used by libc to communicate failure.
-    pub const FAILED = @intToPtr(*c_void, maxInt(usize));
+    pub const FAILED = @intToPtr(*anyopaque, maxInt(usize));
 };
+pub const MSF = linux.MSF;
 pub const MMAP2_UNIT = linux.MMAP2_UNIT;
 pub const MSG = linux.MSG;
 pub const NAME_MAX = linux.NAME_MAX;
@@ -56,6 +57,7 @@ pub const STDOUT_FILENO = linux.STDOUT_FILENO;
 pub const SYS = linux.SYS;
 pub const Sigaction = linux.Sigaction;
 pub const TCP = linux.TCP;
+pub const TCSA = linux.TCSA;
 pub const VDSO = linux.VDSO;
 pub const W = linux.W;
 pub const W_OK = linux.W_OK;
@@ -85,11 +87,13 @@ pub const pollfd = linux.pollfd;
 pub const rlim_t = linux.rlim_t;
 pub const rlimit = linux.rlimit;
 pub const rlimit_resource = linux.rlimit_resource;
+pub const rusage = linux.rusage;
 pub const siginfo_t = linux.siginfo_t;
 pub const sigset_t = linux.sigset_t;
 pub const sockaddr = linux.sockaddr;
 pub const socklen_t = linux.socklen_t;
 pub const stack_t = linux.stack_t;
+pub const tcflag_t = linux.tcflag_t;
 pub const termios = linux.termios;
 pub const time_t = linux.time_t;
 pub const timespec = linux.timespec;
@@ -111,16 +115,17 @@ pub const _errno = switch (native_abi) {
 };
 
 pub const Stat = switch (native_arch) {
-    .sparcv9 => extern struct {
+    .sparc64 => extern struct {
         dev: u64,
+        __pad1: u16,
         ino: ino_t,
         mode: u32,
-        nlink: usize,
+        nlink: u32,
 
         uid: u32,
         gid: u32,
         rdev: u64,
-        __pad0: u32,
+        __pad2: u16,
 
         size: off_t,
         blksize: isize,
@@ -129,7 +134,7 @@ pub const Stat = switch (native_arch) {
         atim: timespec,
         mtim: timespec,
         ctim: timespec,
-        __unused: [2]isize,
+        __reserved: [2]usize,
 
         pub fn atime(self: @This()) timespec {
             return self.atim;
@@ -228,7 +233,7 @@ pub extern "c" fn fstatat64(dirfd: fd_t, path: [*:0]const u8, stat_buf: *Stat, f
 pub extern "c" fn ftruncate64(fd: c_int, length: off_t) c_int;
 pub extern "c" fn getrlimit64(resource: rlimit_resource, rlim: *rlimit) c_int;
 pub extern "c" fn lseek64(fd: fd_t, offset: i64, whence: c_int) i64;
-pub extern "c" fn mmap64(addr: ?*align(std.mem.page_size) c_void, len: usize, prot: c_uint, flags: c_uint, fd: fd_t, offset: i64) *c_void;
+pub extern "c" fn mmap64(addr: ?*align(std.mem.page_size) anyopaque, len: usize, prot: c_uint, flags: c_uint, fd: fd_t, offset: i64) *anyopaque;
 pub extern "c" fn open64(path: [*:0]const u8, oflag: c_uint, ...) c_int;
 pub extern "c" fn openat64(fd: c_int, path: [*:0]const u8, oflag: c_uint, ...) c_int;
 pub extern "c" fn pread64(fd: fd_t, buf: [*]u8, nbyte: usize, offset: i64) isize;
@@ -258,8 +263,12 @@ pub extern "c" fn inotify_rm_watch(fd: fd_t, wd: c_int) c_int;
 /// See std.elf for constants for this
 pub extern "c" fn getauxval(__type: c_ulong) c_ulong;
 
-pub const dl_iterate_phdr_callback = fn (info: *dl_phdr_info, size: usize, data: ?*c_void) callconv(.C) c_int;
-pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*c_void) c_int;
+pub const dl_iterate_phdr_callback = switch (builtin.zig_backend) {
+    .stage1 => fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
+    else => *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
+};
+
+pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*anyopaque) c_int;
 
 pub extern "c" fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) c_int;
 
@@ -280,11 +289,11 @@ pub extern "c" fn copy_file_range(fd_in: fd_t, off_in: ?*i64, fd_out: fd_t, off_
 pub extern "c" fn signalfd(fd: fd_t, mask: *const sigset_t, flags: c_uint) c_int;
 
 pub extern "c" fn prlimit(pid: pid_t, resource: rlimit_resource, new_limit: *const rlimit, old_limit: *rlimit) c_int;
-pub extern "c" fn posix_memalign(memptr: *?*c_void, alignment: usize, size: usize) c_int;
-pub extern "c" fn malloc_usable_size(?*const c_void) usize;
+pub extern "c" fn posix_memalign(memptr: *?*anyopaque, alignment: usize, size: usize) c_int;
+pub extern "c" fn malloc_usable_size(?*const anyopaque) usize;
 
 pub extern "c" fn madvise(
-    addr: *align(std.mem.page_size) c_void,
+    addr: *align(std.mem.page_size) anyopaque,
     length: usize,
     advice: c_uint,
 ) c_int;
@@ -336,7 +345,7 @@ const __SIZEOF_PTHREAD_MUTEX_T = switch (native_abi) {
     .gnu, .gnuabin32, .gnuabi64, .gnueabi, .gnueabihf, .gnux32 => switch (native_arch) {
         .aarch64 => 48,
         .x86_64 => if (native_abi == .gnux32) 40 else 32,
-        .mips64, .powerpc64, .powerpc64le, .sparcv9 => 40,
+        .mips64, .powerpc64, .powerpc64le, .sparc64 => 40,
         else => if (@sizeOf(usize) == 8) 40 else 24,
     },
     .android => if (@sizeOf(usize) == 8) 40 else 4,
@@ -354,4 +363,19 @@ pub const RTLD = struct {
     pub const NODELETE = 4096;
     pub const GLOBAL = 256;
     pub const LOCAL = 0;
+};
+
+pub const dirent = struct {
+    d_ino: c_uint,
+    d_off: c_uint,
+    d_reclen: c_ushort,
+    d_type: u8,
+    d_name: [256]u8,
+};
+pub const dirent64 = struct {
+    d_ino: c_ulong,
+    d_off: c_ulong,
+    d_reclen: c_ushort,
+    d_type: u8,
+    d_name: [256]u8,
 };

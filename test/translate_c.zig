@@ -6,6 +6,20 @@ const CrossTarget = std.zig.CrossTarget;
 pub fn addCases(cases: *tests.TranslateCContext) void {
     const default_enum_type = if (builtin.abi == .msvc) "c_int" else "c_uint";
 
+    cases.add("variables check for opaque demotion",
+        \\struct A {
+        \\    _Atomic int a;
+        \\} a;
+        \\int main(void) {
+        \\    struct A a;
+        \\}
+    , &[_][]const u8{
+        \\pub const struct_A = opaque {};
+        \\pub const a = @compileError("non-extern variable has opaque type");
+        ,
+        \\pub extern fn main() c_int;
+    });
+
     cases.add("field access is grouped if necessary",
         \\unsigned long foo(unsigned long x) {
         \\    return ((union{unsigned long _x}){x})._x;
@@ -99,7 +113,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    .b = @import("std").mem.zeroes(struct_Bar),
         \\};
         ,
-        \\pub const PTR = ?*c_void;
+        \\pub const PTR = ?*anyopaque;
     });
 
     cases.add("scoped record",
@@ -199,8 +213,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\#define SYS_BASE_CACHED 0
         \\#define MEM_PHYSICAL_TO_K0(x) (void*)((uint32_t)(x) + SYS_BASE_CACHED)
     , &[_][]const u8{
-        \\pub inline fn MEM_PHYSICAL_TO_K0(x: anytype) ?*c_void {
-        \\    return @import("std").zig.c_translation.cast(?*c_void, @import("std").zig.c_translation.cast(u32, x) + SYS_BASE_CACHED);
+        \\pub inline fn MEM_PHYSICAL_TO_K0(x: anytype) ?*anyopaque {
+        \\    return @import("std").zig.c_translation.cast(?*anyopaque, @import("std").zig.c_translation.cast(u32, x) + SYS_BASE_CACHED);
         \\}
     });
 
@@ -511,9 +525,9 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\void ((f1)) (void *L);
         \\void (((f2))) (void *L);
     , &[_][]const u8{
-        \\pub extern fn f0(L: ?*c_void) void;
-        \\pub extern fn f1(L: ?*c_void) void;
-        \\pub extern fn f2(L: ?*c_void) void;
+        \\pub extern fn f0(L: ?*anyopaque) void;
+        \\pub extern fn f1(L: ?*anyopaque) void;
+        \\pub extern fn f2(L: ?*anyopaque) void;
     });
 
     cases.add("array initializer w/ typedef",
@@ -812,9 +826,9 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\typedef void Foo;
         \\Foo fun(Foo *a);
     , &[_][]const u8{
-        \\pub const Foo = c_void;
+        \\pub const Foo = anyopaque;
         ,
-        \\pub extern fn fun(a: ?*Foo) Foo;
+        \\pub extern fn fun(a: ?*Foo) void;
     });
 
     cases.add("duplicate typedef",
@@ -837,7 +851,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     , &[_][]const u8{
         \\pub extern fn foo() void;
         \\pub export fn bar() void {
-        \\    var func_ptr: ?*c_void = @ptrCast(?*c_void, foo);
+        \\    var func_ptr: ?*anyopaque = @ptrCast(?*anyopaque, foo);
         \\    var typed_func_ptr: ?fn () callconv(.C) void = @intToPtr(?fn () callconv(.C) void, @intCast(c_ulong, @ptrToInt(func_ptr)));
         \\    _ = typed_func_ptr;
         \\}
@@ -1135,11 +1149,31 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\#define bar 16.e-2l
         \\#define FOO 0.12345
         \\#define BAR .12345
+        \\#define baz 1e1
+        \\#define BAZ 42e-3f
+        \\#define foobar -73.L
     , &[_][]const u8{
         "pub const foo = @as(f32, 3.14);",
         "pub const bar = @as(c_longdouble, 16.0e-2);",
         "pub const FOO = 0.12345;",
         "pub const BAR = 0.12345;",
+        "pub const baz = 1e1;",
+        "pub const BAZ = @as(f32, 42e-3);",
+        "pub const foobar = -@as(c_longdouble, 73.0);",
+    });
+
+    cases.add("macro defines hexadecimal float",
+        \\#define FOO 0xf7p38
+        \\#define BAR -0X8F.BP5F
+        \\#define FOOBAR 0X0P+0
+        \\#define BAZ -0x.0a5dp+12
+        \\#define FOOBAZ 0xfE.P-1l
+    , &[_][]const u8{
+        "pub const FOO = 0xf7p38;",
+        "pub const BAR = -@as(f32, 0x8F.BP5);",
+        "pub const FOOBAR = 0x0P+0;",
+        "pub const BAZ = -0x0.0a5dp+12;",
+        "pub const FOOBAZ = @as(c_longdouble, 0xfE.0P-1);",
     });
 
     cases.add("comments",
@@ -1264,9 +1298,9 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    return x;
         \\}
     , &[_][]const u8{
-        \\pub export fn foo() ?*c_void {
+        \\pub export fn foo() ?*anyopaque {
         \\    var x: [*c]c_ushort = undefined;
-        \\    return @ptrCast(?*c_void, x);
+        \\    return @ptrCast(?*anyopaque, x);
         \\}
     });
 
@@ -1410,7 +1444,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     , &[_][]const u8{
         \\pub export fn test_ptr_cast() void {
-        \\    var p: ?*c_void = undefined;
+        \\    var p: ?*anyopaque = undefined;
         \\    {
         \\        var to_char: [*c]u8 = @ptrCast([*c]u8, @alignCast(@import("std").meta.alignment(u8), p));
         \\        _ = to_char;
@@ -1448,7 +1482,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub export fn while_none_bool() c_int {
         \\    var a: c_int = undefined;
         \\    var b: f32 = undefined;
-        \\    var c: ?*c_void = undefined;
+        \\    var c: ?*anyopaque = undefined;
         \\    while (a != 0) return 0;
         \\    while (b != 0) return 1;
         \\    while (c != null) return 2;
@@ -1470,7 +1504,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub export fn for_none_bool() c_int {
         \\    var a: c_int = undefined;
         \\    var b: f32 = undefined;
-        \\    var c: ?*c_void = undefined;
+        \\    var c: ?*anyopaque = undefined;
         \\    while (a != 0) return 0;
         \\    while (b != 0) return 1;
         \\    while (c != null) return 2;
@@ -1551,7 +1585,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub export fn foo() c_int {
         \\    var a: c_int = undefined;
         \\    var b: f32 = undefined;
-        \\    var c: ?*c_void = undefined;
+        \\    var c: ?*anyopaque = undefined;
         \\    return @boolToInt(!(a == @as(c_int, 0)));
         \\    return @boolToInt(!(a != 0));
         \\    return @boolToInt(!(b != 0));
@@ -2056,7 +2090,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     , &[_][]const u8{
         \\pub export var @"anyerror": c_uint = 2;
         ,
-        \\pub const @"noreturn" = @compileError("unable to translate C expr: unexpected token .Keyword_noreturn");
+        \\pub const @"noreturn" = @compileError("unable to translate C expr: unexpected token '_Noreturn'");
         ,
         \\pub const @"f32": c_int = 0;
         \\pub const @"u32": c_int = 1;
@@ -2200,7 +2234,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     cases.add("restrict -> noalias",
         \\void foo(void *restrict bar, void *restrict);
     , &[_][]const u8{
-        \\pub extern fn foo(noalias bar: ?*c_void, noalias ?*c_void) void;
+        \\pub extern fn foo(noalias bar: ?*anyopaque, noalias ?*anyopaque) void;
     });
 
     cases.add("assign",
@@ -2362,7 +2396,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         ++ " " ++ default_enum_type ++
             \\;
             \\pub const SomeTypedef = c_int;
-            \\pub export fn and_or_non_bool(arg_a: c_int, arg_b: f32, arg_c: ?*c_void) c_int {
+            \\pub export fn and_or_non_bool(arg_a: c_int, arg_b: f32, arg_c: ?*anyopaque) c_int {
             \\    var a = arg_a;
             \\    var b = arg_b;
             \\    var c = arg_c;
@@ -2686,7 +2720,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub const enum_SomeEnum =
         ++ " " ++ default_enum_type ++
             \\;
-            \\pub export fn if_none_bool(arg_a: c_int, arg_b: f32, arg_c: ?*c_void, arg_d: enum_SomeEnum) c_int {
+            \\pub export fn if_none_bool(arg_a: c_int, arg_b: f32, arg_c: ?*anyopaque, arg_d: enum_SomeEnum) c_int {
             \\    var a = arg_a;
             \\    var b = arg_b;
             \\    var c = arg_c;
@@ -3089,7 +3123,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub extern fn fn_f64(x: f64) void;
         \\pub extern fn fn_char(x: u8) void;
         \\pub extern fn fn_bool(x: bool) void;
-        \\pub extern fn fn_ptr(x: ?*c_void) void;
+        \\pub extern fn fn_ptr(x: ?*anyopaque) void;
         \\pub export fn call() void {
         \\    fn_int(@floatToInt(c_int, 3.0));
         \\    fn_int(@floatToInt(c_int, 3.0));
@@ -3105,7 +3139,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    fn_bool(@as(c_int, 0) != 0);
         \\    fn_bool(@ptrToInt(fn_int) != 0);
         \\    fn_int(@intCast(c_int, @ptrToInt(fn_int)));
-        \\    fn_ptr(@intToPtr(?*c_void, @as(c_int, 42)));
+        \\    fn_ptr(@intToPtr(?*anyopaque, @as(c_int, 42)));
         \\}
     });
 
@@ -3161,12 +3195,12 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\#define BAZ (uint32_t)(2)
         \\#define a 2
     , &[_][]const u8{
-        \\pub inline fn FOO(bar: anytype) @TypeOf(baz(@import("std").zig.c_translation.cast(?*c_void, baz))) {
+        \\pub inline fn FOO(bar: anytype) @TypeOf(baz(@import("std").zig.c_translation.cast(?*anyopaque, baz))) {
         \\    _ = bar;
-        \\    return baz(@import("std").zig.c_translation.cast(?*c_void, baz));
+        \\    return baz(@import("std").zig.c_translation.cast(?*anyopaque, baz));
         \\}
         ,
-        \\pub const BAR = @import("std").zig.c_translation.cast(?*c_void, a);
+        \\pub const BAR = @import("std").zig.c_translation.cast(?*anyopaque, a);
         ,
         \\pub const BAZ = @import("std").zig.c_translation.cast(u32, @as(c_int, 2));
     });
@@ -3404,7 +3438,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\#define NULL ((void*)0)
         \\#define FOO ((int)0x8000)
     , &[_][]const u8{
-        \\pub const NULL = @import("std").zig.c_translation.cast(?*c_void, @as(c_int, 0));
+        \\pub const NULL = @import("std").zig.c_translation.cast(?*anyopaque, @as(c_int, 0));
         ,
         \\pub const FOO = @import("std").zig.c_translation.cast(c_int, @import("std").zig.c_translation.promoteIntLiteral(c_int, 0x8000, .hexadecimal));
     });
@@ -3567,7 +3601,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    struct my_struct S = {.a = 1, .b = 2};
         \\}
     , &[_][]const u8{
-        \\warning: cannot initialize opaque type
+        \\warning: local variable has opaque type
         ,
         \\warning: unable to translate function, demoted to extern
         \\pub extern fn initialize() void;
@@ -3585,6 +3619,30 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         ,
         \\warning: unable to translate function, demoted to extern
         \\pub extern fn deref(arg_s: ?*struct_my_struct) void;
+    });
+
+    cases.add("Demote function that dereference types that contain opaque type",
+        \\struct inner {
+        \\    _Atomic int a;            
+        \\};
+        \\struct outer {
+        \\    int thing;
+        \\    struct inner sub_struct;
+        \\};
+        \\void deref(struct outer *s) {
+        \\    *s;
+        \\}
+    , &[_][]const u8{
+        \\pub const struct_inner = opaque {};
+        ,
+        \\pub const struct_outer = extern struct {
+        \\    thing: c_int,
+        \\    sub_struct: struct_inner,
+        \\};
+        ,
+        \\warning: unable to translate function, demoted to extern
+        ,
+        \\pub extern fn deref(arg_s: ?*struct_outer) void;
     });
 
     cases.add("Function prototype declared within function",
@@ -3623,8 +3681,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\typedef long long LONG_PTR;
         \\#define INVALID_HANDLE_VALUE ((void *)(LONG_PTR)-1)
     , &[_][]const u8{
-        \\pub const MAP_FAILED = @import("std").zig.c_translation.cast(?*c_void, -@as(c_int, 1));
-        \\pub const INVALID_HANDLE_VALUE = @import("std").zig.c_translation.cast(?*c_void, @import("std").zig.c_translation.cast(LONG_PTR, -@as(c_int, 1)));
+        \\pub const MAP_FAILED = @import("std").zig.c_translation.cast(?*anyopaque, -@as(c_int, 1));
+        \\pub const INVALID_HANDLE_VALUE = @import("std").zig.c_translation.cast(?*anyopaque, @import("std").zig.c_translation.cast(LONG_PTR, -@as(c_int, 1)));
     });
 
     cases.add("discard unused local variables and function parameters",

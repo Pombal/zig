@@ -193,7 +193,9 @@ pub const AtomicFile = struct {
         self.* = undefined;
     }
 
-    pub fn finish(self: *AtomicFile) !void {
+    pub const FinishError = std.os.RenameError;
+
+    pub fn finish(self: *AtomicFile) FinishError!void {
         assert(self.file_exists);
         if (self.file_open) {
             self.file.close();
@@ -300,6 +302,7 @@ pub const Dir = struct {
             buf: [8192]u8, // TODO align(@alignOf(os.system.dirent)),
             index: usize,
             end_index: usize,
+            first_iter: bool,
 
             const Self = @This();
 
@@ -319,6 +322,10 @@ pub const Dir = struct {
             fn nextDarwin(self: *Self) !?Entry {
                 start_over: while (true) {
                     if (self.index >= self.end_index) {
+                        if (self.first_iter) {
+                            std.os.lseek_SET(self.dir.fd, 0) catch unreachable; // EBADF here likely means that the Dir was not opened with iteration permissions
+                            self.first_iter = false;
+                        }
                         const rc = os.system.__getdirentries64(
                             self.dir.fd,
                             &self.buf,
@@ -369,6 +376,10 @@ pub const Dir = struct {
             fn nextSolaris(self: *Self) !?Entry {
                 start_over: while (true) {
                     if (self.index >= self.end_index) {
+                        if (self.first_iter) {
+                            std.os.lseek_SET(self.dir.fd, 0) catch unreachable; // EBADF here likely means that the Dir was not opened with iteration permissions
+                            self.first_iter = false;
+                        }
                         const rc = os.system.getdents(self.dir.fd, &self.buf, self.buf.len);
                         switch (os.errno(rc)) {
                             .SUCCESS => {},
@@ -423,6 +434,10 @@ pub const Dir = struct {
             fn nextBsd(self: *Self) !?Entry {
                 start_over: while (true) {
                     if (self.index >= self.end_index) {
+                        if (self.first_iter) {
+                            std.os.lseek_SET(self.dir.fd, 0) catch unreachable; // EBADF here likely means that the Dir was not opened with iteration permissions
+                            self.first_iter = false;
+                        }
                         const rc = if (builtin.os.tag == .netbsd)
                             os.system.__getdents30(self.dir.fd, &self.buf, self.buf.len)
                         else
@@ -479,6 +494,7 @@ pub const Dir = struct {
             buf: [8192]u8, // TODO align(@alignOf(os.dirent64)),
             index: usize,
             end_index: usize,
+            first_iter: bool,
 
             const Self = @This();
 
@@ -491,6 +507,10 @@ pub const Dir = struct {
                     // TODO: find a better max
                     const HAIKU_MAX_COUNT = 10000;
                     if (self.index >= self.end_index) {
+                        if (self.first_iter) {
+                            std.os.lseek_SET(self.dir.fd, 0) catch unreachable; // EBADF here likely means that the Dir was not opened with iteration permissions
+                            self.first_iter = false;
+                        }
                         const rc = os.system._kern_read_dir(
                             self.dir.fd,
                             &self.buf,
@@ -563,6 +583,7 @@ pub const Dir = struct {
             buf: [8192]u8 align(if (builtin.os.tag != .linux) 1 else @alignOf(linux.dirent64)),
             index: usize,
             end_index: usize,
+            first_iter: bool,
 
             const Self = @This();
             const linux = os.linux;
@@ -574,13 +595,17 @@ pub const Dir = struct {
             pub fn next(self: *Self) Error!?Entry {
                 start_over: while (true) {
                     if (self.index >= self.end_index) {
+                        if (self.first_iter) {
+                            std.os.lseek_SET(self.dir.fd, 0) catch unreachable; // EBADF here likely means that the Dir was not opened with iteration permissions
+                            self.first_iter = false;
+                        }
                         const rc = linux.getdents64(self.dir.fd, &self.buf, self.buf.len);
                         switch (linux.getErrno(rc)) {
                             .SUCCESS => {},
                             .BADF => unreachable, // Dir is invalid or was opened without iteration ability
                             .FAULT => unreachable,
                             .NOTDIR => unreachable,
-                            .INVAL => unreachable,
+                            .INVAL => return error.Unexpected, // Linux may in some cases return EINVAL when reading /proc/$PID/net.
                             else => |err| return os.unexpectedErrno(err),
                         }
                         if (rc == 0) return null;
@@ -620,7 +645,7 @@ pub const Dir = struct {
             buf: [8192]u8 align(@alignOf(os.windows.FILE_BOTH_DIR_INFORMATION)),
             index: usize,
             end_index: usize,
-            first: bool,
+            first_iter: bool,
             name_data: [256]u8,
 
             const Self = @This();
@@ -645,9 +670,9 @@ pub const Dir = struct {
                             .FileBothDirectoryInformation,
                             w.FALSE,
                             null,
-                            if (self.first) @as(w.BOOLEAN, w.TRUE) else @as(w.BOOLEAN, w.FALSE),
+                            if (self.first_iter) @as(w.BOOLEAN, w.TRUE) else @as(w.BOOLEAN, w.FALSE),
                         );
-                        self.first = false;
+                        self.first_iter = false;
                         if (io.Information == 0) return null;
                         self.index = 0;
                         self.end_index = io.Information;
@@ -769,18 +794,20 @@ pub const Dir = struct {
                 .index = 0,
                 .end_index = 0,
                 .buf = undefined,
+                .first_iter = true,
             },
             .linux, .haiku => return Iterator{
                 .dir = self,
                 .index = 0,
                 .end_index = 0,
                 .buf = undefined,
+                .first_iter = true,
             },
             .windows => return Iterator{
                 .dir = self,
                 .index = 0,
                 .end_index = 0,
-                .first = true,
+                .first_iter = true,
                 .buf = undefined,
                 .name_data = undefined,
             },
@@ -860,10 +887,8 @@ pub const Dir = struct {
         }
 
         pub fn deinit(self: *Walker) void {
-            while (self.stack.popOrNull()) |*item| {
-                if (self.stack.items.len != 0) {
-                    item.iter.dir.close();
-                }
+            for (self.stack.items) |*item| {
+                item.iter.dir.close();
             }
             self.stack.deinit();
             self.name_buffer.deinit();
@@ -896,6 +921,7 @@ pub const Dir = struct {
     pub const OpenError = error{
         FileNotFound,
         NotDir,
+        InvalidHandle,
         AccessDenied,
         SymLinkLoop,
         ProcessFdQuotaExceeded,
@@ -938,10 +964,10 @@ pub const Dir = struct {
         const w = os.wasi;
         var fdflags: w.fdflags_t = 0x0;
         var base: w.rights_t = 0x0;
-        if (flags.read) {
+        if (flags.isRead()) {
             base |= w.RIGHT.FD_READ | w.RIGHT.FD_TELL | w.RIGHT.FD_SEEK | w.RIGHT.FD_FILESTAT_GET;
         }
-        if (flags.write) {
+        if (flags.isWrite()) {
             fdflags |= w.FDFLAG.APPEND;
             base |= w.RIGHT.FD_WRITE |
                 w.RIGHT.FD_TELL |
@@ -953,6 +979,13 @@ pub const Dir = struct {
                 w.RIGHT.FD_ADVISE |
                 w.RIGHT.FD_FILESTAT_SET_TIMES |
                 w.RIGHT.FD_FILESTAT_SET_SIZE;
+        }
+        if (self.fd == os.wasi.AT.FDCWD or path.isAbsolute(sub_path)) {
+            // Resolve absolute or CWD-relative paths to a path within a Preopen
+            var resolved_path_buf: [MAX_PATH_BYTES]u8 = undefined;
+            const resolved_path = try os.resolvePathWasi(sub_path, &resolved_path_buf);
+            const fd = try os.openatWasi(resolved_path.dir_fd, resolved_path.relative_path, 0x0, 0x0, fdflags, base, 0x0);
+            return File{ .handle = fd };
         }
         const fd = try os.openatWasi(self.fd, sub_path, 0x0, 0x0, fdflags, base, 0x0);
         return File{ .handle = fd };
@@ -988,12 +1021,11 @@ pub const Dir = struct {
         if (!flags.allow_ctty) {
             os_flags |= os.O.NOCTTY;
         }
-        os_flags |= if (flags.write and flags.read)
-            @as(u32, os.O.RDWR)
-        else if (flags.write)
-            @as(u32, os.O.WRONLY)
-        else
-            @as(u32, os.O.RDONLY);
+        os_flags |= switch (flags.mode) {
+            .read_only => @as(u32, os.O.RDONLY),
+            .write_only => @as(u32, os.O.WRONLY),
+            .read_write => @as(u32, os.O.RDWR),
+        };
         const fd = if (flags.intended_io_mode != .blocking)
             try std.event.Loop.instance.?.openatZ(self.fd, sub_path, os_flags, 0)
         else
@@ -1019,6 +1051,8 @@ pub const Dir = struct {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
                 error.PermissionDenied => unreachable,
+                error.DeadLock => unreachable,
+                error.LockedRegionLimitExceeded => unreachable,
                 else => |e| return e,
             };
             fl_flags &= ~@as(usize, os.O.NONBLOCK);
@@ -1026,6 +1060,8 @@ pub const Dir = struct {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
                 error.PermissionDenied => unreachable,
+                error.DeadLock => unreachable,
+                error.LockedRegionLimitExceeded => unreachable,
                 else => |e| return e,
             };
         }
@@ -1045,8 +1081,8 @@ pub const Dir = struct {
             .handle = try w.OpenFile(sub_path_w, .{
                 .dir = self.fd,
                 .access_mask = w.SYNCHRONIZE |
-                    (if (flags.read) @as(u32, w.GENERIC_READ) else 0) |
-                    (if (flags.write) @as(u32, w.GENERIC_WRITE) else 0),
+                    (if (flags.isRead()) @as(u32, w.GENERIC_READ) else 0) |
+                    (if (flags.isWrite()) @as(u32, w.GENERIC_WRITE) else 0),
                 .creation = w.FILE_OPEN,
                 .io_mode = flags.intended_io_mode,
             }),
@@ -1115,6 +1151,13 @@ pub const Dir = struct {
         if (flags.exclusive) {
             oflags |= w.O.EXCL;
         }
+        if (self.fd == os.wasi.AT.FDCWD or path.isAbsolute(sub_path)) {
+            // Resolve absolute or CWD-relative paths to a path within a Preopen
+            var resolved_path_buf: [MAX_PATH_BYTES]u8 = undefined;
+            const resolved_path = try os.resolvePathWasi(sub_path, &resolved_path_buf);
+            const fd = try os.openatWasi(resolved_path.dir_fd, resolved_path.relative_path, 0x0, oflags, 0x0, base, 0x0);
+            return File{ .handle = fd };
+        }
         const fd = try os.openatWasi(self.fd, sub_path, 0x0, oflags, 0x0, base, 0x0);
         return File{ .handle = fd };
     }
@@ -1171,6 +1214,8 @@ pub const Dir = struct {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
                 error.PermissionDenied => unreachable,
+                error.DeadLock => unreachable,
+                error.LockedRegionLimitExceeded => unreachable,
                 else => |e| return e,
             };
             fl_flags &= ~@as(usize, os.O.NONBLOCK);
@@ -1178,6 +1223,8 @@ pub const Dir = struct {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
                 error.PermissionDenied => unreachable,
+                error.DeadLock => unreachable,
+                error.LockedRegionLimitExceeded => unreachable,
                 else => |e| return e,
             };
         }
@@ -1259,9 +1306,9 @@ pub const Dir = struct {
                     if (end_index == sub_path.len) return;
                 },
                 error.FileNotFound => {
-                    if (end_index == 0) return err;
                     // march end_index backward until next path component
                     while (true) {
+                        if (end_index == 0) return err;
                         end_index -= 1;
                         if (path.isSep(sub_path[end_index])) break;
                     }
@@ -1296,7 +1343,19 @@ pub const Dir = struct {
     /// See also `Dir.realpathZ`, `Dir.realpathW`, and `Dir.realpathAlloc`.
     pub fn realpath(self: Dir, pathname: []const u8, out_buffer: []u8) ![]u8 {
         if (builtin.os.tag == .wasi) {
-            @compileError("realpath is unsupported in WASI");
+            if (self.fd == os.wasi.AT.FDCWD or path.isAbsolute(pathname)) {
+                var buffer: [MAX_PATH_BYTES]u8 = undefined;
+                const out_path = try os.realpath(pathname, &buffer);
+                if (out_path.len > out_buffer.len) {
+                    return error.NameTooLong;
+                }
+                mem.copy(u8, out_buffer, out_path);
+                return out_buffer[0..out_path.len];
+            } else {
+                // Unfortunately, we have no ability to look up the path for an fd_t
+                // on WASI, so we have to give up here.
+                return error.InvalidHandle;
+            }
         }
         if (builtin.os.tag == .windows) {
             const pathname_w = try os.windows.sliceToPrefixedFileW(pathname);
@@ -1361,7 +1420,7 @@ pub const Dir = struct {
                     .share_access = share_access,
                     .creation = creation,
                     .io_mode = .blocking,
-                    .open_dir = true,
+                    .filter = .dir_only,
                 }) catch |er| switch (er) {
                     error.WouldBlock => unreachable,
                     else => |e2| return e2,
@@ -1473,7 +1532,16 @@ pub const Dir = struct {
         // TODO do we really need all the rights here?
         const inheriting: w.rights_t = w.RIGHT.ALL ^ w.RIGHT.SOCK_SHUTDOWN;
 
-        const result = os.openatWasi(self.fd, sub_path, symlink_flags, w.O.DIRECTORY, 0x0, base, inheriting);
+        const result = blk: {
+            if (self.fd == os.wasi.AT.FDCWD or path.isAbsolute(sub_path)) {
+                // Resolve absolute or CWD-relative paths to a path within a Preopen
+                var resolved_path_buf: [MAX_PATH_BYTES]u8 = undefined;
+                const resolved_path = try os.resolvePathWasi(sub_path, &resolved_path_buf);
+                break :blk os.openatWasi(resolved_path.dir_fd, resolved_path.relative_path, symlink_flags, w.O.DIRECTORY, 0x0, base, inheriting);
+            } else {
+                break :blk os.openatWasi(self.fd, sub_path, symlink_flags, w.O.DIRECTORY, 0x0, base, inheriting);
+            }
+        };
         const fd = result catch |err| switch (err) {
             error.FileTooBig => unreachable, // can't happen for directories
             error.IsDir => unreachable, // we're providing O.DIRECTORY
@@ -1588,7 +1656,7 @@ pub const Dir = struct {
             const sub_path_w = try os.windows.sliceToPrefixedFileW(sub_path);
             return self.deleteFileW(sub_path_w.span());
         } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-            os.unlinkatWasi(self.fd, sub_path, 0) catch |err| switch (err) {
+            os.unlinkat(self.fd, sub_path, 0) catch |err| switch (err) {
                 error.DirNotEmpty => unreachable, // not passing AT.REMOVEDIR
                 else => |e| return e,
             };
@@ -1727,7 +1795,7 @@ pub const Dir = struct {
         sym_link_path: []const u8,
         _: SymLinkFlags,
     ) !void {
-        return os.symlinkatWasi(target_path, self.fd, sym_link_path);
+        return os.symlinkat(target_path, self.fd, sym_link_path);
     }
 
     /// Same as `symLink`, except the pathname parameters are null-terminated.
@@ -1773,7 +1841,7 @@ pub const Dir = struct {
 
     /// WASI-only. Same as `readLink` except targeting WASI.
     pub fn readLinkWasi(self: Dir, sub_path: []const u8, buffer: []u8) ![]u8 {
-        return os.readlinkatWasi(self.fd, sub_path, buffer);
+        return os.readlinkat(self.fd, sub_path, buffer);
     }
 
     /// Same as `readLink`, except the `pathname` parameter is null-terminated.
@@ -1829,13 +1897,14 @@ pub const Dir = struct {
 
         // If the file size doesn't fit a usize it'll be certainly greater than
         // `max_bytes`
-        const stat_size = size_hint orelse math.cast(usize, try file.getEndPos()) catch
+        const stat_size = size_hint orelse math.cast(usize, try file.getEndPos()) orelse
             return error.FileTooBig;
 
         return file.readToEndAllocOptions(allocator, max_bytes, stat_size, alignment, optional_sentinel);
     }
 
     pub const DeleteTreeError = error{
+        InvalidHandle,
         AccessDenied,
         FileTooBig,
         SymLinkLoop,
@@ -1901,6 +1970,7 @@ pub const Dir = struct {
                     continue :start_over;
                 },
 
+                error.InvalidHandle,
                 error.AccessDenied,
                 error.SymLinkLoop,
                 error.ProcessFdQuotaExceeded,
@@ -1968,6 +2038,7 @@ pub const Dir = struct {
                             continue :scan_dir;
                         },
 
+                        error.InvalidHandle,
                         error.AccessDenied,
                         error.SymLinkLoop,
                         error.ProcessFdQuotaExceeded,
@@ -2042,12 +2113,11 @@ pub const Dir = struct {
             const sub_path_w = try os.windows.cStrToPrefixedFileW(sub_path);
             return self.accessW(sub_path_w.span().ptr, flags);
         }
-        const os_mode = if (flags.write and flags.read)
-            @as(u32, os.R_OK | os.W_OK)
-        else if (flags.write)
-            @as(u32, os.W_OK)
-        else
-            @as(u32, os.F_OK);
+        const os_mode = switch (flags.mode) {
+            .read_only => @as(u32, os.F_OK),
+            .write_only => @as(u32, os.W_OK),
+            .read_write => @as(u32, os.R_OK | os.W_OK),
+        };
         const result = if (need_async_thread and flags.intended_io_mode != .blocking)
             std.event.Loop.instance.?.faccessatZ(self.fd, sub_path, os_mode, 0)
         else
@@ -2114,17 +2184,13 @@ pub const Dir = struct {
         return PrevStatus.stale;
     }
 
+    pub const CopyFileError = File.OpenError || File.StatError || AtomicFile.InitError || CopyFileRawError || AtomicFile.FinishError;
+
     /// Guaranteed to be atomic.
     /// On Linux, until https://patchwork.kernel.org/patch/9636735/ is merged and readily available,
     /// there is a possibility of power loss or application termination leaving temporary files present
     /// in the same directory as dest_path.
-    pub fn copyFile(
-        source_dir: Dir,
-        source_path: []const u8,
-        dest_dir: Dir,
-        dest_path: []const u8,
-        options: CopyFileOptions,
-    ) !void {
+    pub fn copyFile(source_dir: Dir, source_path: []const u8, dest_dir: Dir, dest_path: []const u8, options: CopyFileOptions) CopyFileError!void {
         var in_file = try source_dir.openFile(source_path, .{});
         defer in_file.close();
 
@@ -2139,7 +2205,7 @@ pub const Dir = struct {
         defer atomic_file.deinit();
 
         try copy_file(in_file.handle, atomic_file.file.handle);
-        return atomic_file.finish();
+        try atomic_file.finish();
     }
 
     pub const AtomicFileOptions = struct {
@@ -2210,6 +2276,31 @@ pub const Dir = struct {
     }
 
     pub const ChownError = File.ChownError;
+
+    const Permissions = File.Permissions;
+    pub const SetPermissionsError = File.SetPermissionsError;
+
+    /// Sets permissions according to the provided `Permissions` struct.
+    /// This method is *NOT* available on WASI
+    pub fn setPermissions(self: Dir, permissions: Permissions) SetPermissionsError!void {
+        const file: File = .{
+            .handle = self.fd,
+            .capable_io_mode = .blocking,
+        };
+        try file.setPermissions(permissions);
+    }
+
+    const Metadata = File.Metadata;
+    pub const MetadataError = File.MetadataError;
+
+    /// Returns a `Metadata` struct, representing the permissions on the directory
+    pub fn metadata(self: Dir) MetadataError!Metadata {
+        const file: File = .{
+            .handle = self.fd,
+            .capable_io_mode = .blocking,
+        };
+        return try file.metadata();
+    }
 };
 
 /// Returns a handle to the current working directory. It is not opened with iteration capability.
@@ -2218,8 +2309,6 @@ pub const Dir = struct {
 pub fn cwd() Dir {
     if (builtin.os.tag == .windows) {
         return Dir{ .fd = os.windows.peb().ProcessParameters.CurrentDirectory.Handle };
-    } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        @compileError("WASI doesn't have a concept of cwd(); use std.fs.wasi.PreopenList to get available Dir handles instead");
     } else {
         return Dir{ .fd = os.AT.FDCWD };
     }
@@ -2231,26 +2320,17 @@ pub fn cwd() Dir {
 ///
 /// Asserts that the path parameter has no null bytes.
 pub fn openDirAbsolute(absolute_path: []const u8, flags: Dir.OpenDirOptions) File.OpenError!Dir {
-    if (builtin.os.tag == .wasi) {
-        @compileError("WASI doesn't have the concept of an absolute directory; use openDir instead for WASI.");
-    }
     assert(path.isAbsolute(absolute_path));
     return cwd().openDir(absolute_path, flags);
 }
 
 /// Same as `openDirAbsolute` but the path parameter is null-terminated.
 pub fn openDirAbsoluteZ(absolute_path_c: [*:0]const u8, flags: Dir.OpenDirOptions) File.OpenError!Dir {
-    if (builtin.os.tag == .wasi) {
-        @compileError("WASI doesn't have the concept of an absolute directory; use openDir instead for WASI.");
-    }
     assert(path.isAbsoluteZ(absolute_path_c));
     return cwd().openDirZ(absolute_path_c, flags);
 }
 /// Same as `openDirAbsolute` but the path parameter is null-terminated.
 pub fn openDirAbsoluteW(absolute_path_c: [*:0]const u16, flags: Dir.OpenDirOptions) File.OpenError!Dir {
-    if (builtin.os.tag == .wasi) {
-        @compileError("WASI doesn't have the concept of an absolute directory; use openDir instead for WASI.");
-    }
     assert(path.isAbsoluteWindowsW(absolute_path_c));
     return cwd().openDirW(absolute_path_c, flags);
 }
@@ -2285,25 +2365,16 @@ pub fn openFileAbsoluteW(absolute_path_w: []const u16, flags: File.OpenFlags) Fi
 /// open it and handle the error for file not found.
 /// See `accessAbsoluteZ` for a function that accepts a null-terminated path.
 pub fn accessAbsolute(absolute_path: []const u8, flags: File.OpenFlags) Dir.AccessError!void {
-    if (builtin.os.tag == .wasi) {
-        @compileError("WASI doesn't have the concept of an absolute path; use access instead for WASI.");
-    }
     assert(path.isAbsolute(absolute_path));
     try cwd().access(absolute_path, flags);
 }
 /// Same as `accessAbsolute` but the path parameter is null-terminated.
 pub fn accessAbsoluteZ(absolute_path: [*:0]const u8, flags: File.OpenFlags) Dir.AccessError!void {
-    if (builtin.os.tag == .wasi) {
-        @compileError("WASI doesn't have the concept of an absolute path; use access instead for WASI.");
-    }
     assert(path.isAbsoluteZ(absolute_path));
     try cwd().accessZ(absolute_path, flags);
 }
 /// Same as `accessAbsolute` but the path parameter is WTF-16 encoded.
 pub fn accessAbsoluteW(absolute_path: [*:0]const 16, flags: File.OpenFlags) Dir.AccessError!void {
-    if (builtin.os.tag == .wasi) {
-        @compileError("WASI doesn't have the concept of an absolute path; use access instead for WASI.");
-    }
     assert(path.isAbsoluteWindowsW(absolute_path));
     try cwd().accessW(absolute_path, flags);
 }
@@ -2404,9 +2475,6 @@ pub const SymLinkFlags = struct {
 /// If `sym_link_path` exists, it will not be overwritten.
 /// See also `symLinkAbsoluteZ` and `symLinkAbsoluteW`.
 pub fn symLinkAbsolute(target_path: []const u8, sym_link_path: []const u8, flags: SymLinkFlags) !void {
-    if (builtin.os.tag == .wasi) {
-        @compileError("symLinkAbsolute is not supported in WASI; use Dir.symLinkWasi instead");
-    }
     assert(path.isAbsolute(target_path));
     assert(path.isAbsolute(sym_link_path));
     if (builtin.os.tag == .windows) {
@@ -2573,6 +2641,7 @@ pub fn selfExePath(out_buffer: []u8) SelfExePathError![]u8 {
             const end_index = std.unicode.utf16leToUtf8(out_buffer, utf16le_slice) catch unreachable;
             return out_buffer[0..end_index];
         },
+        .wasi => @compileError("std.fs.selfExePath not supported for WASI. Use std.fs.selfExePathAlloc instead."),
         else => @compileError("std.fs.selfExePath not supported for this target"),
     }
 }
@@ -2619,12 +2688,12 @@ pub fn realpathAlloc(allocator: Allocator, pathname: []const u8) ![]u8 {
     return allocator.dupe(u8, try os.realpath(pathname, &buf));
 }
 
-const CopyFileError = error{SystemResources} || os.CopyFileRangeError || os.SendFileError;
+const CopyFileRawError = error{SystemResources} || os.CopyFileRangeError || os.SendFileError;
 
 // Transfer all the data between two file descriptors in the most efficient way.
 // The copy starts at offset 0, the initial offsets are preserved.
 // No metadata is transferred over.
-fn copy_file(fd_in: os.fd_t, fd_out: os.fd_t) CopyFileError!void {
+fn copy_file(fd_in: os.fd_t, fd_out: os.fd_t) CopyFileRawError!void {
     if (comptime builtin.target.isDarwin()) {
         const rc = os.system.fcopyfile(fd_in, fd_out, null, os.system.COPYFILE_DATA);
         switch (os.errno(rc)) {

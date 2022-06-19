@@ -5,6 +5,7 @@ const mem = std.mem;
 const testing = std.testing;
 
 test "parse and render IPv6 addresses" {
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest;
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
 
     var buffer: [100]u8 = undefined;
@@ -49,7 +50,7 @@ test "parse and render IPv6 addresses" {
     try testing.expectError(error.Incomplete, net.Address.parseIp6("FF01:", 0));
     try testing.expectError(error.InvalidIpv4Mapping, net.Address.parseIp6("::123.123.123.123", 0));
     // TODO Make this test pass on other operating systems.
-    if (builtin.os.tag == .linux) {
+    if (builtin.os.tag == .linux or comptime builtin.os.tag.isDarwin()) {
         try testing.expectError(error.Incomplete, net.Address.resolveIp6("ff01::fb%", 0));
         try testing.expectError(error.Overflow, net.Address.resolveIp6("ff01::fb%wlp3s0s0s0s0s0s0s0s0", 0));
         try testing.expectError(error.Overflow, net.Address.resolveIp6("ff01::fb%12345678901234", 0));
@@ -57,7 +58,7 @@ test "parse and render IPv6 addresses" {
 }
 
 test "invalid but parseable IPv6 scope ids" {
-    if (builtin.os.tag != .linux) {
+    if (builtin.os.tag != .linux or comptime !builtin.os.tag.isDarwin()) {
         // Currently, resolveIp6 with alphanumerical scope IDs only works on Linux.
         // TODO Make this test pass on other operating systems.
         return error.SkipZigTest;
@@ -67,6 +68,7 @@ test "invalid but parseable IPv6 scope ids" {
 }
 
 test "parse and render IPv4 addresses" {
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest;
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
 
     var buffer: [18]u8 = undefined;
@@ -91,6 +93,7 @@ test "parse and render IPv4 addresses" {
 }
 
 test "parse and render UNIX addresses" {
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest;
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
     if (!net.has_unix_sockets) return error.SkipZigTest;
 
@@ -104,6 +107,7 @@ test "parse and render UNIX addresses" {
 }
 
 test "resolve DNS" {
+    if (@import("builtin").zig_backend != .stage1) return error.SkipZigTest;
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
 
     if (builtin.os.tag == .windows) {

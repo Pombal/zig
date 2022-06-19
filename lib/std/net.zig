@@ -636,17 +636,35 @@ pub fn connectUnixSocket(path: []const u8) !Stream {
 }
 
 fn if_nametoindex(name: []const u8) !u32 {
-    var ifr: os.ifreq = undefined;
-    var sockfd = try os.socket(os.AF.UNIX, os.SOCK.DGRAM | os.SOCK.CLOEXEC, 0);
-    defer os.closeSocket(sockfd);
+    if (builtin.target.os.tag == .linux) {
+        var ifr: os.ifreq = undefined;
+        var sockfd = try os.socket(os.AF.UNIX, os.SOCK.DGRAM | os.SOCK.CLOEXEC, 0);
+        defer os.closeSocket(sockfd);
 
-    std.mem.copy(u8, &ifr.ifrn.name, name);
-    ifr.ifrn.name[name.len] = 0;
+        std.mem.copy(u8, &ifr.ifrn.name, name);
+        ifr.ifrn.name[name.len] = 0;
 
-    // TODO investigate if this needs to be integrated with evented I/O.
-    try os.ioctl_SIOCGIFINDEX(sockfd, &ifr);
+        // TODO investigate if this needs to be integrated with evented I/O.
+        try os.ioctl_SIOCGIFINDEX(sockfd, &ifr);
 
-    return @bitCast(u32, ifr.ifru.ivalue);
+        return @bitCast(u32, ifr.ifru.ivalue);
+    }
+
+    if (comptime builtin.target.os.tag.isDarwin()) {
+        if (name.len >= os.IFNAMESIZE)
+            return error.NameTooLong;
+
+        var if_name: [os.IFNAMESIZE:0]u8 = undefined;
+        std.mem.copy(u8, &if_name, name);
+        if_name[name.len] = 0;
+        const if_slice = if_name[0..name.len :0];
+        const index = os.system.if_nametoindex(if_slice);
+        if (index == 0)
+            return error.InterfaceNotFound;
+        return @bitCast(u32, index);
+    }
+
+    @compileError("std.net.if_nametoindex unimplemented for this OS");
 }
 
 pub const AddressList = struct {
@@ -719,7 +737,7 @@ pub fn getAddressList(allocator: mem.Allocator, name: []const u8, port: u16) !*A
         const name_c = try std.cstr.addNullByte(allocator, name);
         defer allocator.free(name_c);
 
-        const port_c = try std.fmt.allocPrint(allocator, "{}\x00", .{port});
+        const port_c = try std.fmt.allocPrintZ(allocator, "{}", .{port});
         defer allocator.free(port_c);
 
         const sys = if (builtin.target.os.tag == .windows) os.windows.ws2_32 else os.system;
@@ -734,7 +752,7 @@ pub fn getAddressList(allocator: mem.Allocator, name: []const u8, port: u16) !*A
             .next = null,
         };
         var res: *os.addrinfo = undefined;
-        const rc = sys.getaddrinfo(name_c.ptr, std.meta.assumeSentinel(port_c.ptr, 0), &hints, &res);
+        const rc = sys.getaddrinfo(name_c.ptr, port_c.ptr, &hints, &res);
         if (builtin.target.os.tag == .windows) switch (@intToEnum(os.windows.ws2_32.WinsockError, @intCast(u16, rc))) {
             @intToEnum(os.windows.ws2_32.WinsockError, 0) => {},
             .WSATRY_AGAIN => return error.TemporaryNameServerFailure,
@@ -1123,18 +1141,20 @@ fn linuxLookupNameFromHosts(
     };
     defer file.close();
 
-    const stream = std.io.bufferedReader(file.reader()).reader();
+    var buffered_reader = std.io.bufferedReader(file.reader());
+    const reader = buffered_reader.reader();
     var line_buf: [512]u8 = undefined;
-    while (stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
+    while (reader.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
-            // Skip to the delimiter in the stream, to fix parsing
-            try stream.skipUntilDelimiterOrEof('\n');
+            // Skip to the delimiter in the reader, to fix parsing
+            try reader.skipUntilDelimiterOrEof('\n');
             // Use the truncated line. A truncated comment or hostname will be handled correctly.
             break :blk &line_buf;
         },
         else => |e| return e,
     }) |line| {
-        const no_comment_line = mem.split(u8, line, "#").next().?;
+        var split_it = mem.split(u8, line, "#");
+        const no_comment_line = split_it.next().?;
 
         var line_it = mem.tokenize(u8, no_comment_line, " \t");
         const ip_text = line_it.next() orelse continue;
@@ -1322,7 +1342,8 @@ fn getResolvConf(allocator: mem.Allocator, rc: *ResolvConf) !void {
     };
     defer file.close();
 
-    const stream = std.io.bufferedReader(file.reader()).reader();
+    var buf_reader = std.io.bufferedReader(file.reader());
+    const stream = buf_reader.reader();
     var line_buf: [512]u8 = undefined;
     while (stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
@@ -1333,7 +1354,10 @@ fn getResolvConf(allocator: mem.Allocator, rc: *ResolvConf) !void {
         },
         else => |e| return e,
     }) |line| {
-        const no_comment_line = mem.split(u8, line, "#").next().?;
+        const no_comment_line = no_comment_line: {
+            var split = mem.split(u8, line, "#");
+            break :no_comment_line split.next().?;
+        };
         var line_it = mem.tokenize(u8, no_comment_line, " \t");
 
         const token = line_it.next() orelse continue;
@@ -1343,7 +1367,8 @@ fn getResolvConf(allocator: mem.Allocator, rc: *ResolvConf) !void {
                 const name = colon_it.next().?;
                 const value_txt = colon_it.next() orelse continue;
                 const value = std.fmt.parseInt(u8, value_txt, 10) catch |err| switch (err) {
-                    error.Overflow => 255,
+                    // TODO https://github.com/ziglang/zig/issues/11812
+                    error.Overflow => @as(u8, 255),
                     error.InvalidCharacter => continue,
                 };
                 if (mem.eql(u8, name, "ndots")) {
