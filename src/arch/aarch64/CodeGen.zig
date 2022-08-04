@@ -362,6 +362,13 @@ fn addInst(self: *Self, inst: Mir.Inst) error{OutOfMemory}!Mir.Inst.Index {
     return result_index;
 }
 
+fn addNop(self: *Self) error{OutOfMemory}!Mir.Inst.Index {
+    return try self.addInst(.{
+        .tag = .nop,
+        .data = .{ .nop = {} },
+    });
+}
+
 pub fn addExtra(self: *Self, extra: anytype) Allocator.Error!u32 {
     const fields = std.meta.fields(@TypeOf(extra));
     try self.mir_extra.ensureUnusedCapacity(self.gpa, fields.len);
@@ -396,10 +403,7 @@ fn gen(self: *Self) !void {
         });
 
         // <store other registers>
-        const backpatch_save_registers = try self.addInst(.{
-            .tag = .nop,
-            .data = .{ .nop = {} },
-        });
+        const backpatch_save_registers = try self.addNop();
 
         // mov fp, sp
         _ = try self.addInst(.{
@@ -408,10 +412,7 @@ fn gen(self: *Self) !void {
         });
 
         // sub sp, sp, #reloc
-        const backpatch_reloc = try self.addInst(.{
-            .tag = .nop,
-            .data = .{ .nop = {} },
-        });
+        const backpatch_reloc = try self.addNop();
 
         _ = try self.addInst(.{
             .tag = .dbg_prologue_end,
@@ -581,7 +582,8 @@ fn genBody(self: *Self, body: []const Air.Inst.Index) InnerError!void {
             .floor,
             .ceil,
             .round,
-            .trunc_float
+            .trunc_float,
+            .neg,
             => try self.airUnaryMath(inst),
 
             .add_with_overflow => try self.airOverflow(inst),
@@ -726,6 +728,30 @@ fn genBody(self: *Self, body: []const Air.Inst.Index) InnerError!void {
             .wrap_optional         => try self.airWrapOptional(inst),
             .wrap_errunion_payload => try self.airWrapErrUnionPayload(inst),
             .wrap_errunion_err     => try self.airWrapErrUnionErr(inst),
+
+            .add_optimized,
+            .addwrap_optimized,
+            .sub_optimized,
+            .subwrap_optimized,
+            .mul_optimized,
+            .mulwrap_optimized,
+            .div_float_optimized,
+            .div_trunc_optimized,
+            .div_floor_optimized,
+            .div_exact_optimized,
+            .rem_optimized,
+            .mod_optimized,
+            .neg_optimized,
+            .cmp_lt_optimized,
+            .cmp_lte_optimized,
+            .cmp_eq_optimized,
+            .cmp_gte_optimized,
+            .cmp_gt_optimized,
+            .cmp_neq_optimized,
+            .cmp_vector_optimized,
+            .reduce_optimized,
+            .float_to_int_optimized,
+            => return self.fail("TODO implement optimized float mode", .{}),
 
             .wasm_memory_size => unreachable,
             .wasm_memory_grow => unreachable,
@@ -3172,7 +3198,7 @@ fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallOptions.
                 const func = func_payload.data;
                 const fn_owner_decl = mod.declPtr(func.owner_decl);
                 try self.genSetReg(Type.initTag(.u64), .x30, .{
-                    .got_load = fn_owner_decl.link.macho.local_sym_index,
+                    .got_load = fn_owner_decl.link.macho.sym_index,
                 });
                 // blr x30
                 _ = try self.addInst(.{
@@ -3188,14 +3214,14 @@ fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallOptions.
                         lib_name,
                     });
                 }
-                const n_strx = try macho_file.addExternFn(mem.sliceTo(decl_name, 0));
+                const sym_index = try macho_file.getGlobalSymbol(mem.sliceTo(decl_name, 0));
 
                 _ = try self.addInst(.{
                     .tag = .call_extern,
                     .data = .{
-                        .extern_fn = .{
-                            .atom_index = mod.declPtr(self.mod_fn.owner_decl).link.macho.local_sym_index,
-                            .sym_name = n_strx,
+                        .relocation = .{
+                            .atom_index = mod.declPtr(self.mod_fn.owner_decl).link.macho.sym_index,
+                            .sym_index = sym_index,
                         },
                     },
                 });
@@ -3261,37 +3287,58 @@ fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallOptions.
     return bt.finishAir(result);
 }
 
-fn ret(self: *Self, mcv: MCValue) !void {
-    const ret_ty = self.fn_type.fnReturnType();
-    switch (self.ret_mcv) {
-        .immediate => {
-            assert(ret_ty.isError());
-        },
-        else => {
-            try self.setRegOrMem(ret_ty, self.ret_mcv, mcv);
-        },
-    }
-    // Just add space for an instruction, patch this later
-    const index = try self.addInst(.{
-        .tag = .nop,
-        .data = .{ .nop = {} },
-    });
-    try self.exitlude_jump_relocs.append(self.gpa, index);
-}
-
 fn airRet(self: *Self, inst: Air.Inst.Index) !void {
     const un_op = self.air.instructions.items(.data)[inst].un_op;
     const operand = try self.resolveInst(un_op);
-    try self.ret(operand);
+    const ret_ty = self.fn_type.fnReturnType();
+
+    switch (self.ret_mcv) {
+        .none => {},
+        .immediate => {
+            assert(ret_ty.isError());
+        },
+        .register => |reg| {
+            // Return result by value
+            try self.genSetReg(ret_ty, reg, operand);
+        },
+        .stack_offset => {
+            // Return result by reference
+            // TODO
+            return self.fail("TODO implement airRet for {}", .{self.ret_mcv});
+        },
+        else => unreachable,
+    }
+
+    // Just add space for an instruction, patch this later
+    try self.exitlude_jump_relocs.append(self.gpa, try self.addNop());
+
     return self.finishAir(inst, .dead, .{ un_op, .none, .none });
 }
 
 fn airRetLoad(self: *Self, inst: Air.Inst.Index) !void {
     const un_op = self.air.instructions.items(.data)[inst].un_op;
     const ptr = try self.resolveInst(un_op);
-    _ = ptr;
-    return self.fail("TODO implement airRetLoad for {}", .{self.target.cpu.arch});
-    //return self.finishAir(inst, .dead, .{ un_op, .none, .none });
+    const ptr_ty = self.air.typeOf(un_op);
+    const ret_ty = self.fn_type.fnReturnType();
+    _ = ret_ty;
+
+    switch (self.ret_mcv) {
+        .none => {},
+        .register => {
+            // Return result by value
+            try self.load(self.ret_mcv, ptr, ptr_ty);
+        },
+        .stack_offset => {
+            // Return result by reference
+            // TODO
+            return self.fail("TODO implement airRetLoad for {}", .{self.ret_mcv});
+        },
+        else => unreachable,
+    }
+
+    try self.exitlude_jump_relocs.append(self.gpa, try self.addNop());
+
+    return self.finishAir(inst, .dead, .{ un_op, .none, .none });
 }
 
 fn airCmp(self: *Self, inst: Air.Inst.Index, op: math.CompareOperator) !void {
@@ -4134,7 +4181,7 @@ fn genSetStack(self: *Self, ty: Type, stack_offset: u32, mcv: MCValue) InnerErro
                             .data = .{
                                 .payload = try self.addExtra(Mir.LoadMemoryPie{
                                     .register = @enumToInt(src_reg),
-                                    .atom_index = mod.declPtr(self.mod_fn.owner_decl).link.macho.local_sym_index,
+                                    .atom_index = mod.declPtr(self.mod_fn.owner_decl).link.macho.sym_index,
                                     .sym_index = sym_index,
                                 }),
                             },
@@ -4247,7 +4294,7 @@ fn genSetReg(self: *Self, ty: Type, reg: Register, mcv: MCValue) InnerError!void
                 .data = .{
                     .payload = try self.addExtra(Mir.LoadMemoryPie{
                         .register = @enumToInt(reg),
-                        .atom_index = mod.declPtr(self.mod_fn.owner_decl).link.macho.local_sym_index,
+                        .atom_index = mod.declPtr(self.mod_fn.owner_decl).link.macho.sym_index,
                         .sym_index = sym_index,
                     }),
                 },
@@ -4555,8 +4602,8 @@ fn lowerDeclRef(self: *Self, tv: TypedValue, decl_index: Module.Decl.Index) Inne
     } else if (self.bin_file.cast(link.File.MachO)) |_| {
         // Because MachO is PIE-always-on, we defer memory address resolution until
         // the linker has enough info to perform relocations.
-        assert(decl.link.macho.local_sym_index != 0);
-        return MCValue{ .got_load = decl.link.macho.local_sym_index };
+        assert(decl.link.macho.sym_index != 0);
+        return MCValue{ .got_load = decl.link.macho.sym_index };
     } else if (self.bin_file.cast(link.File.Coff)) |coff_file| {
         const got_addr = coff_file.offset_table_virtual_address + decl.link.coff.offset_table_index * ptr_bytes;
         return MCValue{ .memory = got_addr };

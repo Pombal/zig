@@ -26,6 +26,27 @@ pub const runtime_safety = switch (builtin.mode) {
     .ReleaseFast, .ReleaseSmall => false,
 };
 
+pub const sys_can_stack_trace = switch (builtin.cpu.arch) {
+    // Observed to go into an infinite loop.
+    // TODO: Make this work.
+    .mips,
+    .mipsel,
+    => false,
+
+    // `@returnAddress()` in LLVM 10 gives
+    // "Non-Emscripten WebAssembly hasn't implemented __builtin_return_address".
+    .wasm32,
+    .wasm64,
+    => builtin.os.tag == .emscripten,
+
+    // `@returnAddress()` is unsupported in LLVM 13.
+    .bpfel,
+    .bpfeb,
+    => false,
+
+    else => true,
+};
+
 pub const LineInfo = struct {
     line: u64,
     column: u64,
@@ -180,11 +201,10 @@ pub fn dumpStackTraceFromBase(bp: usize, ip: usize) void {
 pub fn captureStackTrace(first_address: ?usize, stack_trace: *std.builtin.StackTrace) void {
     if (native_os == .windows) {
         const addrs = stack_trace.instruction_addresses;
-        const u32_addrs_len = @intCast(u32, addrs.len);
         const first_addr = first_address orelse {
             stack_trace.index = windows.ntdll.RtlCaptureStackBackTrace(
                 0,
-                u32_addrs_len,
+                @intCast(u32, addrs.len),
                 @ptrCast(**anyopaque, addrs.ptr),
                 null,
             );
@@ -192,7 +212,7 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *std.builtin.StackT
         };
         var addr_buf_stack: [32]usize = undefined;
         const addr_buf = if (addr_buf_stack.len > addrs.len) addr_buf_stack[0..] else addrs;
-        const n = windows.ntdll.RtlCaptureStackBackTrace(0, u32_addrs_len, @ptrCast(**anyopaque, addr_buf.ptr), null);
+        const n = windows.ntdll.RtlCaptureStackBackTrace(0, @intCast(u32, addr_buf.len), @ptrCast(**anyopaque, addr_buf.ptr), null);
         const first_index = for (addr_buf[0..n]) |addr, i| {
             if (addr == first_addr) {
                 break i;
@@ -201,7 +221,8 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *std.builtin.StackT
             stack_trace.index = 0;
             return;
         };
-        const slice = addr_buf[first_index..n];
+        const end_index = math.min(first_index + addrs.len, n);
+        const slice = addr_buf[first_index..end_index];
         // We use a for loop here because slice and addrs may alias.
         for (slice) |addr, i| {
             addrs[i] = addr;
@@ -1763,6 +1784,7 @@ pub fn updateSegfaultHandler(act: ?*const os.Sigaction) error{OperationNotSuppor
     try os.sigaction(os.SIG.SEGV, act, null);
     try os.sigaction(os.SIG.ILL, act, null);
     try os.sigaction(os.SIG.BUS, act, null);
+    try os.sigaction(os.SIG.FPE, act, null);
 }
 
 /// Attaches a global SIGSEGV handler which calls @panic("segmentation fault");
@@ -1824,6 +1846,7 @@ fn handleSegfaultPosix(sig: i32, info: *const os.siginfo_t, ctx_ptr: ?*const any
             os.SIG.SEGV => stderr.print("Segmentation fault at address 0x{x}\n", .{addr}),
             os.SIG.ILL => stderr.print("Illegal instruction at address 0x{x}\n", .{addr}),
             os.SIG.BUS => stderr.print("Bus error at address 0x{x}\n", .{addr}),
+            os.SIG.FPE => stderr.print("Arithmetic exception at address 0x{x}\n", .{addr}),
             else => unreachable,
         } catch os.abort();
     }
@@ -1999,7 +2022,7 @@ pub fn ConfigurableTrace(comptime size: usize, comptime stack_frame_count: usize
 
             const tty_config = detectTTYConfig();
             const stderr = io.getStdErr().writer();
-            const end = @maximum(t.index, size);
+            const end = @minimum(t.index, size);
             const debug_info = getSelfDebugInfo() catch |err| {
                 stderr.print(
                     "Unable to dump stack trace: Unable to open debug info: {s}\n",

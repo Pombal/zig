@@ -1272,7 +1272,7 @@ fn linkWithLLD(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node) !v
     const stack_size = self.base.options.stack_size_override orelse 16777216;
     const allow_shlib_undefined = self.base.options.allow_shlib_undefined orelse !self.base.options.is_native_os;
     const compiler_rt_path: ?[]const u8 = blk: {
-        if (comp.compiler_rt_static_lib) |x| break :blk x.full_object_path;
+        if (comp.compiler_rt_lib) |x| break :blk x.full_object_path;
         if (comp.compiler_rt_obj) |x| break :blk x.full_object_path;
         break :blk null;
     };
@@ -1298,7 +1298,7 @@ fn linkWithLLD(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node) !v
         // We are about to obtain this lock, so here we give other processes a chance first.
         self.base.releaseLock();
 
-        comptime assert(Compilation.link_hash_implementation_version == 3);
+        comptime assert(Compilation.link_hash_implementation_version == 7);
 
         try man.addOptionalFile(self.base.options.linker_script);
         try man.addOptionalFile(self.base.options.version_script);
@@ -1351,6 +1351,7 @@ fn linkWithLLD(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node) !v
         link.hashAddSystemLibs(&man.hash, self.base.options.system_libs);
         man.hash.add(allow_shlib_undefined);
         man.hash.add(self.base.options.bind_global_refs_locally);
+        man.hash.add(self.base.options.compress_debug_sections);
         man.hash.add(self.base.options.tsan);
         man.hash.addOptionalBytes(self.base.options.sysroot);
         man.hash.add(self.base.options.linker_optimization);
@@ -1591,6 +1592,15 @@ fn linkWithLLD(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node) !v
                     }
                 }
             }
+            for (self.base.options.objects) |obj| {
+                if (Compilation.classifyFileExt(obj.path) == .shared_library) {
+                    const lib_dir_path = std.fs.path.dirname(obj.path).?;
+                    if ((try rpath_table.fetchPut(lib_dir_path, {})) == null) {
+                        try argv.append("-rpath");
+                        try argv.append(lib_dir_path);
+                    }
+                }
+            }
         }
 
         for (self.base.options.lib_dirs) |lib_dir| {
@@ -1719,6 +1729,7 @@ fn linkWithLLD(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node) !v
             }
 
             // libc dep
+            self.error_flags.missing_libc = false;
             if (self.base.options.link_libc) {
                 if (self.base.options.libc_installation != null) {
                     const needs_grouping = self.base.options.link_mode == .Static;
@@ -1739,7 +1750,8 @@ fn linkWithLLD(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node) !v
                         .Dynamic => "libc.so",
                     }));
                 } else {
-                    unreachable; // Compiler was supposed to emit an error for not being able to provide libc.
+                    self.error_flags.missing_libc = true;
+                    return error.FlushFailure;
                 }
             }
         }
@@ -1750,6 +1762,11 @@ fn linkWithLLD(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node) !v
 
         if (allow_shlib_undefined) {
             try argv.append("--allow-shlib-undefined");
+        }
+
+        switch (self.base.options.compress_debug_sections) {
+            .none => {},
+            .zlib => try argv.append("--compress-debug-sections=zlib"),
         }
 
         if (self.base.options.bind_global_refs_locally) {

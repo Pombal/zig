@@ -204,7 +204,24 @@ pub fn hasValgrindSupport(target: std.Target) bool {
 /// The set of targets that LLVM has non-experimental support for.
 /// Used to select between LLVM backend and self-hosted backend when compiling in
 /// release modes.
-pub fn hasLlvmSupport(target: std.Target) bool {
+pub fn hasLlvmSupport(target: std.Target, ofmt: std.Target.ObjectFormat) bool {
+    switch (ofmt) {
+        // LLVM does not support these object formats:
+        .c,
+        .plan9,
+        => return false,
+
+        .coff,
+        .elf,
+        .macho,
+        .wasm,
+        .spirv,
+        .hex,
+        .raw,
+        .nvptx,
+        => {},
+    }
+
     return switch (target.cpu.arch) {
         .arm,
         .armeb,
@@ -281,6 +298,14 @@ pub fn selfHostedBackendIsAsRobustAsLlvm(target: std.Target) bool {
 pub fn supportsStackProbing(target: std.Target) bool {
     return target.os.tag != .windows and target.os.tag != .uefi and
         (target.cpu.arch == .i386 or target.cpu.arch == .x86_64);
+}
+
+pub fn supportsReturnAddress(target: std.Target) bool {
+    return switch (target.cpu.arch) {
+        .wasm32, .wasm64 => target.os.tag == .emscripten,
+        .bpfel, .bpfeb => false,
+        else => true,
+    };
 }
 
 pub fn osToLLVM(os_tag: std.Target.Os.Tag) llvm.OSType {
@@ -719,6 +744,7 @@ pub fn llvmMachineAbi(target: std.Target) ?[:0]const u8 {
     }
 }
 
+/// This function returns 1 if function alignment is not observable or settable.
 pub fn defaultFunctionAlignment(target: std.Target) u32 {
     return switch (target.cpu.arch) {
         .arm, .armeb => 4,
@@ -726,5 +752,12 @@ pub fn defaultFunctionAlignment(target: std.Target) u32 {
         .sparc, .sparcel, .sparc64 => 4,
         .riscv64 => 2,
         else => 1,
+    };
+}
+
+pub fn supportsFunctionAlignment(target: std.Target) bool {
+    return switch (target.cpu.arch) {
+        .wasm32, .wasm64 => false,
+        else => true,
     };
 }

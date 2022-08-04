@@ -24,6 +24,8 @@ fn testTruncate(x: u32) u8 {
 }
 
 test "truncate to non-power-of-two integers" {
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
+
     try testTrunc(u32, u1, 0b10101, 0b1);
     try testTrunc(u32, u1, 0b10110, 0b0);
     try testTrunc(u32, u2, 0b10101, 0b01);
@@ -202,7 +204,6 @@ test "opaque types" {
     }
 
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
 
     try expect(*OpaqueA != *OpaqueB);
 
@@ -363,7 +364,6 @@ fn testMemcpyMemset() !void {
 }
 
 test "variable is allowed to be a pointer to an opaque type" {
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
 
     var x: i32 = 1234;
@@ -401,6 +401,7 @@ fn testPointerToVoidReturnType2() *const void {
 
 test "array 2D const double ptr" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
@@ -414,6 +415,7 @@ test "array 2D const double ptr" {
 
 test "array 2D const double ptr with offset" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest;
@@ -427,6 +429,7 @@ test "array 2D const double ptr with offset" {
 
 test "array 3D const double ptr with offset" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
@@ -452,7 +455,6 @@ fn testArray2DConstDoublePtr(ptr: *const f32) !void {
 
 test "double implicit cast in same expression" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
 
     var x = @as(i32, @as(u16, nine()));
     try expect(x == 9);
@@ -611,8 +613,6 @@ test "self reference through fn ptr field" {
 }
 
 test "global variable initialized to global variable array element" {
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
-
     try expect(global_ptr == &gdt[0]);
 }
 const GDTEntry = struct {
@@ -676,7 +676,6 @@ test "explicit cast optional pointers" {
 }
 
 test "pointer comparison" {
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
 
     const a = @as([]const u8, "a");
@@ -782,7 +781,6 @@ test "pointer to thread local array" {
 threadlocal var buffer: [11]u8 = undefined;
 
 test "auto created variables have correct alignment" {
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
 
     const S = struct {
@@ -798,6 +796,10 @@ test "auto created variables have correct alignment" {
 }
 
 test "extern variable with non-pointer opaque type" {
+    if (builtin.zig_backend == .stage1) {
+        // Regressed with LLVM 14
+        return error.SkipZigTest;
+    }
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
@@ -884,7 +886,6 @@ test "labeled block implicitly ends in a break" {
 test "catch in block has correct result location" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
 
     const S = struct {
         fn open() error{A}!@This() {
@@ -915,7 +916,6 @@ test "labeled block with runtime branch forwards its result location type to bre
 
 test "try in labeled block doesn't cast to wrong type" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
 
     const S = struct {
         a: u32,
@@ -930,18 +930,6 @@ test "try in labeled block doesn't cast to wrong type" {
         break :blk null;
     };
     _ = s;
-}
-
-test "comptime int in switch in catch is casted to correct inferred type" {
-    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
-
-    var a: error{ A, B }!u64 = 0;
-    var b = a catch |err| switch (err) {
-        error.A => 0,
-        else => unreachable,
-    };
-    _ = b;
 }
 
 test "vector initialized with array init syntax has proper type" {
@@ -990,6 +978,13 @@ test "array type comes from generic function" {
 }
 
 test "generic function uses return type of other generic function" {
+    if (builtin.zig_backend != .stage1) {
+        // This test has been failing sporadically on the CI.
+        // It's not enough to verify that it works locally; we need to diagnose why
+        // it fails on the CI sometimes before turning it back on.
+        // https://github.com/ziglang/zig/issues/12208
+        return error.SkipZigTest;
+    }
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
 
     const S = struct {

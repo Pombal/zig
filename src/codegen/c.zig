@@ -225,9 +225,6 @@ fn formatIdent(
 }
 
 pub fn fmtIdent(ident: []const u8) std.fmt.Formatter(formatIdent) {
-    if (builtin.zig_backend != .stage1) {
-        @panic("TODO");
-    }
     return .{ .data = ident };
 }
 
@@ -507,7 +504,7 @@ pub const DeclGen = struct {
                 if (field_ty.hasRuntimeBitsIgnoreComptime()) {
                     try writer.writeAll("&(");
                     try dg.renderParentPtr(writer, field_ptr.container_ptr, container_ptr_ty);
-                    if (field_ptr.container_ty.tag() == .union_tagged) {
+                    if (field_ptr.container_ty.tag() == .union_tagged or field_ptr.container_ty.tag() == .union_safety_tagged) {
                         try writer.print(")->payload.{ }", .{fmtIdent(field_name)});
                     } else {
                         try writer.print(")->{ }", .{fmtIdent(field_name)});
@@ -845,7 +842,7 @@ pub const DeclGen = struct {
                 try dg.renderTypecast(writer, ty);
                 try writer.writeAll("){");
 
-                if (ty.unionTagType()) |tag_ty| {
+                if (ty.unionTagTypeSafety()) |tag_ty| {
                     if (layout.tag_size != 0) {
                         try writer.writeAll(".tag = ");
                         try dg.renderValue(writer, tag_ty, union_obj.tag, location);
@@ -861,7 +858,7 @@ pub const DeclGen = struct {
                     try writer.print(".{ } = ", .{fmtIdent(field_name)});
                     try dg.renderValue(writer, field_ty, union_obj.val, location);
                 }
-                if (ty.unionTagType()) |_| {
+                if (ty.unionTagTypeSafety()) |_| {
                     try writer.writeAll("}");
                 }
                 try writer.writeAll("}");
@@ -1113,7 +1110,7 @@ pub const DeclGen = struct {
         defer buffer.deinit();
 
         try buffer.appendSlice("typedef ");
-        if (t.unionTagType()) |tag_ty| {
+        if (t.unionTagTypeSafety()) |tag_ty| {
             const name: CValue = .{ .bytes = "tag" };
             try buffer.appendSlice("struct {\n ");
             if (layout.tag_size != 0) {
@@ -1137,7 +1134,7 @@ pub const DeclGen = struct {
         }
         try buffer.appendSlice("} ");
 
-        if (t.unionTagType()) |_| {
+        if (t.unionTagTypeSafety()) |_| {
             try buffer.appendSlice("payload;\n} ");
         }
 
@@ -1758,6 +1755,8 @@ fn genBody(f: *Function, body: []const Air.Inst.Index) error{ AnalysisFail, OutO
             .mul_sat => try airSatOp(f, inst, "muls_"),
             .shl_sat => try airSatOp(f, inst, "shls_"),
 
+            .neg => try airNeg(f, inst),
+
             .sqrt,
             .sin,
             .cos,
@@ -1929,6 +1928,30 @@ fn genBody(f: *Function, body: []const Air.Inst.Index) error{ AnalysisFail, OutO
 
             .wasm_memory_size => try airWasmMemorySize(f, inst),
             .wasm_memory_grow => try airWasmMemoryGrow(f, inst),
+
+            .add_optimized,
+            .addwrap_optimized,
+            .sub_optimized,
+            .subwrap_optimized,
+            .mul_optimized,
+            .mulwrap_optimized,
+            .div_float_optimized,
+            .div_trunc_optimized,
+            .div_floor_optimized,
+            .div_exact_optimized,
+            .rem_optimized,
+            .mod_optimized,
+            .neg_optimized,
+            .cmp_lt_optimized,
+            .cmp_lte_optimized,
+            .cmp_eq_optimized,
+            .cmp_gte_optimized,
+            .cmp_gt_optimized,
+            .cmp_neq_optimized,
+            .cmp_vector_optimized,
+            .reduce_optimized,
+            .float_to_int_optimized,
+            => return f.fail("TODO implement optimized float mode", .{}),
             // zig fmt: on
         };
         switch (result_value) {
@@ -3369,7 +3392,7 @@ fn structFieldPtr(f: *Function, inst: Air.Inst.Index, struct_ptr_ty: Type, struc
             field_name = fields.keys()[index];
             field_val_ty = fields.values()[index].ty;
         },
-        .@"union", .union_tagged => {
+        .@"union", .union_safety_tagged, .union_tagged => {
             const fields = struct_ty.unionFields();
             field_name = fields.keys()[index];
             field_val_ty = fields.values()[index].ty;
@@ -3384,7 +3407,7 @@ fn structFieldPtr(f: *Function, inst: Air.Inst.Index, struct_ptr_ty: Type, struc
         },
         else => unreachable,
     }
-    const payload = if (struct_ty.tag() == .union_tagged) "payload." else "";
+    const payload = if (struct_ty.tag() == .union_tagged or struct_ty.tag() == .union_safety_tagged) "payload." else "";
 
     const inst_ty = f.air.typeOfIndex(inst);
     const local = try f.allocLocal(inst_ty, .Const);
@@ -3416,7 +3439,7 @@ fn airStructFieldVal(f: *Function, inst: Air.Inst.Index) !CValue {
     defer buf.deinit();
     const field_name = switch (struct_ty.tag()) {
         .@"struct" => struct_ty.structFields().keys()[extra.field_index],
-        .@"union", .union_tagged => struct_ty.unionFields().keys()[extra.field_index],
+        .@"union", .union_safety_tagged, .union_tagged => struct_ty.unionFields().keys()[extra.field_index],
         .tuple, .anon_struct => blk: {
             const tuple = struct_ty.tupleFields();
             if (tuple.values[extra.field_index].tag() != .unreachable_value) return CValue.none;
@@ -3426,7 +3449,7 @@ fn airStructFieldVal(f: *Function, inst: Air.Inst.Index) !CValue {
         },
         else => unreachable,
     };
-    const payload = if (struct_ty.tag() == .union_tagged) "payload." else "";
+    const payload = if (struct_ty.tag() == .union_tagged or struct_ty.tag() == .union_safety_tagged) "payload." else "";
 
     const inst_ty = f.air.typeOfIndex(inst);
     const local = try f.allocLocal(inst_ty, .Const);
@@ -3619,8 +3642,9 @@ fn airIsErr(
     const operand = try f.resolveInst(un_op);
     const operand_ty = f.air.typeOf(un_op);
     const local = try f.allocLocal(Type.initTag(.bool), .Const);
-    const payload_ty = operand_ty.errorUnionPayload();
-    const error_ty = operand_ty.errorUnionSet();
+    const err_union_ty = if (is_ptr) operand_ty.childType() else operand_ty;
+    const payload_ty = err_union_ty.errorUnionPayload();
+    const error_ty = err_union_ty.errorUnionSet();
 
     try writer.writeAll(" = ");
 
@@ -4098,6 +4122,20 @@ fn airWasmMemoryGrow(f: *Function, inst: Air.Inst.Index) !CValue {
     try writer.print("zig_wasm_memory_grow({d}, ", .{pl_op.payload});
     try f.writeCValue(writer, operand);
     try writer.writeAll(");\n");
+    return local;
+}
+
+fn airNeg(f: *Function, inst: Air.Inst.Index) !CValue {
+    if (f.liveness.isUnused(inst)) return CValue.none;
+
+    const un_op = f.air.instructions.items(.data)[inst].un_op;
+    const writer = f.object.writer();
+    const inst_ty = f.air.typeOfIndex(inst);
+    const operand = try f.resolveInst(un_op);
+    const local = try f.allocLocal(inst_ty, .Const);
+    try writer.writeAll("-");
+    try f.writeCValue(writer, operand);
+    try writer.writeAll(";\n");
     return local;
 }
 

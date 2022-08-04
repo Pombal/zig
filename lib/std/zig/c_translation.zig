@@ -36,6 +36,9 @@ pub fn cast(comptime DestType: type, target: anytype) DestType {
                 .Int => {
                     return castInt(DestType, target);
                 },
+                .Fn => {
+                    return castInt(DestType, @ptrToInt(&target));
+                },
                 else => {},
             }
         },
@@ -45,6 +48,7 @@ pub fn cast(comptime DestType: type, target: anytype) DestType {
             }
             @compileError("cast to union type '" ++ @typeName(DestType) ++ "' from type '" ++ @typeName(SourceType) ++ "' which is not present in union");
         },
+        .Bool => return cast(usize, target) != 0,
         else => {},
     }
     return @as(DestType, target);
@@ -136,7 +140,7 @@ test "cast" {
     const FnPtr = if (@import("builtin").zig_backend == .stage1)
         ?fn (*anyopaque) void
     else
-        ?*const fn (*anyopaque) void;
+        ?*align(1) const fn (*anyopaque) void;
     try testing.expect(cast(FnPtr, 0) == @intToPtr(FnPtr, @as(usize, 0)));
     try testing.expect(cast(FnPtr, foo) == @intToPtr(FnPtr, @bitCast(usize, @as(isize, -1))));
 }

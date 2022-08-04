@@ -444,6 +444,7 @@ pub const Target = struct {
     pub const arm = @import("target/arm.zig");
     pub const avr = @import("target/avr.zig");
     pub const bpf = @import("target/bpf.zig");
+    pub const csky = @import("target/csky.zig");
     pub const hexagon = @import("target/hexagon.zig");
     pub const mips = @import("target/mips.zig");
     pub const msp430 = @import("target/msp430.zig");
@@ -452,7 +453,7 @@ pub const Target = struct {
     pub const riscv = @import("target/riscv.zig");
     pub const sparc = @import("target/sparc.zig");
     pub const spirv = @import("target/spirv.zig");
-    pub const systemz = @import("target/systemz.zig");
+    pub const s390x = @import("target/s390x.zig");
     pub const ve = @import("target/ve.zig");
     pub const wasm = @import("target/wasm.zig");
     pub const x86 = @import("target/x86.zig");
@@ -804,6 +805,8 @@ pub const Target = struct {
             hsail64,
             spir,
             spir64,
+            spirv32,
+            spirv64,
             kalimba,
             shave,
             lanai,
@@ -815,8 +818,6 @@ pub const Target = struct {
             // Stage1 currently assumes that architectures above this comment
             // map one-to-one with the ZigLLVM_ArchType enum.
             spu_2,
-            spirv32,
-            spirv64,
 
             pub fn isX86(arch: Arch) bool {
                 return switch (arch) {
@@ -1177,7 +1178,7 @@ pub const Target = struct {
                     .amdgcn => "amdgpu",
                     .riscv32, .riscv64 => "riscv",
                     .sparc, .sparc64, .sparcel => "sparc",
-                    .s390x => "systemz",
+                    .s390x => "s390x",
                     .i386, .x86_64 => "x86",
                     .nvptx, .nvptx64 => "nvptx",
                     .wasm32, .wasm64 => "wasm",
@@ -1201,7 +1202,7 @@ pub const Target = struct {
                     .riscv32, .riscv64 => &riscv.all_features,
                     .sparc, .sparc64, .sparcel => &sparc.all_features,
                     .spirv32, .spirv64 => &spirv.all_features,
-                    .s390x => &systemz.all_features,
+                    .s390x => &s390x.all_features,
                     .i386, .x86_64 => &x86.all_features,
                     .nvptx, .nvptx64 => &nvptx.all_features,
                     .ve => &ve.all_features,
@@ -1225,7 +1226,7 @@ pub const Target = struct {
                     .amdgcn => comptime allCpusFromDecls(amdgpu.cpu),
                     .riscv32, .riscv64 => comptime allCpusFromDecls(riscv.cpu),
                     .sparc, .sparc64, .sparcel => comptime allCpusFromDecls(sparc.cpu),
-                    .s390x => comptime allCpusFromDecls(systemz.cpu),
+                    .s390x => comptime allCpusFromDecls(s390x.cpu),
                     .i386, .x86_64 => comptime allCpusFromDecls(x86.cpu),
                     .nvptx, .nvptx64 => comptime allCpusFromDecls(nvptx.cpu),
                     .ve => comptime allCpusFromDecls(ve.cpu),
@@ -1286,8 +1287,8 @@ pub const Target = struct {
                     .riscv64 => &riscv.cpu.generic_rv64,
                     .sparc, .sparcel => &sparc.cpu.generic,
                     .sparc64 => &sparc.cpu.v9, // 64-bit SPARC needs v9 as the baseline
-                    .s390x => &systemz.cpu.generic,
-                    .i386 => &x86.cpu._i386,
+                    .s390x => &s390x.cpu.generic,
+                    .i386 => &x86.cpu.i386,
                     .x86_64 => &x86.cpu.x86_64,
                     .nvptx, .nvptx64 => &nvptx.cpu.sm_20,
                     .ve => &ve.cpu.generic,

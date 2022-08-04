@@ -51,8 +51,8 @@ pub fn addCases(ctx: *TestContext) !void {
             \\}
             \\var y: @import("std").builtin.CallingConvention = .C;
         , &.{
-            ":2:22: error: unable to resolve comptime value",
-            ":5:26: error: unable to resolve comptime value",
+            ":2:22: error: cannot load runtime value in comptime block",
+            ":5:26: error: cannot load runtime value in comptime block",
         });
     }
 
@@ -96,13 +96,13 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = @intToError(0);
             \\    return 0;
             \\}
-        , &.{":2:21: error: integer value 0 represents no error"});
+        , &.{":2:21: error: integer value '0' represents no error"});
         case.addError(
             \\pub export fn main() c_int {
             \\    _ = @intToError(3);
             \\    return 0;
             \\}
-        , &.{":2:21: error: integer value 3 represents no error"});
+        , &.{":2:21: error: integer value '3' represents no error"});
     }
 
     {
@@ -729,8 +729,8 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = E1.a;
             \\}
         , &.{
-            ":1:28: error: duplicate enum tag",
-            ":1:22: note: other tag here",
+            ":1:28: error: duplicate enum field 'b'",
+            ":1:22: note: other field here",
         });
 
         case.addError(
@@ -739,7 +739,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = @enumToInt(a);
             \\}
         , &.{
-            ":3:20: error: expected enum or tagged union, found bool",
+            ":3:20: error: expected enum or tagged union, found 'bool'",
         });
 
         case.addError(
@@ -748,7 +748,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = @intToEnum(bool, a);
             \\}
         , &.{
-            ":3:20: error: expected enum, found bool",
+            ":3:20: error: expected enum, found 'bool'",
         });
 
         case.addError(
@@ -757,7 +757,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = @intToEnum(E, 3);
             \\}
         , &.{
-            ":3:9: error: enum 'tmp.E' has no tag with value 3",
+            ":3:9: error: enum 'tmp.E' has no tag with value '3'",
             ":1:11: note: enum declared here",
         });
 
@@ -772,7 +772,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\}
         , &.{
             ":4:5: error: switch must handle all possibilities",
-            ":4:5: note: unhandled enumeration value: 'b'",
+            ":1:21: note: unhandled enumeration value: 'b'",
             ":1:11: note: enum 'tmp.E' declared here",
         });
 
@@ -839,7 +839,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = x;
             \\}
         , &.{
-            ":3:17: error: enum 'tmp.E' has no field named 'd'",
+            ":3:17: error: no field named 'd' in enum 'tmp.E'",
             ":1:11: note: enum declared here",
         });
     }

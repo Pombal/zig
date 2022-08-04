@@ -20,7 +20,7 @@ const enable_wasmtime: bool = build_options.enable_wasmtime;
 const enable_darling: bool = build_options.enable_darling;
 const enable_rosetta: bool = build_options.enable_rosetta;
 const glibc_runtimes_dir: ?[]const u8 = build_options.glibc_runtimes_dir;
-const skip_stage1 = build_options.skip_stage1;
+const skip_stage1 = builtin.zig_backend != .stage1 or build_options.skip_stage1;
 
 const hr = "=" ** 80;
 
@@ -54,7 +54,7 @@ test {
             std.fs.path.dirname(@src().file).?, "..", "test", "cases",
         });
 
-        var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+        var dir = try std.fs.cwd().openIterableDir(dir_path, .{});
         defer dir.close();
 
         ctx.addTestCasesFromDir(dir);
@@ -233,11 +233,11 @@ const TestManifest = struct {
     fn ConfigValueIterator(comptime T: type) type {
         return struct {
             inner: std.mem.SplitIterator(u8),
-            parse_fn: ParseFn(T),
 
-            fn next(self: *@This()) ?T {
+            fn next(self: *@This()) !?T {
                 const next_raw = self.inner.next() orelse return null;
-                return self.parse_fn(next_raw);
+                const parseFn = getDefaultParser(T);
+                return try parseFn(next_raw);
             }
         };
     }
@@ -303,7 +303,7 @@ const TestManifest = struct {
 
             // Parse key=value(s)
             var kv_it = std.mem.split(u8, trimmed, "=");
-            const key = kv_it.next() orelse return error.MissingKeyForConfig;
+            const key = kv_it.first();
             try manifest.config_map.putNoClobber(key, kv_it.next() orelse return error.MissingValuesForConfig);
         }
 
@@ -313,25 +313,15 @@ const TestManifest = struct {
         return manifest;
     }
 
-    fn getConfigForKeyCustomParser(
-        self: TestManifest,
-        key: []const u8,
-        comptime T: type,
-        parse_fn: ParseFn(T),
-    ) ConfigValueIterator(T) {
-        const bytes = self.config_map.get(key) orelse TestManifestConfigDefaults.get(self.@"type", key);
-        return ConfigValueIterator(T){
-            .inner = std.mem.split(u8, bytes, ","),
-            .parse_fn = parse_fn,
-        };
-    }
-
     fn getConfigForKey(
         self: TestManifest,
         key: []const u8,
         comptime T: type,
     ) ConfigValueIterator(T) {
-        return self.getConfigForKeyCustomParser(key, T, getDefaultParser(T));
+        const bytes = self.config_map.get(key) orelse TestManifestConfigDefaults.get(self.@"type", key);
+        return ConfigValueIterator(T){
+            .inner = std.mem.split(u8, bytes, ","),
+        };
     }
 
     fn getConfigForKeyAlloc(
@@ -339,20 +329,20 @@ const TestManifest = struct {
         allocator: Allocator,
         key: []const u8,
         comptime T: type,
-    ) error{OutOfMemory}![]const T {
+    ) ![]const T {
         var out = std.ArrayList(T).init(allocator);
         defer out.deinit();
         var it = self.getConfigForKey(key, T);
-        while (it.next()) |item| {
+        while (try it.next()) |item| {
             try out.append(item);
         }
         return out.toOwnedSlice();
     }
 
-    fn getConfigForKeyAssertSingle(self: TestManifest, key: []const u8, comptime T: type) T {
+    fn getConfigForKeyAssertSingle(self: TestManifest, key: []const u8, comptime T: type) !T {
         var it = self.getConfigForKey(key, T);
-        const res = it.next().?;
-        assert(it.next() == null);
+        const res = (try it.next()) orelse unreachable;
+        assert((try it.next()) == null);
         return res;
     }
 
@@ -373,35 +363,40 @@ const TestManifest = struct {
     }
 
     fn ParseFn(comptime T: type) type {
-        return fn ([]const u8) ?T;
+        return fn ([]const u8) anyerror!T;
     }
 
     fn getDefaultParser(comptime T: type) ParseFn(T) {
+        if (T == CrossTarget) return struct {
+            fn parse(str: []const u8) anyerror!T {
+                var opts = CrossTarget.ParseOptions{
+                    .arch_os_abi = str,
+                };
+                return try CrossTarget.parse(opts);
+            }
+        }.parse;
+
         switch (@typeInfo(T)) {
             .Int => return struct {
-                fn parse(str: []const u8) ?T {
-                    return std.fmt.parseInt(T, str, 0) catch null;
+                fn parse(str: []const u8) anyerror!T {
+                    return try std.fmt.parseInt(T, str, 0);
                 }
             }.parse,
             .Bool => return struct {
-                fn parse(str: []const u8) ?T {
-                    const as_int = std.fmt.parseInt(u1, str, 0) catch return null;
+                fn parse(str: []const u8) anyerror!T {
+                    const as_int = try std.fmt.parseInt(u1, str, 0);
                     return as_int > 0;
                 }
             }.parse,
             .Enum => return struct {
-                fn parse(str: []const u8) ?T {
-                    return std.meta.stringToEnum(T, str);
+                fn parse(str: []const u8) anyerror!T {
+                    return std.meta.stringToEnum(T, str) orelse {
+                        std.log.err("unknown enum variant for {s}: {s}", .{ @typeName(T), str });
+                        return error.UnknownEnumVariant;
+                    };
                 }
             }.parse,
-            .Struct => if (comptime std.mem.eql(u8, @typeName(T), "CrossTarget")) return struct {
-                fn parse(str: []const u8) ?T {
-                    var opts = CrossTarget.ParseOptions{
-                        .arch_os_abi = str,
-                    };
-                    return CrossTarget.parse(opts) catch null;
-                }
-            }.parse else @compileError("no default parser for " ++ @typeName(T)),
+            .Struct => @compileError("no default parser for " ++ @typeName(T)),
             else => @compileError("no default parser for " ++ @typeName(T)),
         }
     }
@@ -694,7 +689,7 @@ pub const TestContext = struct {
                 }
                 // example: "file.zig:1:2: error: bad thing happened"
                 var it = std.mem.split(u8, err_msg_line, ":");
-                const src_path = it.next() orelse @panic("missing colon");
+                const src_path = it.first();
                 const line_text = it.next() orelse @panic("missing line");
                 const col_text = it.next() orelse @panic("missing column");
                 const kind_text = it.next() orelse @panic("missing 'error'/'note'");
@@ -881,8 +876,6 @@ pub const TestContext = struct {
         src: [:0]const u8,
         expected_errors: []const []const u8,
     ) void {
-        if (skip_stage1) return;
-
         const case = ctx.addObj(name, .{});
         case.backend = .stage1;
         case.addError(src, expected_errors);
@@ -894,8 +887,6 @@ pub const TestContext = struct {
         src: [:0]const u8,
         expected_errors: []const []const u8,
     ) void {
-        if (skip_stage1) return;
-
         const case = ctx.addTest(name, .{});
         case.backend = .stage1;
         case.addError(src, expected_errors);
@@ -907,8 +898,6 @@ pub const TestContext = struct {
         src: [:0]const u8,
         expected_errors: []const []const u8,
     ) void {
-        if (skip_stage1) return;
-
         const case = ctx.addExe(name, .{});
         case.backend = .stage1;
         case.addError(src, expected_errors);
@@ -1077,7 +1066,7 @@ pub const TestContext = struct {
     /// Each file should include a test manifest as a contiguous block of comments at
     /// the end of the file. The first line should be the test type, followed by a set of
     /// key-value config values, followed by a blank line, then the expected output.
-    pub fn addTestCasesFromDir(ctx: *TestContext, dir: std.fs.Dir) void {
+    pub fn addTestCasesFromDir(ctx: *TestContext, dir: std.fs.IterableDir) void {
         var current_file: []const u8 = "none";
         ctx.addTestCasesFromDirInner(dir, &current_file) catch |err| {
             std.debug.panic("test harness failed to process file '{s}': {s}\n", .{
@@ -1088,12 +1077,12 @@ pub const TestContext = struct {
 
     fn addTestCasesFromDirInner(
         ctx: *TestContext,
-        dir: std.fs.Dir,
+        iterable_dir: std.fs.IterableDir,
         /// This is kept up to date with the currently being processed file so
         /// that if any errors occur the caller knows it happened during this file.
         current_file: *[]const u8,
     ) !void {
-        var it = try dir.walk(ctx.arena);
+        var it = try iterable_dir.walk(ctx.arena);
         var filenames = std.ArrayList([]const u8).init(ctx.arena);
 
         while (try it.next()) |entry| {
@@ -1120,7 +1109,7 @@ pub const TestContext = struct {
                 current_file.* = filename;
 
                 const max_file_size = 10 * 1024 * 1024;
-                const src = try dir.readFileAllocOptions(ctx.arena, filename, max_file_size, null, 1, 0);
+                const src = try iterable_dir.dir.readFileAllocOptions(ctx.arena, filename, max_file_size, null, 1, 0);
 
                 // Parse the manifest
                 var manifest = try TestManifest.parse(ctx.arena, src);
@@ -1128,8 +1117,8 @@ pub const TestContext = struct {
                 if (cases.items.len == 0) {
                     const backends = try manifest.getConfigForKeyAlloc(ctx.arena, "backend", Backend);
                     const targets = try manifest.getConfigForKeyAlloc(ctx.arena, "target", CrossTarget);
-                    const is_test = manifest.getConfigForKeyAssertSingle("is_test", bool);
-                    const output_mode = manifest.getConfigForKeyAssertSingle("output_mode", std.builtin.OutputMode);
+                    const is_test = try manifest.getConfigForKeyAssertSingle("is_test", bool);
+                    const output_mode = try manifest.getConfigForKeyAssertSingle("output_mode", std.builtin.OutputMode);
 
                     const name_prefix = blk: {
                         const ext_index = std.mem.lastIndexOfScalar(u8, current_file.*, '.') orelse
@@ -1140,8 +1129,6 @@ pub const TestContext = struct {
 
                     // Cross-product to get all possible test combinations
                     for (backends) |backend| {
-                        if (backend == .stage1 and skip_stage1) continue;
-
                         for (targets) |target| {
                             const name = try std.fmt.allocPrint(ctx.arena, "{s} ({s}, {s})", .{
                                 name_prefix,
@@ -1271,6 +1258,9 @@ pub const TestContext = struct {
 
                 // Skip tests that require LLVM backend when it is not available
                 if (!build_options.have_llvm and case.backend == .llvm)
+                    continue;
+
+                if (skip_stage1 and case.backend == .stage1)
                     continue;
 
                 if (build_options.test_filter) |test_filter| {
@@ -1592,7 +1582,7 @@ pub const TestContext = struct {
         });
         defer comp.destroy();
 
-        for (case.updates.items) |update, update_index| {
+        update: for (case.updates.items) |update, update_index| {
             var update_node = root_node.start(update.name, 3);
             update_node.activate();
             defer update_node.end();
@@ -1604,6 +1594,7 @@ pub const TestContext = struct {
 
             var module_node = update_node.start("parse/analysis/codegen", 0);
             module_node.activate();
+            module_node.context.refresh();
             try comp.makeBinFileWritable();
             try comp.update();
             module_node.end();
@@ -1687,12 +1678,25 @@ pub const TestContext = struct {
                                         tmp_dir_path_plus_slash,
                                     );
 
+                                    var buf: [1024]u8 = undefined;
+                                    const rendered_msg = blk: {
+                                        var msg: Compilation.AllErrors.Message = actual_error;
+                                        msg.src.src_path = case_msg.src.src_path;
+                                        msg.src.notes = &.{};
+                                        var fib = std.io.fixedBufferStream(&buf);
+                                        try msg.renderToWriter(.no_color, fib.writer(), "error", .Red, 0);
+                                        var it = std.mem.split(u8, fib.getWritten(), "error: ");
+                                        _ = it.first();
+                                        const rendered = it.rest();
+                                        break :blk rendered[0 .. rendered.len - 1]; // trim final newline
+                                    };
+
                                     if (src_path_ok and
                                         (case_msg.src.line == std.math.maxInt(u32) or
                                         actual_msg.line == case_msg.src.line) and
                                         (case_msg.src.column == std.math.maxInt(u32) or
                                         actual_msg.column == case_msg.src.column) and
-                                        std.mem.eql(u8, expected_msg, actual_msg.msg) and
+                                        std.mem.eql(u8, expected_msg, rendered_msg) and
                                         case_msg.src.kind == .@"error" and
                                         actual_msg.count == case_msg.src.count)
                                     {
@@ -1787,7 +1791,7 @@ pub const TestContext = struct {
                 .Execution => |expected_stdout| {
                     if (!std.process.can_spawn) {
                         print("Unable to spawn child processes on {s}, skipping test.\n", .{@tagName(builtin.os.tag)});
-                        return; // Pass test.
+                        continue :update; // Pass test.
                     }
 
                     update_node.setEstimatedTotalItems(4);
@@ -1813,7 +1817,7 @@ pub const TestContext = struct {
                         if (case.object_format != null and case.object_format.? == .c) {
                             if (host.getExternalExecutor(target_info, .{ .link_libc = true }) != .native) {
                                 // We wouldn't be able to run the compiled C code.
-                                return; // Pass test.
+                                continue :update; // Pass test.
                             }
                             try argv.appendSlice(&[_][]const u8{
                                 std.testing.zig_exe_path,
@@ -1829,18 +1833,18 @@ pub const TestContext = struct {
                             });
                         } else switch (host.getExternalExecutor(target_info, .{ .link_libc = case.link_libc })) {
                             .native => try argv.append(exe_path),
-                            .bad_dl, .bad_os_or_cpu => return, // Pass test.
+                            .bad_dl, .bad_os_or_cpu => continue :update, // Pass test.
 
                             .rosetta => if (enable_rosetta) {
                                 try argv.append(exe_path);
                             } else {
-                                return; // Rosetta not available, pass test.
+                                continue :update; // Rosetta not available, pass test.
                             },
 
                             .qemu => |qemu_bin_name| if (enable_qemu) {
                                 const need_cross_glibc = target.isGnuLibC() and case.link_libc;
-                                const glibc_dir_arg = if (need_cross_glibc)
-                                    glibc_runtimes_dir orelse return // glibc dir not available; pass test
+                                const glibc_dir_arg: ?[]const u8 = if (need_cross_glibc)
+                                    glibc_runtimes_dir orelse continue :update // glibc dir not available; pass test
                                 else
                                     null;
                                 try argv.append(qemu_bin_name);
@@ -1856,14 +1860,14 @@ pub const TestContext = struct {
                                 }
                                 try argv.append(exe_path);
                             } else {
-                                return; // QEMU not available; pass test.
+                                continue :update; // QEMU not available; pass test.
                             },
 
                             .wine => |wine_bin_name| if (enable_wine) {
                                 try argv.append(wine_bin_name);
                                 try argv.append(exe_path);
                             } else {
-                                return; // Wine not available; pass test.
+                                continue :update; // Wine not available; pass test.
                             },
 
                             .wasmtime => |wasmtime_bin_name| if (enable_wasmtime) {
@@ -1871,7 +1875,7 @@ pub const TestContext = struct {
                                 try argv.append("--dir=.");
                                 try argv.append(exe_path);
                             } else {
-                                return; // wasmtime not available; pass test.
+                                continue :update; // wasmtime not available; pass test.
                             },
 
                             .darling => |darling_bin_name| if (enable_darling) {
@@ -1881,7 +1885,7 @@ pub const TestContext = struct {
                                 try argv.append("shell");
                                 try argv.append(exe_path);
                             } else {
-                                return; // Darling not available; pass test.
+                                continue :update; // Darling not available; pass test.
                             },
                         }
 

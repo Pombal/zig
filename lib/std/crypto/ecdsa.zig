@@ -18,6 +18,10 @@ pub const EcdsaP256Sha3_256 = Ecdsa(crypto.ecc.P256, crypto.hash.sha3.Sha3_256);
 pub const EcdsaP384Sha384 = Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha384);
 /// ECDSA over P-384 with SHA3-384.
 pub const EcdsaP256Sha3_384 = Ecdsa(crypto.ecc.P384, crypto.hash.sha3.Sha3_384);
+/// ECDSA over Secp256k1 with SHA-256.
+pub const EcdsaSecp256k1Sha256 = Ecdsa(crypto.ecc.Secp256k1, crypto.hash.sha2.Sha256);
+/// ECDSA over Secp256k1 with SHA-256(SHA-256()) -- The Bitcoin signature system.
+pub const EcdsaSecp256k1Sha256oSha256 = Ecdsa(crypto.ecc.Secp256k1, crypto.hash.composition.Sha256oSha256);
 
 /// Elliptic Curve Digital Signature Algorithm (ECDSA).
 pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
@@ -58,13 +62,13 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
             }
 
             /// Encode the public key using the compressed SEC-1 format.
-            pub fn toCompressedSec1(p: Curve) [compressed_sec1_encoded_length]u8 {
-                return p.toCompressedSec1();
+            pub fn toCompressedSec1(pk: PublicKey) [compressed_sec1_encoded_length]u8 {
+                return pk.p.toCompressedSec1();
             }
 
             /// Encoding the public key using the uncompressed SEC-1 format.
-            pub fn toUncompressedSec1(p: Curve) [uncompressed_sec1_encoded_length]u8 {
-                return p.toUncompressedSec1();
+            pub fn toUncompressedSec1(pk: PublicKey) [uncompressed_sec1_encoded_length]u8 {
+                return pk.p.toUncompressedSec1();
             }
         };
 
@@ -293,8 +297,22 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
     };
 }
 
-test "ECDSA - Basic operations" {
+test "ECDSA - Basic operations over EcdsaP384Sha384" {
     const Scheme = EcdsaP384Sha384;
+    const kp = try Scheme.KeyPair.create(null);
+    const msg = "test";
+
+    var noise: [Scheme.noise_length]u8 = undefined;
+    crypto.random.bytes(&noise);
+    const sig = try kp.sign(msg, noise);
+    try sig.verify(msg, kp.public_key);
+
+    const sig2 = try kp.sign(msg, null);
+    try sig2.verify(msg, kp.public_key);
+}
+
+test "ECDSA - Basic operations over Secp256k1" {
+    const Scheme = EcdsaSecp256k1Sha256oSha256;
     const kp = try Scheme.KeyPair.create(null);
     const msg = "test";
 
@@ -724,4 +742,16 @@ fn tvTry(vector: TestVector) !void {
     const sig_der = try fmt.hexToBytes(&sig_der_, vector.sig);
     const sig = try Scheme.Signature.fromDer(sig_der);
     try sig.verify(msg, pk);
+}
+
+test "ECDSA - Sec1 encoding/decoding" {
+    const Scheme = EcdsaP384Sha384;
+    const kp = try Scheme.KeyPair.create(null);
+    const pk = kp.public_key;
+    const pk_compressed_sec1 = pk.toCompressedSec1();
+    const pk_recovered1 = try Scheme.PublicKey.fromSec1(&pk_compressed_sec1);
+    try testing.expectEqualSlices(u8, &pk_recovered1.toCompressedSec1(), &pk_compressed_sec1);
+    const pk_uncompressed_sec1 = pk.toUncompressedSec1();
+    const pk_recovered2 = try Scheme.PublicKey.fromSec1(&pk_uncompressed_sec1);
+    try testing.expectEqualSlices(u8, &pk_recovered2.toUncompressedSec1(), &pk_uncompressed_sec1);
 }

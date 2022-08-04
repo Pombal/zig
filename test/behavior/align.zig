@@ -8,7 +8,6 @@ var foo: u8 align(4) = 100;
 
 test "global variable alignment" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
 
     comptime try expect(@typeInfo(@TypeOf(&foo)).Pointer.alignment == 4);
     comptime try expect(@TypeOf(&foo) == *align(4) u8);
@@ -301,8 +300,7 @@ test "implicitly decreasing fn alignment" {
     try testImplicitlyDecreaseFnAlign(alignedBig, 5678);
 }
 
-// TODO make it a compile error to put align on the fn proto instead of on the ptr
-fn testImplicitlyDecreaseFnAlign(ptr: *align(1) const fn () i32, answer: i32) !void {
+fn testImplicitlyDecreaseFnAlign(ptr: *const fn () align(1) i32, answer: i32) !void {
     try expect(ptr() == answer);
 }
 
@@ -328,7 +326,7 @@ test "@alignCast functions" {
 fn fnExpectsOnly1(ptr: *const fn () align(1) i32) i32 {
     return fnExpects4(@alignCast(4, ptr));
 }
-fn fnExpects4(ptr: *align(4) const fn () i32) i32 {
+fn fnExpects4(ptr: *const fn () align(4) i32) i32 {
     return ptr();
 }
 fn simple4() align(4) i32 {

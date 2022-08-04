@@ -70,6 +70,26 @@ test "casting to union with a macro" {
     try expect(d == casted.d);
 }
 
+test "casting or calling a value with a paren-surrounded macro" {
+    if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+
+    const l: c_long = 42;
+    const casted = h.CAST_OR_CALL_WITH_PARENS(c_int, l);
+    try expect(casted == @intCast(c_int, l));
+
+    const Helper = struct {
+        fn foo(n: c_int) !void {
+            try expect(n == 42);
+        }
+    };
+
+    try h.CAST_OR_CALL_WITH_PARENS(Helper.foo, 42);
+}
+
 test "nested comma operator" {
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
@@ -78,4 +98,18 @@ test "nested comma operator" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
 
     try expectEqual(@as(c_int, 3), h.NESTED_COMMA_OPERATOR);
+}
+
+test "cast functions" {
+    if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+
+    const S = struct {
+        fn foo() void {}
+    };
+    try expectEqual(true, h.CAST_TO_BOOL(S.foo));
+    try expect(h.CAST_TO_UINTPTR(S.foo) != 0);
 }
