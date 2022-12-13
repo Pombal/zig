@@ -11,8 +11,8 @@ pub fn build(b: *Builder) void {
     lib.setBuildMode(mode);
     lib.setTarget(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
     lib.use_llvm = false;
-    lib.use_stage1 = false;
     lib.use_lld = false;
+    lib.strip = false;
     // to make sure the bss segment is emitted, we must import memory
     lib.import_memory = true;
     lib.install();

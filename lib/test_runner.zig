@@ -6,29 +6,13 @@ pub const io_mode: io.Mode = builtin.test_io_mode;
 
 var log_err_count: usize = 0;
 
-var args_buffer: [std.fs.MAX_PATH_BYTES + std.mem.page_size]u8 = undefined;
-var args_allocator = std.heap.FixedBufferAllocator.init(&args_buffer);
-
-fn processArgs() void {
-    const args = std.process.argsAlloc(args_allocator.allocator()) catch {
-        @panic("Too many bytes passed over the CLI to the test runner");
-    };
-    if (args.len != 2) {
-        const self_name = if (args.len >= 1) args[0] else if (builtin.os.tag == .windows) "test.exe" else "test";
-        const zig_ext = if (builtin.os.tag == .windows) ".exe" else "";
-        std.debug.print("Usage: {s} path/to/zig{s}\n", .{ self_name, zig_ext });
-        @panic("Wrong number of command line arguments");
-    }
-    std.testing.zig_exe_path = args[1];
-}
-
 pub fn main() void {
     if (builtin.zig_backend != .stage1 and
-        (builtin.zig_backend != .stage2_llvm or builtin.cpu.arch == .wasm32))
+        (builtin.zig_backend != .stage2_llvm or builtin.cpu.arch == .wasm32) and
+        builtin.zig_backend != .stage2_c)
     {
         return main2() catch @panic("test failure");
     }
-    processArgs();
     const test_fn_list = builtin.test_functions;
     var ok_count: usize = 0;
     var skip_count: usize = 0;
@@ -146,7 +130,9 @@ pub fn main2() anyerror!void {
     }
     if (builtin.zig_backend == .stage2_wasm or
         builtin.zig_backend == .stage2_x86_64 or
-        builtin.zig_backend == .stage2_llvm)
+        builtin.zig_backend == .stage2_aarch64 or
+        builtin.zig_backend == .stage2_llvm or
+        builtin.zig_backend == .stage2_c)
     {
         const passed = builtin.test_functions.len - skipped - failed;
         const stderr = std.io.getStdErr();

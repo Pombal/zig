@@ -79,7 +79,7 @@ pub fn analyze(gpa: Allocator, air: Air) Allocator.Error!Liveness {
     return Liveness{
         .tomb_bits = a.tomb_bits,
         .special = a.special,
-        .extra = a.extra.toOwnedSlice(gpa),
+        .extra = try a.extra.toOwnedSlice(gpa),
     };
 }
 
@@ -228,6 +228,7 @@ pub fn categorizeOperand(
         .frame_addr,
         .wasm_memory_size,
         .err_return_trace,
+        .save_err_return_trace_index,
         => return .none,
 
         .fence => return .write,
@@ -267,6 +268,8 @@ pub fn categorizeOperand(
         .byte_swap,
         .bit_reverse,
         .splat,
+        .error_set_has_value,
+        .addrspace_cast,
         => {
             const o = air_datas[inst].ty_op;
             if (o.operand == operand_ref) return matchOperandSmallIndex(l, inst, 0, .none);
@@ -291,6 +294,7 @@ pub fn categorizeOperand(
         .is_non_err_ptr,
         .ptrtoint,
         .bool_to_int,
+        .is_named_enum_value,
         .tag_name,
         .error_name,
         .sqrt,
@@ -497,6 +501,41 @@ pub fn categorizeOperand(
             return .complex;
         },
         .block => {
+            const extra = air.extraData(Air.Block, air_datas[inst].ty_pl.payload);
+            const body = air.extra[extra.end..][0..extra.data.body_len];
+
+            if (body.len == 1 and air_tags[body[0]] == .cond_br) {
+                // Peephole optimization for "panic-like" conditionals, which have
+                // one empty branch and another which calls a `noreturn` function.
+                // This allows us to infer that safety checks do not modify memory,
+                // as far as control flow successors are concerned.
+
+                const inst_data = air_datas[body[0]].pl_op;
+                const cond_extra = air.extraData(Air.CondBr, inst_data.payload);
+                if (inst_data.operand == operand_ref and operandDies(l, body[0], 0))
+                    return .tomb;
+
+                if (cond_extra.data.then_body_len != 1 or cond_extra.data.else_body_len != 1)
+                    return .complex;
+
+                var operand_live: bool = true;
+                for (air.extra[cond_extra.end..][0..2]) |cond_inst| {
+                    if (l.categorizeOperand(air, cond_inst, operand) == .tomb)
+                        operand_live = false;
+
+                    switch (air_tags[cond_inst]) {
+                        .br => { // Breaks immediately back to block
+                            const br = air_datas[cond_inst].br;
+                            if (br.block_inst != inst)
+                                return .complex;
+                        },
+                        .call => {}, // Calls a noreturn function
+                        else => return .complex,
+                    }
+                }
+                return if (operand_live) .none else .tomb;
+            }
+
             return .complex;
         },
         .@"try" => {
@@ -590,7 +629,7 @@ pub fn getSwitchBr(l: Liveness, gpa: Allocator, inst: Air.Inst.Index, cases_len:
         deaths.appendAssumeCapacity(else_deaths);
     }
     return SwitchBrTable{
-        .deaths = deaths.toOwnedSlice(),
+        .deaths = try deaths.toOwnedSlice(),
     };
 }
 
@@ -802,6 +841,7 @@ fn analyzeInst(
         .frame_addr,
         .wasm_memory_size,
         .err_return_trace,
+        .save_err_return_trace_index,
         => return trackOperands(a, new_set, inst, main_tomb, .{ .none, .none, .none }),
 
         .not,
@@ -841,6 +881,8 @@ fn analyzeInst(
         .byte_swap,
         .bit_reverse,
         .splat,
+        .error_set_has_value,
+        .addrspace_cast,
         => {
             const o = inst_datas[inst].ty_op;
             return trackOperands(a, new_set, inst, main_tomb, .{ o.operand, .none, .none });
@@ -858,6 +900,7 @@ fn analyzeInst(
         .bool_to_int,
         .ret,
         .ret_load,
+        .is_named_enum_value,
         .tag_name,
         .error_name,
         .sqrt,

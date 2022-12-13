@@ -942,7 +942,7 @@ pub const UDP_NOCHECKSUM = 1;
 pub const UDP_CHECKSUM_COVERAGE = 20;
 pub const GAI_STRERROR_BUFFER_SIZE = 1024;
 
-pub const LPCONDITIONPROC = fn (
+pub const LPCONDITIONPROC = *const fn (
     lpCallerId: *WSABUF,
     lpCallerData: *WSABUF,
     lpSQOS: *QOS,
@@ -953,7 +953,7 @@ pub const LPCONDITIONPROC = fn (
     dwCallbackData: usize,
 ) callconv(WINAPI) i32;
 
-pub const LPWSAOVERLAPPED_COMPLETION_ROUTINE = fn (
+pub const LPWSAOVERLAPPED_COMPLETION_ROUTINE = *const fn (
     dwError: u32,
     cbTransferred: u32,
     lpOverlapped: *OVERLAPPED,
@@ -1173,7 +1173,7 @@ pub const TRANSMIT_FILE_BUFFERS = extern struct {
     TailLength: u32,
 };
 
-pub const LPFN_TRANSMITFILE = fn (
+pub const LPFN_TRANSMITFILE = *const fn (
     hSocket: SOCKET,
     hFile: HANDLE,
     nNumberOfBytesToWrite: u32,
@@ -1183,7 +1183,7 @@ pub const LPFN_TRANSMITFILE = fn (
     dwReserved: u32,
 ) callconv(WINAPI) BOOL;
 
-pub const LPFN_ACCEPTEX = fn (
+pub const LPFN_ACCEPTEX = *const fn (
     sListenSocket: SOCKET,
     sAcceptSocket: SOCKET,
     lpOutputBuffer: *anyopaque,
@@ -1194,7 +1194,7 @@ pub const LPFN_ACCEPTEX = fn (
     lpOverlapped: *OVERLAPPED,
 ) callconv(WINAPI) BOOL;
 
-pub const LPFN_GETACCEPTEXSOCKADDRS = fn (
+pub const LPFN_GETACCEPTEXSOCKADDRS = *const fn (
     lpOutputBuffer: *anyopaque,
     dwReceiveDataLength: u32,
     dwLocalAddressLength: u32,
@@ -1205,7 +1205,7 @@ pub const LPFN_GETACCEPTEXSOCKADDRS = fn (
     RemoteSockaddrLength: *i32,
 ) callconv(WINAPI) void;
 
-pub const LPFN_WSASENDMSG = fn (
+pub const LPFN_WSASENDMSG = *const fn (
     s: SOCKET,
     lpMsg: *const std.x.os.Socket.Message,
     dwFlags: u32,
@@ -1214,7 +1214,7 @@ pub const LPFN_WSASENDMSG = fn (
     lpCompletionRoutine: ?LPWSAOVERLAPPED_COMPLETION_ROUTINE,
 ) callconv(WINAPI) i32;
 
-pub const LPFN_WSARECVMSG = fn (
+pub const LPFN_WSARECVMSG = *const fn (
     s: SOCKET,
     lpMsg: *std.x.os.Socket.Message,
     lpdwNumberOfBytesRecv: ?*u32,
@@ -1222,7 +1222,7 @@ pub const LPFN_WSARECVMSG = fn (
     lpCompletionRoutine: ?LPWSAOVERLAPPED_COMPLETION_ROUTINE,
 ) callconv(WINAPI) i32;
 
-pub const LPSERVICE_CALLBACK_PROC = fn (
+pub const LPSERVICE_CALLBACK_PROC = *const fn (
     lParam: LPARAM,
     hAsyncTaskHandle: HANDLE,
 ) callconv(WINAPI) void;
@@ -1233,7 +1233,7 @@ pub const SERVICE_ASYNC_INFO = extern struct {
     hAsyncTaskHandle: HANDLE,
 };
 
-pub const LPLOOKUPSERVICE_COMPLETION_ROUTINE = fn (
+pub const LPLOOKUPSERVICE_COMPLETION_ROUTINE = *const fn (
     dwError: u32,
     dwBytes: u32,
     lpOverlapped: *OVERLAPPED,
@@ -2344,6 +2344,6 @@ pub extern "ws2_32" fn getnameinfo(
     Flags: i32,
 ) callconv(WINAPI) i32;
 
-pub extern "IPHLPAPI" fn if_nametoindex(
+pub extern "iphlpapi" fn if_nametoindex(
     InterfaceName: [*:0]const u8,
 ) callconv(WINAPI) u32;

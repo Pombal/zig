@@ -149,6 +149,7 @@ pub const Address = extern union {
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
+        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
         switch (self.any.family) {
             os.AF.INET => try self.in.format(fmt, options, out_stream),
             os.AF.INET6 => try self.in6.format(fmt, options, out_stream),
@@ -274,7 +275,7 @@ pub const Ip4Address = extern struct {
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
-        _ = fmt;
+        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
         _ = options;
         const bytes = @ptrCast(*const [4]u8, &self.sa.addr);
         try std.fmt.format(out_stream, "{}.{}.{}.{}:{}", .{
@@ -563,7 +564,7 @@ pub const Ip6Address = extern struct {
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
-        _ = fmt;
+        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
         _ = options;
         const port = mem.bigToNative(u16, self.sa.port);
         if (mem.eql(u8, self.sa.addr[0..12], &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
@@ -824,7 +825,7 @@ pub fn getAddressList(allocator: mem.Allocator, name: []const u8, port: u16) !*A
 
         result.addrs = try arena.alloc(Address, lookup_addrs.items.len);
         if (canon.items.len != 0) {
-            result.canon_name = canon.toOwnedSlice();
+            result.canon_name = try canon.toOwnedSlice();
         }
 
         for (lookup_addrs.items) |lookup_addr, i| {
@@ -1191,7 +1192,7 @@ pub fn isValidHostName(hostname: []const u8) bool {
     if (hostname.len >= 254) return false;
     if (!std.unicode.utf8ValidateSlice(hostname)) return false;
     for (hostname) |byte| {
-        if (byte >= 0x80 or byte == '.' or byte == '-' or std.ascii.isAlNum(byte)) {
+        if (!std.ascii.isASCII(byte) or byte == '.' or byte == '-' or std.ascii.isAlphanumeric(byte)) {
             continue;
         }
         return false;

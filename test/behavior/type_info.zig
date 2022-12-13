@@ -160,6 +160,7 @@ test "type info: error set, error union info, anyerror" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     try testErrorSet();
     comptime try testErrorSet();
@@ -191,6 +192,7 @@ test "type info: error set single value" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const TestSet = error.One;
 
@@ -201,12 +203,10 @@ test "type info: error set single value" {
 }
 
 test "type info: error set merged" {
-    // #11022 forces ordering of error sets in stage2
-    if (builtin.zig_backend == .stage1) return error.SkipZigTest;
-
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const TestSet = error{ One, Two } || error{Three};
 
@@ -222,6 +222,7 @@ test "type info: enum info" {
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     try testEnum();
     comptime try testEnum();
@@ -255,7 +256,7 @@ fn testUnion() !void {
     try expect(typeinfo_info == .Union);
     try expect(typeinfo_info.Union.layout == .Auto);
     try expect(typeinfo_info.Union.tag_type.? == TypeId);
-    try expect(typeinfo_info.Union.fields.len == 25);
+    try expect(typeinfo_info.Union.fields.len == 24);
     try expect(typeinfo_info.Union.fields[4].field_type == @TypeOf(@typeInfo(u8).Int));
     try expect(typeinfo_info.Union.decls.len == 22);
 
@@ -285,6 +286,7 @@ fn testUnion() !void {
 
 test "type info: struct info" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     try testStruct();
     comptime try testStruct();
@@ -293,9 +295,10 @@ test "type info: struct info" {
 fn testStruct() !void {
     const unpacked_struct_info = @typeInfo(TestStruct);
     try expect(unpacked_struct_info.Struct.is_tuple == false);
+    try expect(unpacked_struct_info.Struct.backing_integer == null);
     try expect(unpacked_struct_info.Struct.fields[0].alignment == @alignOf(u32));
-    try expect(@ptrCast(*const u32, unpacked_struct_info.Struct.fields[0].default_value.?).* == 4);
-    try expect(mem.eql(u8, "foobar", @ptrCast(*const *const [6:0]u8, unpacked_struct_info.Struct.fields[1].default_value.?).*));
+    try expect(@ptrCast(*align(1) const u32, unpacked_struct_info.Struct.fields[0].default_value.?).* == 4);
+    try expect(mem.eql(u8, "foobar", @ptrCast(*align(1) const *const [6:0]u8, unpacked_struct_info.Struct.fields[1].default_value.?).*));
 }
 
 const TestStruct = struct {
@@ -304,8 +307,6 @@ const TestStruct = struct {
 };
 
 test "type info: packed struct info" {
-    if (builtin.zig_backend == .stage1) return error.SkipZigTest;
-
     try testPackedStruct();
     comptime try testPackedStruct();
 }
@@ -315,18 +316,19 @@ fn testPackedStruct() !void {
     try expect(struct_info == .Struct);
     try expect(struct_info.Struct.is_tuple == false);
     try expect(struct_info.Struct.layout == .Packed);
+    try expect(struct_info.Struct.backing_integer == u128);
     try expect(struct_info.Struct.fields.len == 4);
     try expect(struct_info.Struct.fields[0].alignment == 0);
     try expect(struct_info.Struct.fields[2].field_type == f32);
     try expect(struct_info.Struct.fields[2].default_value == null);
-    try expect(@ptrCast(*const u32, struct_info.Struct.fields[3].default_value.?).* == 4);
+    try expect(@ptrCast(*align(1) const u32, struct_info.Struct.fields[3].default_value.?).* == 4);
     try expect(struct_info.Struct.fields[3].alignment == 0);
     try expect(struct_info.Struct.decls.len == 2);
     try expect(struct_info.Struct.decls[0].is_pub);
 }
 
 const TestPackedStruct = packed struct {
-    fieldA: usize,
+    fieldA: u64,
     fieldB: void,
     fieldC: f32,
     fieldD: u32 = 4,
@@ -353,19 +355,12 @@ fn testOpaque() !void {
 }
 
 test "type info: function type info" {
-    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
-
-    // wasm doesn't support align attributes on functions
-    if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64) return error.SkipZigTest;
-
     try testFunction();
     comptime try testFunction();
 }
 
 fn testFunction() !void {
-    const fn_info = @typeInfo(@TypeOf(foo));
+    const fn_info = @typeInfo(@TypeOf(typeInfoFoo));
     try expect(fn_info == .Fn);
     try expect(fn_info.Fn.alignment > 0);
     try expect(fn_info.Fn.calling_convention == .C);
@@ -373,35 +368,29 @@ fn testFunction() !void {
     try expect(fn_info.Fn.args.len == 2);
     try expect(fn_info.Fn.is_var_args);
     try expect(fn_info.Fn.return_type.? == usize);
-    const fn_aligned_info = @typeInfo(@TypeOf(fooAligned));
+    const fn_aligned_info = @typeInfo(@TypeOf(typeInfoFooAligned));
     try expect(fn_aligned_info.Fn.alignment == 4);
 }
 
-extern fn foo(a: usize, b: bool, ...) callconv(.C) usize;
-extern fn fooAligned(a: usize, b: bool, ...) align(4) callconv(.C) usize;
+extern fn typeInfoFoo(a: usize, b: bool, ...) callconv(.C) usize;
+extern fn typeInfoFooAligned(a: usize, b: bool, ...) align(4) callconv(.C) usize;
 
 test "type info: generic function types" {
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+    const G1 = @typeInfo(@TypeOf(generic1));
+    try expect(G1.Fn.args.len == 1);
+    try expect(G1.Fn.args[0].is_generic == true);
+    try expect(G1.Fn.args[0].arg_type == null);
+    try expect(G1.Fn.return_type == void);
 
-    if (builtin.zig_backend != .stage1) {
-        // stage1 marks all args/return types as null if the function
-        // is generic at all. stage2 is more specific.
-        const G1 = @typeInfo(@TypeOf(generic1));
-        try expect(G1.Fn.args.len == 1);
-        try expect(G1.Fn.args[0].is_generic == true);
-        try expect(G1.Fn.args[0].arg_type == null);
-        try expect(G1.Fn.return_type == void);
-
-        const G2 = @typeInfo(@TypeOf(generic2));
-        try expect(G2.Fn.args.len == 3);
-        try expect(G2.Fn.args[0].is_generic == false);
-        try expect(G2.Fn.args[0].arg_type == type);
-        try expect(G2.Fn.args[1].is_generic == true);
-        try expect(G2.Fn.args[1].arg_type == null);
-        try expect(G2.Fn.args[2].is_generic == false);
-        try expect(G2.Fn.args[2].arg_type == u8);
-        try expect(G2.Fn.return_type == void);
-    }
+    const G2 = @typeInfo(@TypeOf(generic2));
+    try expect(G2.Fn.args.len == 3);
+    try expect(G2.Fn.args[0].is_generic == false);
+    try expect(G2.Fn.args[0].arg_type == type);
+    try expect(G2.Fn.args[1].is_generic == true);
+    try expect(G2.Fn.args[1].arg_type == null);
+    try expect(G2.Fn.args[2].is_generic == false);
+    try expect(G2.Fn.args[2].arg_type == u8);
+    try expect(G2.Fn.return_type == void);
 
     const G3 = @typeInfo(@TypeOf(generic3));
     try expect(G3.Fn.args.len == 1);
@@ -423,12 +412,8 @@ fn generic2(comptime T: type, param: T, param2: u8) void {
     _ = param;
     _ = param2;
 }
-fn generic3(param: anytype) @TypeOf(param) {
-    _ = param;
-}
-fn generic4(comptime param: anytype) @TypeOf(param) {
-    _ = param;
-}
+fn generic3(param: anytype) @TypeOf(param) {}
+fn generic4(comptime param: anytype) @TypeOf(param) {}
 
 test "typeInfo with comptime parameter in struct fn def" {
     const S = struct {
@@ -453,7 +438,7 @@ fn testVector() !void {
 }
 
 test "type info: anyframe and anyframe->T" {
-    if (builtin.zig_backend != .stage1) {
+    if (true) {
         // https://github.com/ziglang/zig/issues/6025
         return error.SkipZigTest;
     }
@@ -512,7 +497,7 @@ fn add(a: i32, b: i32) i32 {
 }
 
 test "type info for async frames" {
-    if (builtin.zig_backend != .stage1) {
+    if (true) {
         // https://github.com/ziglang/zig/issues/6025
         return error.SkipZigTest;
     }
@@ -528,6 +513,7 @@ test "type info for async frames" {
 test "Declarations are returned in declaration order" {
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const S = struct {
         const a = 1;
@@ -551,6 +537,7 @@ test "Struct.is_tuple for anon list literal" {
 test "Struct.is_tuple for anon struct literal" {
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const info = @typeInfo(@TypeOf(.{ .a = 0 }));
     try expect(!info.Struct.is_tuple);
@@ -575,4 +562,11 @@ test "typeInfo resolves usingnamespace declarations" {
 
     try expect(@typeInfo(B).Struct.decls.len == 2);
     //a
+}
+
+test "value from struct @typeInfo default_value can be loaded at comptime" {
+    comptime {
+        const a = @typeInfo(@TypeOf(.{ .foo = @as(u8, 1) })).Struct.fields[0].default_value;
+        try expect(@ptrCast(*const u8, a).* == 1);
+    }
 }

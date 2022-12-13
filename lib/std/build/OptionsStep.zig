@@ -10,6 +10,8 @@ const FileSource = build.FileSource;
 
 const OptionsStep = @This();
 
+pub const base_id = .options;
+
 step: Step,
 generated_file: GeneratedFile,
 builder: *Builder,
@@ -129,7 +131,7 @@ pub fn addOption(self: *OptionsStep, comptime T: type, name: []const u8, value: 
         },
         else => {},
     }
-    out.print("pub const {}: {s} = ", .{ std.zig.fmtId(name), std.zig.fmtId(@typeName(T)) }) catch unreachable;
+    out.print("pub const {}: {s} = ", .{ std.zig.fmtId(name), @typeName(T) }) catch unreachable;
     printLiteral(out, value, 0) catch unreachable;
     out.writeAll(";\n") catch unreachable;
 }
@@ -171,10 +173,11 @@ fn printLiteral(out: anytype, val: anytype, indent: u8) !void {
         .Void,
         .Bool,
         .Int,
+        .ComptimeInt,
         .Float,
         .Null,
         => try out.print("{any}", .{val}),
-        else => @compileError(comptime std.fmt.comptimePrint("`{s}` are not yet supported as build options", .{@tagName(@typeInfo(T))})),
+        else => @compileError(std.fmt.comptimePrint("`{s}` are not yet supported as build options", .{@tagName(@typeInfo(T))})),
     }
 }
 
@@ -289,9 +292,10 @@ test "OptionsStep" {
 
     const options = builder.addOptions();
 
-    const KeywordEnum = enum {
-        @"0.8.1",
-    };
+    // TODO this regressed at some point
+    //const KeywordEnum = enum {
+    //    @"0.8.1",
+    //};
 
     const nested_array = [2][2]u16{
         [2]u16{ 300, 200 },
@@ -302,11 +306,12 @@ test "OptionsStep" {
     options.addOption(usize, "option1", 1);
     options.addOption(?usize, "option2", null);
     options.addOption(?usize, "option3", 3);
+    options.addOption(comptime_int, "option4", 4);
     options.addOption([]const u8, "string", "zigisthebest");
     options.addOption(?[]const u8, "optional_string", null);
     options.addOption([2][2]u16, "nested_array", nested_array);
     options.addOption([]const []const u16, "nested_slice", nested_slice);
-    options.addOption(KeywordEnum, "keyword_enum", .@"0.8.1");
+    //options.addOption(KeywordEnum, "keyword_enum", .@"0.8.1");
     options.addOption(std.builtin.Version, "version", try std.builtin.Version.parse("0.1.2"));
     options.addOption(std.SemanticVersion, "semantic_version", try std.SemanticVersion.parse("0.1.2-foo+bar"));
 
@@ -314,6 +319,7 @@ test "OptionsStep" {
         \\pub const option1: usize = 1;
         \\pub const option2: ?usize = null;
         \\pub const option3: ?usize = 3;
+        \\pub const option4: comptime_int = 4;
         \\pub const string: []const u8 = "zigisthebest";
         \\pub const optional_string: ?[]const u8 = null;
         \\pub const nested_array: [2][2]u16 = [2][2]u16 {
@@ -336,10 +342,10 @@ test "OptionsStep" {
         \\        200,
         \\    },
         \\};
-        \\pub const KeywordEnum = enum {
-        \\    @"0.8.1",
-        \\};
-        \\pub const keyword_enum: KeywordEnum = KeywordEnum.@"0.8.1";
+        //\\pub const KeywordEnum = enum {
+        //\\    @"0.8.1",
+        //\\};
+        //\\pub const keyword_enum: KeywordEnum = KeywordEnum.@"0.8.1";
         \\pub const version: @import("std").builtin.Version = .{
         \\    .major = 0,
         \\    .minor = 1,

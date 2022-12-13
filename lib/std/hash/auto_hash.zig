@@ -30,13 +30,15 @@ pub fn hashPointer(hasher: anytype, key: anytype, comptime strat: HashStrategy) 
             .DeepRecursive => hash(hasher, key.*, .DeepRecursive),
         },
 
-        .Slice => switch (strat) {
-            .Shallow => {
-                hashPointer(hasher, key.ptr, .Shallow);
-                hash(hasher, key.len, .Shallow);
-            },
-            .Deep => hashArray(hasher, key, .Shallow),
-            .DeepRecursive => hashArray(hasher, key, .DeepRecursive),
+        .Slice => {
+            switch (strat) {
+                .Shallow => {
+                    hashPointer(hasher, key.ptr, .Shallow);
+                },
+                .Deep => hashArray(hasher, key, .Shallow),
+                .DeepRecursive => hashArray(hasher, key, .DeepRecursive),
+            }
+            hash(hasher, key.len, .Shallow);
         },
 
         .Many,
@@ -53,17 +55,8 @@ pub fn hashPointer(hasher: anytype, key: anytype, comptime strat: HashStrategy) 
 
 /// Helper function to hash a set of contiguous objects, from an array or slice.
 pub fn hashArray(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
-    switch (strat) {
-        .Shallow => {
-            for (key) |element| {
-                hash(hasher, element, .Shallow);
-            }
-        },
-        else => {
-            for (key) |element| {
-                hash(hasher, element, strat);
-            }
-        },
+    for (key) |element| {
+        hash(hasher, element, strat);
     }
 }
 
@@ -73,7 +66,7 @@ pub fn hash(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
     const Key = @TypeOf(key);
 
     if (strat == .Shallow and comptime meta.trait.hasUniqueRepresentation(Key)) {
-        @call(.{ .modifier = .always_inline }, hasher.update, .{mem.asBytes(&key)});
+        @call(.always_inline, hasher.update, .{mem.asBytes(&key)});
         return;
     }
 
@@ -96,21 +89,21 @@ pub fn hash(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
         // TODO Check if the situation is better after #561 is resolved.
         .Int => {
             if (comptime meta.trait.hasUniqueRepresentation(Key)) {
-                @call(.{ .modifier = .always_inline }, hasher.update, .{std.mem.asBytes(&key)});
+                @call(.always_inline, hasher.update, .{std.mem.asBytes(&key)});
             } else {
                 // Take only the part containing the key value, the remaining
                 // bytes are undefined and must not be hashed!
                 const byte_size = comptime std.math.divCeil(comptime_int, @bitSizeOf(Key), 8) catch unreachable;
-                @call(.{ .modifier = .always_inline }, hasher.update, .{std.mem.asBytes(&key)[0..byte_size]});
+                @call(.always_inline, hasher.update, .{std.mem.asBytes(&key)[0..byte_size]});
             }
         },
 
         .Bool => hash(hasher, @boolToInt(key), strat),
         .Enum => hash(hasher, @enumToInt(key), strat),
         .ErrorSet => hash(hasher, @errorToInt(key), strat),
-        .AnyFrame, .BoundFn, .Fn => hash(hasher, @ptrToInt(key), strat),
+        .AnyFrame, .Fn => hash(hasher, @ptrToInt(key), strat),
 
-        .Pointer => @call(.{ .modifier = .always_inline }, hashPointer, .{ hasher, key, strat }),
+        .Pointer => @call(.always_inline, hashPointer, .{ hasher, key, strat }),
 
         .Optional => if (key) |k| hash(hasher, k, strat),
 
@@ -193,8 +186,8 @@ fn typeContainsSlice(comptime K: type) bool {
 pub fn autoHash(hasher: anytype, key: anytype) void {
     const Key = @TypeOf(key);
     if (comptime typeContainsSlice(Key)) {
-        @compileError("std.auto_hash.autoHash does not allow slices as well as unions and structs containing slices here (" ++ @typeName(Key) ++
-            ") because the intent is unclear. Consider using std.auto_hash.hash or providing your own hash function instead.");
+        @compileError("std.hash.autoHash does not allow slices as well as unions and structs containing slices here (" ++ @typeName(Key) ++
+            ") because the intent is unclear. Consider using std.hash.autoHashStrat or providing your own hash function instead.");
     }
 
     hash(hasher, key, .Shallow);
@@ -359,6 +352,12 @@ test "testHash array" {
     try testing.expectEqual(h, hasher.final());
 }
 
+test "testHash multi-dimensional array" {
+    const a = [_][]const u32{ &.{ 1, 2, 3 }, &.{ 4, 5 } };
+    const b = [_][]const u32{ &.{ 1, 2 }, &.{ 3, 4, 5 } };
+    try testing.expect(testHash(a) != testHash(b));
+}
+
 test "testHash struct" {
     const Foo = struct {
         a: u32 = 1,
@@ -375,12 +374,6 @@ test "testHash struct" {
 }
 
 test "testHash union" {
-    const builtin = @import("builtin");
-    if (builtin.zig_backend == .stage2_llvm and builtin.mode == .ReleaseSafe) {
-        // https://github.com/ziglang/zig/issues/12178
-        return error.SkipZigTest;
-    }
-
     const Foo = union(enum) {
         A: u32,
         B: bool,

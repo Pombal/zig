@@ -101,7 +101,7 @@ pub fn addPathDir(self: *RunStep, search_path: []const u8) void {
 }
 
 /// For internal use only, users of `RunStep` should use `addPathDir` directly.
-fn addPathDirInternal(step: *Step, builder: *Builder, search_path: []const u8) void {
+pub fn addPathDirInternal(step: *Step, builder: *Builder, search_path: []const u8) void {
     const env_map = getEnvMapInternal(step, builder.allocator);
 
     const key = "PATH";
@@ -207,7 +207,7 @@ pub fn runCommand(
     const cwd = if (maybe_cwd) |cwd| builder.pathFromRoot(cwd) else builder.build_root;
 
     if (!std.process.can_spawn) {
-        const cmd = try std.mem.join(builder.addInstallDirectory, " ", argv);
+        const cmd = try std.mem.join(builder.allocator, " ", argv);
         std.debug.print("the following command cannot be executed ({s} does not support spawning a child process):\n{s}", .{ @tagName(builtin.os.tag), cmd });
         builder.allocator.free(cmd);
         return ExecError.ExecNotSupported;

@@ -8,10 +8,7 @@ const timezone = std.c.timezone;
 extern "c" fn ___errno() *c_int;
 pub const _errno = ___errno;
 
-pub const dl_iterate_phdr_callback = switch (builtin.zig_backend) {
-    .stage1 => fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-    else => *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-};
+pub const dl_iterate_phdr_callback = *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int;
 pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*anyopaque) c_int;
 
 pub extern "c" fn getdents(fd: c_int, buf_ptr: [*]u8, nbytes: usize) usize;
@@ -27,20 +24,20 @@ pub const pthread_mutex_t = extern struct {
     flag1: u16 = 0,
     flag2: u8 = 0,
     ceiling: u8 = 0,
-    @"type": u16 = 0,
+    type: u16 = 0,
     magic: u16 = 0x4d58,
     lock: u64 = 0,
     data: u64 = 0,
 };
 pub const pthread_cond_t = extern struct {
     flag: [4]u8 = [_]u8{0} ** 4,
-    @"type": u16 = 0,
+    type: u16 = 0,
     magic: u16 = 0x4356,
     data: u64 = 0,
 };
 pub const pthread_rwlock_t = extern struct {
     readers: i32 = 0,
-    @"type": u16 = 0,
+    type: u16 = 0,
     magic: u16 = 0x5257,
     mutex: pthread_mutex_t = .{},
     readercv: pthread_cond_t = .{},
@@ -53,7 +50,7 @@ pub const pthread_key_t = c_int;
 
 pub const sem_t = extern struct {
     count: u32 = 0,
-    @"type": u16 = 0,
+    type: u16 = 0,
     magic: u16 = 0x534d,
     __pad1: [3]u64 = [_]u64{0} ** 3,
     __pad2: [2]u64 = [_]u64{0} ** 2,
@@ -879,10 +876,10 @@ pub const winsize = extern struct {
 const NSIG = 75;
 
 pub const SIG = struct {
-    pub const DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
-    pub const ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
-    pub const IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
-    pub const HOLD = @intToPtr(?Sigaction.sigaction_fn, 2);
+    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
+    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
+    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
+    pub const HOLD = @intToPtr(?Sigaction.handler_fn, 2);
 
     pub const WORDS = 4;
     pub const MAXSIG = 75;
@@ -955,14 +952,8 @@ pub const SIG = struct {
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const handler_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int) callconv(.C) void,
-        else => *const fn (c_int) callconv(.C) void,
-    };
-    pub const sigaction_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-        else => *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-    };
+    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
+    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
 
     /// signal options
     flags: c_uint,
@@ -1692,7 +1683,7 @@ pub const _SC = struct {
 pub const procfs = struct {
     pub const misc_header = extern struct {
         size: u32,
-        @"type": enum(u32) {
+        type: enum(u32) {
             Pathname,
             Socketname,
             Peersockname,
@@ -1860,7 +1851,7 @@ pub const lifreq = extern struct {
         ppa: u32,
     },
     /// One of the IFT types, e.g. IFT_ETHER.
-    @"type": u32,
+    type: u32,
     ifru: extern union {
         /// Address.
         addr: sockaddr.storage,

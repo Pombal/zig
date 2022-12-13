@@ -230,7 +230,6 @@ pub const File = struct {
         }
         if (self.isTty()) {
             if (self.handle == os.STDOUT_FILENO or self.handle == os.STDERR_FILENO) {
-                // Use getenvC to workaround https://github.com/ziglang/zig/issues/3511
                 if (os.getenvZ("TERM")) |term| {
                     if (std.mem.eql(u8, term, "dumb"))
                         return false;
@@ -955,11 +954,9 @@ pub const File = struct {
         };
 
         if (optional_sentinel) |sentinel| {
-            try array_list.append(sentinel);
-            const buf = array_list.toOwnedSlice();
-            return buf[0 .. buf.len - 1 :sentinel];
+            return try array_list.toOwnedSliceSentinel(sentinel);
         } else {
-            return array_list.toOwnedSlice();
+            return try array_list.toOwnedSlice();
         }
     }
 
@@ -990,6 +987,8 @@ pub const File = struct {
         return index;
     }
 
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn pread(self: File, buffer: []u8, offset: u64) PReadError!usize {
         if (is_windows) {
             return windows.ReadFile(self.handle, buffer, offset, self.intended_io_mode);
@@ -1004,6 +1003,8 @@ pub const File = struct {
 
     /// Returns the number of bytes read. If the number read is smaller than `buffer.len`, it
     /// means the file reached the end. Reaching the end of a file is not an error condition.
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn preadAll(self: File, buffer: []u8, offset: u64) PReadError!usize {
         var index: usize = 0;
         while (index != buffer.len) {
@@ -1058,6 +1059,8 @@ pub const File = struct {
     }
 
     /// See https://github.com/ziglang/zig/issues/7699
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn preadv(self: File, iovecs: []const os.iovec, offset: u64) PReadError!usize {
         if (is_windows) {
             // TODO improve this to use ReadFileScatter
@@ -1079,6 +1082,8 @@ pub const File = struct {
     /// The `iovecs` parameter is mutable because this function needs to mutate the fields in
     /// order to handle partial reads from the underlying OS layer.
     /// See https://github.com/ziglang/zig/issues/7699
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn preadvAll(self: File, iovecs: []os.iovec, offset: u64) PReadError!usize {
         if (iovecs.len == 0) return 0;
 
@@ -1122,6 +1127,8 @@ pub const File = struct {
         }
     }
 
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn pwrite(self: File, bytes: []const u8, offset: u64) PWriteError!usize {
         if (is_windows) {
             return windows.WriteFile(self.handle, bytes, offset, self.intended_io_mode);
@@ -1134,6 +1141,8 @@ pub const File = struct {
         }
     }
 
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn pwriteAll(self: File, bytes: []const u8, offset: u64) PWriteError!void {
         var index: usize = 0;
         while (index < bytes.len) {
@@ -1179,6 +1188,8 @@ pub const File = struct {
     }
 
     /// See https://github.com/ziglang/zig/issues/7699
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn pwritev(self: File, iovecs: []os.iovec_const, offset: u64) PWriteError!usize {
         if (is_windows) {
             // TODO improve this to use WriteFileScatter
@@ -1197,6 +1208,8 @@ pub const File = struct {
     /// The `iovecs` parameter is mutable because this function needs to mutate the fields in
     /// order to handle partial writes from the underlying OS layer.
     /// See https://github.com/ziglang/zig/issues/7699
+    /// On Windows, this function currently does alter the file pointer.
+    /// https://github.com/ziglang/zig/issues/12783
     pub fn pwritevAll(self: File, iovecs: []os.iovec_const, offset: u64) PWriteError!void {
         if (iovecs.len == 0) return;
 

@@ -200,10 +200,10 @@ test "Type.ErrorUnion" {
 
 test "Type.Opaque" {
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const Opaque = @Type(.{
         .Opaque = .{
@@ -230,7 +230,7 @@ test "Type.Vector" {
 }
 
 test "Type.AnyFrame" {
-    if (builtin.zig_backend != .stage1) {
+    if (true) {
         // https://github.com/ziglang/zig/issues/6025
         return error.SkipZigTest;
     }
@@ -247,9 +247,6 @@ fn add(a: i32, b: i32) i32 {
 }
 
 test "Type.ErrorSet" {
-    if (builtin.zig_backend == .stage1) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
-
     try testing.expect(@Type(.{ .ErrorSet = null }) == anyerror);
 
     // error sets don't compare equal so just check if they compile
@@ -262,10 +259,10 @@ test "Type.ErrorSet" {
 
 test "Type.Struct" {
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const A = @Type(@typeInfo(struct { x: u8, y: u32 }));
     const infoA = @typeInfo(A).Struct;
@@ -293,7 +290,7 @@ test "Type.Struct" {
     try testing.expectEqual(@as(?*const anyopaque, null), infoB.fields[0].default_value);
     try testing.expectEqualSlices(u8, "y", infoB.fields[1].name);
     try testing.expectEqual(u32, infoB.fields[1].field_type);
-    try testing.expectEqual(@as(u32, 5), @ptrCast(*const u32, infoB.fields[1].default_value.?).*);
+    try testing.expectEqual(@as(u32, 5), @ptrCast(*align(1) const u32, infoB.fields[1].default_value.?).*);
     try testing.expectEqual(@as(usize, 0), infoB.decls.len);
     try testing.expectEqual(@as(bool, false), infoB.is_tuple);
 
@@ -305,7 +302,7 @@ test "Type.Struct" {
     try testing.expectEqual(@as(u8, 3), @ptrCast(*const u8, infoC.fields[0].default_value.?).*);
     try testing.expectEqualSlices(u8, "y", infoC.fields[1].name);
     try testing.expectEqual(u32, infoC.fields[1].field_type);
-    try testing.expectEqual(@as(u32, 5), @ptrCast(*const u32, infoC.fields[1].default_value.?).*);
+    try testing.expectEqual(@as(u32, 5), @ptrCast(*align(1) const u32, infoC.fields[1].default_value.?).*);
     try testing.expectEqual(@as(usize, 0), infoC.decls.len);
     try testing.expectEqual(@as(bool, false), infoC.is_tuple);
 
@@ -351,7 +348,6 @@ test "Type.Struct" {
 }
 
 test "Type.Enum" {
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
@@ -373,12 +369,7 @@ test "Type.Enum" {
     try testing.expectEqual(@as(u8, 5), @enumToInt(Foo.b));
     const Bar = @Type(.{
         .Enum = .{
-            // stage2 only has auto layouts
-            .layout = if (builtin.zig_backend == .stage1)
-                .Extern
-            else
-                .Auto,
-
+            .layout = .Auto,
             .tag_type = u32,
             .fields = &.{
                 .{ .name = "a", .value = 1 },
@@ -396,7 +387,6 @@ test "Type.Enum" {
 
 test "Type.Union" {
     if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
@@ -462,7 +452,6 @@ test "Type.Union" {
 }
 
 test "Type.Union from Type.Enum" {
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
 
     const Tag = @Type(.{
@@ -486,12 +475,10 @@ test "Type.Union from Type.Enum" {
             .decls = &.{},
         },
     });
-    _ = T;
     _ = @typeInfo(T).Union;
 }
 
 test "Type.Union from regular enum" {
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
 
     const E = enum { working_as_expected };
@@ -505,13 +492,14 @@ test "Type.Union from regular enum" {
             .decls = &.{},
         },
     });
-    _ = T;
     _ = @typeInfo(T).Union;
 }
 
 test "Type.Fn" {
-    if (builtin.zig_backend == .stage1) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
+    if (true) {
+        // https://github.com/ziglang/zig/issues/12360
+        return error.SkipZigTest;
+    }
 
     const some_opaque = opaque {};
     const some_ptr = *some_opaque;
@@ -538,5 +526,27 @@ test "Type.Fn" {
         const fn_info = @typeInfo(T);
         const fn_type = @Type(fn_info);
         try std.testing.expectEqual(T, fn_type);
+    }
+}
+
+test "reified struct field name from optional payload" {
+    comptime {
+        const m_name: ?[1]u8 = "a".*;
+        if (m_name) |*name| {
+            const T = @Type(.{ .Struct = .{
+                .layout = .Auto,
+                .fields = &.{.{
+                    .name = name,
+                    .field_type = u8,
+                    .default_value = null,
+                    .is_comptime = false,
+                    .alignment = 1,
+                }},
+                .decls = &.{},
+                .is_tuple = false,
+            } });
+            var t: T = .{ .a = 123 };
+            try std.testing.expect(t.a == 123);
+        }
     }
 }

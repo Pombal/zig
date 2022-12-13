@@ -700,7 +700,7 @@ pub const PROT = struct {
 /// The format of the relocation entries referenced by the reloff and nreloc
 /// fields of the section structure for mach object files is described in the
 /// header file <reloc.h>.
-pub const @"section" = extern struct {
+pub const section = extern struct {
     /// name of this section
     sectname: [16]u8,
 
@@ -794,8 +794,13 @@ pub const section_64 = extern struct {
     }
 
     pub fn isZerofill(sect: section_64) bool {
-        const tt = sect.@"type"();
+        const tt = sect.type();
         return tt == S_ZEROFILL or tt == S_GB_ZEROFILL or tt == S_THREAD_LOCAL_ZEROFILL;
+    }
+
+    pub fn isSymbolStubs(sect: section_64) bool {
+        const tt = sect.type();
+        return tt == S_SYMBOL_STUBS;
     }
 
     pub fn isDebug(sect: section_64) bool {
@@ -1196,7 +1201,7 @@ pub const MH_DEAD_STRIPPABLE_DYLIB = 0x400000;
 /// Contains a section of type S_THREAD_LOCAL_VARIABLES
 pub const MH_HAS_TLV_DESCRIPTORS = 0x800000;
 
-/// When this bit is set, the OS will run the main executable with a non-executable heap even on platforms (e.g. i386) that don't require it. Only used in MH_EXECUTE filetypes.
+/// When this bit is set, the OS will run the main executable with a non-executable heap even on platforms (e.g. x86) that don't require it. Only used in MH_EXECUTE filetypes.
 pub const MH_NO_HEAP_EXECUTION = 0x1000000;
 
 /// The code was linked for use in an application extension.
@@ -1439,7 +1444,7 @@ pub const S_ATTR_NO_DEAD_STRIP = 0x10000000;
 /// blocks are live if they reference live blocks
 pub const S_ATTR_LIVE_SUPPORT = 0x8000000;
 
-/// used with i386 code stubs written on by dyld
+/// used with x86 code stubs written on by dyld
 pub const S_ATTR_SELF_MODIFYING_CODE = 0x4000000;
 
 /// section contains some machine instructions
@@ -1799,7 +1804,7 @@ pub const CodeDirectory = extern struct {
 /// Structure of an embedded-signature SuperBlob
 pub const BlobIndex = extern struct {
     /// Type of entry
-    @"type": u32,
+    type: u32,
 
     /// Offset of entry
     offset: u32,

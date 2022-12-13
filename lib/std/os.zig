@@ -50,7 +50,9 @@ comptime {
 test {
     _ = darwin;
     _ = linux;
-    _ = uefi;
+    if (builtin.os.tag == .uefi) {
+        _ = uefi;
+    }
     _ = wasi;
     _ = windows;
     _ = posix_spawn;
@@ -366,6 +368,56 @@ pub fn fchown(fd: fd_t, owner: ?uid_t, group: ?gid_t) FChownError!void {
     }
 }
 
+pub const RebootError = error{
+    PermissionDenied,
+} || UnexpectedError;
+
+pub const RebootCommand = switch (builtin.os.tag) {
+    .linux => union(linux.LINUX_REBOOT.CMD) {
+        RESTART: void,
+        HALT: void,
+        CAD_ON: void,
+        CAD_OFF: void,
+        POWER_OFF: void,
+        RESTART2: [*:0]const u8,
+        SW_SUSPEND: void,
+        KEXEC: void,
+    },
+    else => @compileError("Unsupported OS"),
+};
+
+pub fn reboot(cmd: RebootCommand) RebootError!void {
+    switch (builtin.os.tag) {
+        .linux => {
+            switch (system.getErrno(linux.reboot(
+                .MAGIC1,
+                .MAGIC2,
+                @as(linux.LINUX_REBOOT.CMD, cmd),
+                switch (cmd) {
+                    .RESTART2 => |s| s,
+                    else => null,
+                },
+            ))) {
+                .SUCCESS => {},
+                .PERM => return error.PermissionDenied,
+                else => |err| return std.os.unexpectedErrno(err),
+            }
+            switch (cmd) {
+                .CAD_OFF => {},
+                .CAD_ON => {},
+                .SW_SUSPEND => {},
+
+                .HALT => unreachable,
+                .KEXEC => unreachable,
+                .POWER_OFF => unreachable,
+                .RESTART => unreachable,
+                .RESTART2 => unreachable,
+            }
+        },
+        else => @compileError("Unsupported OS"),
+    }
+}
+
 pub const GetRandomError = OpenError;
 
 /// Obtain a series of random bytes. These bytes can be used to seed user-space
@@ -475,10 +527,9 @@ pub fn abort() noreturn {
 
         // Install default handler so that the tkill below will terminate.
         const sigact = Sigaction{
-            .handler = .{ .sigaction = SIG.DFL },
-            .mask = undefined,
-            .flags = undefined,
-            .restorer = undefined,
+            .handler = .{ .handler = SIG.DFL },
+            .mask = empty_sigset,
+            .flags = 0,
         };
         sigaction(SIG.ABRT, &sigact, null) catch |err| switch (err) {
             error.OperationNotSupported => unreachable,
@@ -501,9 +552,15 @@ pub fn abort() noreturn {
         @breakpoint();
         exit(1);
     }
+    if (builtin.os.tag == .cuda) {
+        // TODO: introduce `@trap` instead of abusing https://github.com/ziglang/zig/issues/2291
+        @"llvm.trap"();
+    }
 
     system.abort();
 }
+
+extern fn @"llvm.trap"() noreturn;
 
 pub const RaiseError = UnexpectedError;
 
@@ -603,6 +660,7 @@ pub const ReadError = error{
 /// The limit on Darwin is `0x7fffffff`, trying to read more than that returns EINVAL.
 /// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
+    if (buf.len == 0) return 0;
     if (builtin.os.tag == .windows) {
         return windows.ReadFile(fd, buf, null, std.io.default_mode);
     }
@@ -637,7 +695,7 @@ pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
         .macos, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(isize),
     };
-    const adjusted_len = @minimum(max_count, buf.len);
+    const adjusted_len = @min(max_count, buf.len);
 
     while (true) {
         const rc = system.read(fd, buf.ptr, adjusted_len);
@@ -730,6 +788,7 @@ pub const PReadError = ReadError || error{Unseekable};
 /// The limit on Darwin is `0x7fffffff`, trying to read more than that returns EINVAL.
 /// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
+    if (buf.len == 0) return 0;
     if (builtin.os.tag == .windows) {
         return windows.ReadFile(fd, buf, offset, std.io.default_mode);
     }
@@ -766,7 +825,7 @@ pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
         .macos, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(isize),
     };
-    const adjusted_len = @minimum(max_count, buf.len);
+    const adjusted_len = @min(max_count, buf.len);
 
     const pread_sym = if (builtin.os.tag == .linux and builtin.link_libc)
         system.pread64
@@ -953,6 +1012,10 @@ pub const WriteError = error{
     OperationAborted,
     NotOpenForWriting,
 
+    /// The process cannot access the file because another process has locked
+    /// a portion of the file. Windows-only.
+    LockViolation,
+
     /// This error occurs when no global event loop is configured,
     /// and reading from the file descriptor would block.
     WouldBlock,
@@ -984,6 +1047,7 @@ pub const WriteError = error{
 /// The limit on Darwin is `0x7fffffff`, trying to read more than that returns EINVAL.
 /// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
+    if (bytes.len == 0) return 0;
     if (builtin.os.tag == .windows) {
         return windows.WriteFile(fd, bytes, null, std.io.default_mode);
     }
@@ -1018,7 +1082,7 @@ pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
         .macos, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(isize),
     };
-    const adjusted_len = @minimum(max_count, bytes.len);
+    const adjusted_len = @min(max_count, bytes.len);
 
     while (true) {
         const rc = system.write(fd, bytes.ptr, adjusted_len);
@@ -1136,6 +1200,7 @@ pub const PWriteError = WriteError || error{Unseekable};
 /// The limit on Darwin is `0x7fffffff`, trying to write more than that returns EINVAL.
 /// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
+    if (bytes.len == 0) return 0;
     if (builtin.os.tag == .windows) {
         return windows.WriteFile(fd, bytes, offset, std.io.default_mode);
     }
@@ -1174,7 +1239,7 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
         .macos, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(isize),
     };
-    const adjusted_len = @minimum(max_count, bytes.len);
+    const adjusted_len = @min(max_count, bytes.len);
 
     const pwrite_sym = if (builtin.os.tag == .linux and builtin.link_libc)
         system.pwrite64
@@ -1460,76 +1525,6 @@ pub fn openW(file_path_w: []const u16, flags: u32, perm: mode_t) OpenError!fd_t 
     };
 }
 
-var wasi_cwd = if (builtin.os.tag == .wasi and !builtin.link_libc) struct {
-    // List of available Preopens
-    preopens: ?PreopenList = null,
-    // Memory buffer for storing the relative portion of the CWD
-    path_buffer: [MAX_PATH_BYTES]u8 = undefined,
-    // The absolute path associated with the current working directory
-    cwd: []const u8 = "/",
-}{} else undefined;
-
-/// Initialize the available Preopen list on WASI and set the CWD to `cwd_init`.
-/// Note that `cwd_init` corresponds to a Preopen directory, not necessarily
-/// a POSIX path. For example, "." matches a Preopen provided with `--dir=.`
-///
-/// This must be called before using any relative or absolute paths with `std.os`
-/// functions, if you are on WASI without linking libc.
-///
-/// The current working directory is initialized to `cwd_root`, and `cwd_root`
-/// is inserted as a prefix for any Preopens whose dir begins with "."
-///   For example:
-///      "./foo/bar" - canonicalizes to -> "{cwd_root}/foo/bar"
-///      "foo/bar"   - canonicalizes to -> "/foo/bar"
-///      "/foo/bar"  - canonicalizes to -> "/foo/bar"
-///
-/// `cwd_root` must be an absolute path. For initialization behavior similar to
-/// wasi-libc, use "/" as the `cwd_root`
-///
-/// `alloc` must not be a temporary or leak-detecting allocator, since `std.os`
-/// retains ownership of allocations internally and may never call free().
-pub fn initPreopensWasi(alloc: Allocator, cwd_root: []const u8) !void {
-    if (builtin.os.tag == .wasi) {
-        if (!builtin.link_libc) {
-            var preopen_list = PreopenList.init(alloc);
-            errdefer preopen_list.deinit();
-            try preopen_list.populate(cwd_root);
-
-            var path_alloc = std.heap.FixedBufferAllocator.init(&wasi_cwd.path_buffer);
-            wasi_cwd.cwd = try path_alloc.allocator().dupe(u8, cwd_root);
-
-            if (wasi_cwd.preopens) |preopens| preopens.deinit();
-            wasi_cwd.preopens = preopen_list;
-        } else {
-            // wasi-libc defaults to an effective CWD root of "/"
-            if (!mem.eql(u8, cwd_root, "/")) return error.UnsupportedDirectory;
-        }
-    }
-}
-
-/// Resolve a relative or absolute path to an handle (`fd_t`) and a relative subpath.
-///
-/// For absolute paths, this automatically searches among available Preopens to find
-/// a match. For relative paths, it uses the "emulated" CWD.
-/// Automatically looks up the correct Preopen corresponding to the provided path.
-pub fn resolvePathWasi(path: []const u8, out_buffer: *[MAX_PATH_BYTES]u8) !RelativePathWasi {
-    var allocator = std.heap.FixedBufferAllocator.init(out_buffer);
-    var alloc = allocator.allocator();
-
-    const abs_path = fs.path.resolve(alloc, &.{ wasi_cwd.cwd, path }) catch return error.NameTooLong;
-    const preopen_uri = wasi_cwd.preopens.?.findContaining(.{ .Dir = abs_path });
-
-    if (preopen_uri) |po| {
-        return RelativePathWasi{
-            .dir_fd = po.base.fd,
-            .relative_path = po.relative_path,
-        };
-    } else {
-        // No matching preopen found
-        return error.AccessDenied;
-    }
-}
-
 /// Open and possibly create a file. Keeps trying if it gets interrupted.
 /// `file_path` is relative to the open directory handle `dir_fd`.
 /// See also `openatZ`.
@@ -1539,22 +1534,23 @@ pub fn openat(dir_fd: fd_t, file_path: []const u8, flags: u32, mode: mode_t) Ope
         return openatW(dir_fd, file_path_w.span(), flags, mode);
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
         // `mode` is ignored on WASI, which does not support unix-style file permissions
-        const fd = if (dir_fd == wasi.AT.FDCWD or fs.path.isAbsolute(file_path)) blk: {
-            // Resolve absolute or CWD-relative paths to a path within a Preopen
-            var path_buf: [MAX_PATH_BYTES]u8 = undefined;
-            const path = try resolvePathWasi(file_path, &path_buf);
-
-            const opts = try openOptionsFromFlagsWasi(path.dir_fd, flags);
-            break :blk try openatWasi(path.dir_fd, path.relative_path, opts.lookup_flags, opts.oflags, opts.fs_flags, opts.fs_rights_base, opts.fs_rights_inheriting);
-        } else blk: {
-            const opts = try openOptionsFromFlagsWasi(dir_fd, flags);
-            break :blk try openatWasi(dir_fd, file_path, opts.lookup_flags, opts.oflags, opts.fs_flags, opts.fs_rights_base, opts.fs_rights_inheriting);
-        };
+        const opts = try openOptionsFromFlagsWasi(dir_fd, flags);
+        const fd = try openatWasi(
+            dir_fd,
+            file_path,
+            opts.lookup_flags,
+            opts.oflags,
+            opts.fs_flags,
+            opts.fs_rights_base,
+            opts.fs_rights_inheriting,
+        );
         errdefer close(fd);
 
-        const info = try fstat(fd);
-        if (flags & O.WRONLY != 0 and info.filetype == .DIRECTORY)
-            return error.IsDir;
+        if (flags & O.WRONLY != 0) {
+            const info = try fstat(fd);
+            if (info.filetype == .DIRECTORY)
+                return error.IsDir;
+        }
 
         return fd;
     }
@@ -1612,7 +1608,15 @@ fn openOptionsFromFlagsWasi(fd: fd_t, oflag: u32) OpenError!WasiOpenOptions {
 }
 
 /// Open and possibly create a file in WASI.
-pub fn openatWasi(dir_fd: fd_t, file_path: []const u8, lookup_flags: lookupflags_t, oflags: oflags_t, fdflags: fdflags_t, base: rights_t, inheriting: rights_t) OpenError!fd_t {
+pub fn openatWasi(
+    dir_fd: fd_t,
+    file_path: []const u8,
+    lookup_flags: lookupflags_t,
+    oflags: oflags_t,
+    fdflags: fdflags_t,
+    base: rights_t,
+    inheriting: rights_t,
+) OpenError!fd_t {
     while (true) {
         var fd: fd_t = undefined;
         switch (wasi.path_open(dir_fd, lookup_flags, file_path.ptr, file_path.len, oflags, base, inheriting, fdflags, &fd)) {
@@ -1744,8 +1748,6 @@ pub const ExecveError = error{
     NameTooLong,
 } || UnexpectedError;
 
-/// Like `execve` except the parameters are null-terminated,
-/// matching the syscall API on all targets. This removes the need for an allocator.
 /// This function ignores PATH environment variable. See `execvpeZ` for that.
 pub fn execveZ(
     path: [*:0]const u8,
@@ -1811,7 +1813,7 @@ pub fn execvpeZ_expandArg0(
     var path_buf: [MAX_PATH_BYTES]u8 = undefined;
     var it = mem.tokenize(u8, PATH, ":");
     var seen_eacces = false;
-    var err: ExecveError = undefined;
+    var err: ExecveError = error.FileNotFound;
 
     // In case of expanding arg0 we must put it back if we return with an error.
     const prev_arg0 = child_argv[0];
@@ -1843,8 +1845,6 @@ pub fn execvpeZ_expandArg0(
     return err;
 }
 
-/// Like `execvpe` except the parameters are null-terminated,
-/// matching the syscall API on all targets. This removes the need for an allocator.
 /// This function also uses the PATH environment variable to get the full path to the executable.
 /// If `file` is an absolute path, this is the same as `execveZ`.
 pub fn execvpeZ(
@@ -1974,7 +1974,7 @@ pub fn getcwd(out_buffer: []u8) GetCwdError![]u8 {
     if (builtin.os.tag == .windows) {
         return windows.GetCurrentDirectory(out_buffer);
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        const path = wasi_cwd.cwd;
+        const path = ".";
         if (out_buffer.len < path.len) return error.NameTooLong;
         std.mem.copy(u8, out_buffer, path);
         return out_buffer[0..path.len];
@@ -2036,7 +2036,7 @@ pub fn symlinkZ(target_path: [*:0]const u8, sym_link_path: [*:0]const u8) SymLin
     if (builtin.os.tag == .windows) {
         @compileError("symlink is not supported on Windows; use std.os.windows.CreateSymbolicLink instead");
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        return symlink(mem.sliceTo(target_path, 0), mem.sliceTo(sym_link_path, 0));
+        return symlinkatZ(target_path, fs.cwd().fd, sym_link_path);
     }
     switch (errno(system.symlink(target_path, sym_link_path))) {
         .SUCCESS => return,
@@ -2068,12 +2068,6 @@ pub fn symlinkat(target_path: []const u8, newdirfd: fd_t, sym_link_path: []const
     if (builtin.os.tag == .windows) {
         @compileError("symlinkat is not supported on Windows; use std.os.windows.CreateSymbolicLink instead");
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        if (newdirfd == wasi.AT.FDCWD or fs.path.isAbsolute(target_path)) {
-            // Resolve absolute or CWD-relative paths to a path within a Preopen
-            var path_buf: [MAX_PATH_BYTES]u8 = undefined;
-            const path = try resolvePathWasi(sym_link_path, &path_buf);
-            return symlinkatWasi(target_path, path.dir_fd, path.relative_path);
-        }
         return symlinkatWasi(target_path, newdirfd, sym_link_path);
     }
     const target_path_c = try toPosixPath(target_path);
@@ -2088,6 +2082,7 @@ pub fn symlinkatWasi(target_path: []const u8, newdirfd: fd_t, sym_link_path: []c
         .SUCCESS => {},
         .FAULT => unreachable,
         .INVAL => unreachable,
+        .BADF => unreachable,
         .ACCES => return error.AccessDenied,
         .PERM => return error.AccessDenied,
         .DQUOT => return error.DiskQuota,
@@ -2227,25 +2222,8 @@ pub fn linkat(
     flags: i32,
 ) LinkatError!void {
     if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        var resolve_olddir: bool = (olddir == wasi.AT.FDCWD or fs.path.isAbsolute(oldpath));
-        var resolve_newdir: bool = (newdir == wasi.AT.FDCWD or fs.path.isAbsolute(newpath));
-
-        var old: RelativePathWasi = .{ .dir_fd = olddir, .relative_path = oldpath };
-        var new: RelativePathWasi = .{ .dir_fd = newdir, .relative_path = newpath };
-
-        // Resolve absolute or CWD-relative paths to a path within a Preopen
-        if (resolve_olddir or resolve_newdir) {
-            var buf_old: [MAX_PATH_BYTES]u8 = undefined;
-            var buf_new: [MAX_PATH_BYTES]u8 = undefined;
-
-            if (resolve_olddir)
-                old = try resolvePathWasi(oldpath, &buf_old);
-
-            if (resolve_newdir)
-                new = try resolvePathWasi(newpath, &buf_new);
-
-            return linkatWasi(old, new, flags);
-        }
+        const old: RelativePathWasi = .{ .dir_fd = olddir, .relative_path = oldpath };
+        const new: RelativePathWasi = .{ .dir_fd = newdir, .relative_path = newpath };
         return linkatWasi(old, new, flags);
     }
     const old = try toPosixPath(oldpath);
@@ -2366,12 +2344,6 @@ pub fn unlinkat(dirfd: fd_t, file_path: []const u8, flags: u32) UnlinkatError!vo
         const file_path_w = try windows.sliceToPrefixedFileW(file_path);
         return unlinkatW(dirfd, file_path_w.span(), flags);
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        if (dirfd == wasi.AT.FDCWD or fs.path.isAbsolute(file_path)) {
-            // Resolve absolute or CWD-relative paths to a path within a Preopen
-            var path_buf: [MAX_PATH_BYTES]u8 = undefined;
-            const path = try resolvePathWasi(file_path, &path_buf);
-            return unlinkatWasi(path.dir_fd, path.relative_path, flags);
-        }
         return unlinkatWasi(dirfd, file_path, flags);
     } else {
         const file_path_c = try toPosixPath(file_path);
@@ -2540,24 +2512,8 @@ pub fn renameat(
         const new_path_w = try windows.sliceToPrefixedFileW(new_path);
         return renameatW(old_dir_fd, old_path_w.span(), new_dir_fd, new_path_w.span(), windows.TRUE);
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        var resolve_old: bool = (old_dir_fd == wasi.AT.FDCWD or fs.path.isAbsolute(old_path));
-        var resolve_new: bool = (new_dir_fd == wasi.AT.FDCWD or fs.path.isAbsolute(new_path));
-
-        var old: RelativePathWasi = .{ .dir_fd = old_dir_fd, .relative_path = old_path };
-        var new: RelativePathWasi = .{ .dir_fd = new_dir_fd, .relative_path = new_path };
-
-        // Resolve absolute or CWD-relative paths to a path within a Preopen
-        if (resolve_old or resolve_new) {
-            var buf_old: [MAX_PATH_BYTES]u8 = undefined;
-            var buf_new: [MAX_PATH_BYTES]u8 = undefined;
-
-            if (resolve_old)
-                old = try resolvePathWasi(old_path, &buf_old);
-            if (resolve_new)
-                new = try resolvePathWasi(new_path, &buf_new);
-
-            return renameatWasi(old, new);
-        }
+        const old: RelativePathWasi = .{ .dir_fd = old_dir_fd, .relative_path = old_path };
+        const new: RelativePathWasi = .{ .dir_fd = new_dir_fd, .relative_path = new_path };
         return renameatWasi(old, new);
     } else {
         const old_path_c = try toPosixPath(old_path);
@@ -2648,6 +2604,7 @@ pub fn renameatW(
         .creation = windows.FILE_OPEN,
         .io_mode = .blocking,
         .filter = .any, // This function is supposed to rename both files and directories.
+        .follow_symlinks = false,
     }) catch |err| switch (err) {
         error.WouldBlock => unreachable, // Not possible without `.share_access_nonblocking = true`.
         else => |e| return e,
@@ -2697,12 +2654,6 @@ pub fn mkdirat(dir_fd: fd_t, sub_dir_path: []const u8, mode: u32) MakeDirError!v
         const sub_dir_path_w = try windows.sliceToPrefixedFileW(sub_dir_path);
         return mkdiratW(dir_fd, sub_dir_path_w.span(), mode);
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        if (dir_fd == wasi.AT.FDCWD or fs.path.isAbsolute(sub_dir_path)) {
-            // Resolve absolute or CWD-relative paths to a path within a Preopen
-            var path_buf: [MAX_PATH_BYTES]u8 = undefined;
-            const path = try resolvePathWasi(sub_dir_path, &path_buf);
-            return mkdiratWasi(path.dir_fd, path.relative_path, mode);
-        }
         return mkdiratWasi(dir_fd, sub_dir_path, mode);
     } else {
         const sub_dir_path_c = try toPosixPath(sub_dir_path);
@@ -2939,18 +2890,7 @@ pub const ChangeCurDirError = error{
 /// `dir_path` is recommended to be a UTF-8 encoded string.
 pub fn chdir(dir_path: []const u8) ChangeCurDirError!void {
     if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        var buf: [MAX_PATH_BYTES]u8 = undefined;
-        var alloc = std.heap.FixedBufferAllocator.init(&buf);
-        const path = try fs.resolve(alloc.allocator(), &.{ wasi_cwd.cwd, dir_path });
-
-        const dirinfo = try fstatat(AT.FDCWD, path, 0);
-        if (dirinfo.filetype != .DIRECTORY) {
-            return error.NotDir;
-        }
-
-        var cwd_alloc = std.heap.FixedBufferAllocator.init(&wasi_cwd.path_buffer);
-        wasi_cwd.cwd = try cwd_alloc.allocator().dupe(u8, path);
-        return;
+        @compileError("WASI does not support os.chdir");
     } else if (builtin.os.tag == .windows) {
         var utf16_dir_path: [windows.PATH_MAX_WIDE]u16 = undefined;
         const len = try std.unicode.utf8ToUtf16Le(utf16_dir_path[0..], dir_path);
@@ -3081,12 +3021,6 @@ pub fn readlinkZ(file_path: [*:0]const u8, out_buffer: []u8) ReadLinkError![]u8 
 /// See also `readlinkatWasi`, `realinkatZ` and `realinkatW`.
 pub fn readlinkat(dirfd: fd_t, file_path: []const u8, out_buffer: []u8) ReadLinkError![]u8 {
     if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        if (dirfd == wasi.AT.FDCWD or fs.path.isAbsolute(file_path)) {
-            // Resolve absolute or CWD-relative paths to a path within a Preopen
-            var path_buf: [MAX_PATH_BYTES]u8 = undefined;
-            var path = try resolvePathWasi(file_path, &path_buf);
-            return readlinkatWasi(path.dir_fd, path.relative_path, out_buffer);
-        }
         return readlinkatWasi(dirfd, file_path, out_buffer);
     }
     if (builtin.os.tag == .windows) {
@@ -3228,7 +3162,7 @@ pub fn isatty(handle: fd_t) bool {
     if (builtin.os.tag == .wasi) {
         var statbuf: fdstat_t = undefined;
         const err = system.fd_fdstat_get(handle, &statbuf);
-        if (err != 0) {
+        if (err != .SUCCESS) {
             // errno = err;
             return false;
         }
@@ -3443,6 +3377,9 @@ pub const BindError = error{
     /// A nonexistent interface was requested or the requested address was not local.
     AddressNotAvailable,
 
+    /// The address is not valid for the address family of socket.
+    AddressFamilyNotSupported,
+
     /// Too many symbolic links were encountered in resolving addr.
     SymLinkLoop,
 
@@ -3498,6 +3435,7 @@ pub fn bind(sock: socket_t, addr: *const sockaddr, len: socklen_t) BindError!voi
             .BADF => unreachable, // always a race condition if this error is returned
             .INVAL => unreachable, // invalid parameters
             .NOTSOCK => unreachable, // invalid `sockfd`
+            .AFNOSUPPORT => return error.AddressFamilyNotSupported,
             .ADDRNOTAVAIL => return error.AddressNotAvailable,
             .FAULT => unreachable, // invalid `addr` pointer
             .LOOP => return error.SymLinkLoop,
@@ -3687,7 +3625,7 @@ pub fn accept(
                 else => |err| return unexpectedErrno(err),
             }
         }
-    } else unreachable;
+    };
 
     if (!have_accept4) {
         try setSockFlags(accepted_sock, flags);
@@ -4089,12 +4027,6 @@ pub const FStatAtError = FStatError || error{ NameTooLong, FileNotFound, SymLink
 pub fn fstatat(dirfd: fd_t, pathname: []const u8, flags: u32) FStatAtError!Stat {
     if (builtin.os.tag == .wasi and !builtin.link_libc) {
         const wasi_flags = if (flags & linux.AT.SYMLINK_NOFOLLOW == 0) wasi.LOOKUP_SYMLINK_FOLLOW else 0;
-        if (dirfd == wasi.AT.FDCWD or fs.path.isAbsolute(pathname)) {
-            // Resolve absolute or CWD-relative paths to a path within a Preopen
-            var path_buf: [MAX_PATH_BYTES]u8 = undefined;
-            const path = try resolvePathWasi(pathname, &path_buf);
-            return fstatatWasi(path.dir_fd, path.relative_path, wasi_flags);
-        }
         return fstatatWasi(dirfd, pathname, wasi_flags);
     } else if (builtin.os.tag == .windows) {
         @compileError("fstatat is not yet implemented on Windows");
@@ -4490,12 +4422,6 @@ pub fn faccessat(dirfd: fd_t, path: []const u8, mode: u32, flags: u32) AccessErr
         var resolved = RelativePathWasi{ .dir_fd = dirfd, .relative_path = path };
 
         const file = blk: {
-            if (dirfd == wasi.AT.FDCWD or fs.path.isAbsolute(path)) {
-                // Resolve absolute or CWD-relative paths to a path within a Preopen
-                var path_buf: [MAX_PATH_BYTES]u8 = undefined;
-                resolved = resolvePathWasi(path, &path_buf) catch |err| break :blk @as(FStatAtError!Stat, err);
-                break :blk fstatat(resolved.dir_fd, resolved.relative_path, flags);
-            }
             break :blk fstatat(dirfd, path, flags);
         } catch |err| switch (err) {
             error.AccessDenied => return error.PermissionDenied,
@@ -5081,12 +5007,7 @@ pub fn realpath(pathname: []const u8, out_buffer: *[MAX_PATH_BYTES]u8) RealPathE
         const pathname_w = try windows.sliceToPrefixedFileW(pathname);
         return realpathW(pathname_w.span(), out_buffer);
     } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
-        var alloc = std.heap.FixedBufferAllocator.init(out_buffer);
-
-        // NOTE: This emulation is incomplete. Symbolic links are not
-        //       currently expanded during path canonicalization.
-        const paths = &.{ wasi_cwd.cwd, pathname };
-        return fs.path.resolve(alloc.allocator(), paths) catch error.NameTooLong;
+        @compileError("WASI does not support os.realpath");
     }
     const pathname_c = try toPosixPath(pathname);
     return realpathZ(&pathname_c, out_buffer);
@@ -5443,11 +5364,7 @@ pub fn toPosixPath(file_path: []const u8) ![MAX_PATH_BYTES - 1:0]u8 {
 /// if this happens the fix is to add the error code to the corresponding
 /// switch expression, possibly introduce a new error in the error set, and
 /// send a patch to Zig.
-/// The self-hosted compiler is not fully capable of handle the related code.
-/// Until then, unexpected error tracing is disabled for the self-hosted compiler.
-/// TODO remove this once self-hosted is capable enough to handle printing and
-/// stack trace dumping.
-pub const unexpected_error_tracing = builtin.zig_backend == .stage1 and builtin.mode == .Debug;
+pub const unexpected_error_tracing = builtin.zig_backend == .stage2_llvm and builtin.mode == .Debug;
 
 pub const UnexpectedError = error{
     /// The Operating System returned an undocumented error code.
@@ -5777,7 +5694,10 @@ pub fn sendmsg(
     }
 }
 
-pub const SendToError = SendMsgError;
+pub const SendToError = SendMsgError || error{
+    /// The destination address is not reachable by the bound address.
+    UnreachableAddress,
+};
 
 /// Transmit a message to another socket.
 ///
@@ -5854,7 +5774,7 @@ pub fn sendto(
                 .DESTADDRREQ => unreachable, // The socket is not connection-mode, and no peer address is set.
                 .FAULT => unreachable, // An invalid user space address was specified for an argument.
                 .INTR => continue,
-                .INVAL => unreachable, // Invalid argument passed.
+                .INVAL => return error.UnreachableAddress,
                 .ISCONN => unreachable, // connection-mode socket was connected already but a recipient was specified
                 .MSGSIZE => return error.MessageTooBig,
                 .NOBUFS => return error.SystemResources,
@@ -5911,6 +5831,7 @@ pub fn send(
         error.NetworkUnreachable => unreachable,
         error.AddressNotAvailable => unreachable,
         error.SocketNotConnected => unreachable,
+        error.UnreachableAddress => unreachable,
         else => |e| return e,
     };
 }
@@ -5996,8 +5917,8 @@ pub fn sendfile(
             }
 
             // Here we match BSD behavior, making a zero count value send as many bytes as possible.
-            const adjusted_count_tmp = if (in_len == 0) max_count else @minimum(in_len, @as(size_t, max_count));
-            // TODO we should not need this cast; improve return type of @minimum
+            const adjusted_count_tmp = if (in_len == 0) max_count else @min(in_len, @as(size_t, max_count));
+            // TODO we should not need this cast; improve return type of @min
             const adjusted_count = @intCast(usize, adjusted_count_tmp);
 
             const sendfile_sym = if (builtin.link_libc)
@@ -6081,7 +6002,7 @@ pub fn sendfile(
                 hdtr = &hdtr_data;
             }
 
-            const adjusted_count = @minimum(in_len, max_count);
+            const adjusted_count = @min(in_len, max_count);
 
             while (true) {
                 var sbytes: off_t = undefined;
@@ -6160,8 +6081,8 @@ pub fn sendfile(
                 hdtr = &hdtr_data;
             }
 
-            const adjusted_count_temporary = @minimum(in_len, @as(u63, max_count));
-            // TODO we should not need this int cast; improve the return type of `@minimum`
+            const adjusted_count_temporary = @min(in_len, @as(u63, max_count));
+            // TODO we should not need this int cast; improve the return type of `@min`
             const adjusted_count = @intCast(u63, adjusted_count_temporary);
 
             while (true) {
@@ -6216,8 +6137,8 @@ pub fn sendfile(
     rw: {
         var buf: [8 * 4096]u8 = undefined;
         // Here we match BSD behavior, making a zero count value send as many bytes as possible.
-        const adjusted_count_tmp = if (in_len == 0) buf.len else @minimum(buf.len, in_len);
-        // TODO we should not need this cast; improve return type of @minimum
+        const adjusted_count_tmp = if (in_len == 0) buf.len else @min(buf.len, in_len);
+        // TODO we should not need this cast; improve return type of @min
         const adjusted_count = @intCast(usize, adjusted_count_tmp);
         const amt_read = try pread(in_fd, buf[0..adjusted_count], in_offset);
         if (amt_read == 0) {
@@ -6251,7 +6172,8 @@ pub const CopyFileRangeError = error{
     NoSpaceLeft,
     Unseekable,
     PermissionDenied,
-    FileBusy,
+    SwapFile,
+    CorruptedData,
 } || PReadError || PWriteError || UnexpectedError;
 
 var has_copy_file_range_syscall = std.atomic.Atomic(bool).init(true);
@@ -6277,49 +6199,61 @@ var has_copy_file_range_syscall = std.atomic.Atomic(bool).init(true);
 ///
 /// These systems support in-kernel data copying:
 /// * Linux 4.5 (cross-filesystem 5.3)
+/// * FreeBSD 13.0
 ///
 /// Other systems fall back to calling `pread` / `pwrite`.
 ///
-/// Maximum offsets on Linux are `math.maxInt(i64)`.
+/// Maximum offsets on Linux and FreeBSD are `math.maxInt(i64)`.
 pub fn copy_file_range(fd_in: fd_t, off_in: u64, fd_out: fd_t, off_out: u64, len: usize, flags: u32) CopyFileRangeError!usize {
-    const call_cfr = comptime if (builtin.os.tag == .wasi)
-        // WASI-libc doesn't have copy_file_range.
-        false
-    else if (builtin.link_libc)
-        std.c.versionCheck(.{ .major = 2, .minor = 27, .patch = 0 }).ok
-    else
-        builtin.os.isAtLeast(.linux, .{ .major = 4, .minor = 5 }) orelse true;
-
-    if (call_cfr and has_copy_file_range_syscall.load(.Monotonic)) {
+    if ((comptime builtin.os.isAtLeast(.freebsd, .{ .major = 13, .minor = 0 }) orelse false) or
+        ((comptime builtin.os.isAtLeast(.linux, .{ .major = 4, .minor = 5 }) orelse false and
+        std.c.versionCheck(.{ .major = 2, .minor = 27, .patch = 0 }).ok) and
+        has_copy_file_range_syscall.load(.Monotonic)))
+    {
         var off_in_copy = @bitCast(i64, off_in);
         var off_out_copy = @bitCast(i64, off_out);
 
-        const rc = system.copy_file_range(fd_in, &off_in_copy, fd_out, &off_out_copy, len, flags);
-        switch (system.getErrno(rc)) {
-            .SUCCESS => return @intCast(usize, rc),
-            .BADF => return error.FilesOpenedWithWrongFlags,
-            .FBIG => return error.FileTooBig,
-            .IO => return error.InputOutput,
-            .ISDIR => return error.IsDir,
-            .NOMEM => return error.OutOfMemory,
-            .NOSPC => return error.NoSpaceLeft,
-            .OVERFLOW => return error.Unseekable,
-            .PERM => return error.PermissionDenied,
-            .TXTBSY => return error.FileBusy,
-            // these may not be regular files, try fallback
-            .INVAL => {},
-            // support for cross-filesystem copy added in Linux 5.3, use fallback
-            .XDEV => {},
-            // syscall added in Linux 4.5, use fallback
-            .NOSYS => {
-                has_copy_file_range_syscall.store(false, .Monotonic);
-            },
-            else => |err| return unexpectedErrno(err),
+        while (true) {
+            const rc = system.copy_file_range(fd_in, &off_in_copy, fd_out, &off_out_copy, len, flags);
+            if (builtin.os.tag == .freebsd) {
+                switch (system.getErrno(rc)) {
+                    .SUCCESS => return @intCast(usize, rc),
+                    .BADF => return error.FilesOpenedWithWrongFlags,
+                    .FBIG => return error.FileTooBig,
+                    .IO => return error.InputOutput,
+                    .ISDIR => return error.IsDir,
+                    .NOSPC => return error.NoSpaceLeft,
+                    .INVAL => break, // these may not be regular files, try fallback
+                    .INTEGRITY => return error.CorruptedData,
+                    .INTR => continue,
+                    else => |err| return unexpectedErrno(err),
+                }
+            } else { // assume linux
+                switch (system.getErrno(rc)) {
+                    .SUCCESS => return @intCast(usize, rc),
+                    .BADF => return error.FilesOpenedWithWrongFlags,
+                    .FBIG => return error.FileTooBig,
+                    .IO => return error.InputOutput,
+                    .ISDIR => return error.IsDir,
+                    .NOSPC => return error.NoSpaceLeft,
+                    .INVAL => break, // these may not be regular files, try fallback
+                    .NOMEM => return error.OutOfMemory,
+                    .OVERFLOW => return error.Unseekable,
+                    .PERM => return error.PermissionDenied,
+                    .TXTBSY => return error.SwapFile,
+                    .XDEV => break, // support for cross-filesystem copy added in Linux 5.3, use fallback
+                    .NOSYS => { // syscall added in Linux 4.5, use fallback
+                        has_copy_file_range_syscall.store(false, .Monotonic);
+                        break;
+                    },
+                    else => |err| return unexpectedErrno(err),
+                }
+            }
         }
     }
 
     var buf: [8 * 4096]u8 = undefined;
-    const adjusted_count = @minimum(buf.len, len);
+    const adjusted_count = @min(buf.len, len);
     const amt_read = try pread(fd_in, buf[0..adjusted_count], off_in);
     // TODO without @as the line below fails to compile for wasm32-wasi:
     // error: integer value 0 cannot be coerced to type 'os.PWriteError!usize'
@@ -6483,7 +6417,7 @@ pub fn dn_expand(
     const end = msg.ptr + msg.len;
     if (p == end or exp_dn.len == 0) return error.InvalidDnsPacket;
     var dest = exp_dn.ptr;
-    const dend = dest + @minimum(exp_dn.len, 254);
+    const dend = dest + @min(exp_dn.len, 254);
     // detect reference loop using an iteration counter
     var i: usize = 0;
     while (i < msg.len) : (i += 2) {
@@ -6538,6 +6472,7 @@ pub const SetSockOptError = error{
     NetworkSubsystemFailed,
     FileDescriptorNotASocket,
     SocketNotBound,
+    NoDevice,
 } || UnexpectedError;
 
 /// Set a socket's options.
@@ -6568,6 +6503,7 @@ pub fn setsockopt(fd: socket_t, level: u32, optname: u32, opt: []const u8) SetSo
             .NOMEM => return error.SystemResources,
             .NOBUFS => return error.SystemResources,
             .PERM => return error.PermissionDenied,
+            .NODEV => return error.NoDevice,
             else => |err| return unexpectedErrno(err),
         }
     }

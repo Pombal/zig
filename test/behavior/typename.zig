@@ -12,16 +12,10 @@ const expectStringStartsWith = std.testing.expectStringStartsWith;
 // failures.
 
 test "anon fn param" {
-    if (builtin.zig_backend == .stage1) {
-        // stage1 uses line/column for the names but we're moving away from that for
-        // incremental compilation purposes.
-        return error.SkipZigTest;
-    }
-
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     // https://github.com/ziglang/zig/issues/9339
     try expectEqualStringsIgnoreDigits(
@@ -44,16 +38,10 @@ test "anon fn param" {
 }
 
 test "anon field init" {
-    if (builtin.zig_backend == .stage1) {
-        // stage1 uses line/column for the names but we're moving away from that for
-        // incremental compilation purposes.
-        return error.SkipZigTest;
-    }
-
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const Foo = .{
         .T1 = struct {},
@@ -76,10 +64,10 @@ test "anon field init" {
 }
 
 test "basic" {
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     try expectEqualStrings(@typeName(i64), "i64");
     try expectEqualStrings(@typeName(*usize), "*usize");
@@ -87,15 +75,10 @@ test "basic" {
 }
 
 test "top level decl" {
-    if (builtin.zig_backend == .stage1) {
-        // stage1 fails to return fully qualified namespaces.
-        return error.SkipZigTest;
-    }
-
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     try expectEqualStrings(
         "behavior.typename.A_Struct",
@@ -122,7 +105,7 @@ test "top level decl" {
     );
     // generic fn
     try expectEqualStrings(
-        "fn(type) type",
+        "fn(comptime type) type",
         @typeName(@TypeOf(TypeFromFn)),
     );
 }
@@ -142,10 +125,10 @@ const B = struct {
 };
 
 test "fn param" {
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     // https://github.com/ziglang/zig/issues/675
     try expectEqualStrings(
@@ -213,15 +196,10 @@ pub fn expectEqualStringsIgnoreDigits(expected: []const u8, actual: []const u8) 
 }
 
 test "local variable" {
-    if (builtin.zig_backend == .stage1) {
-        // stage1 fails to return fully qualified namespaces.
-        return error.SkipZigTest;
-    }
-
-    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const Foo = struct { a: u32 };
     const Bar = union { a: u32 };
@@ -234,4 +212,33 @@ test "local variable" {
     try expectEqualStrings("behavior.typename.test.local variable.Baz", @typeName(Baz));
     try expectEqualStrings("behavior.typename.test.local variable.Qux", @typeName(Qux));
     try expectEqualStrings("behavior.typename.test.local variable.Quux", @typeName(Quux));
+}
+
+test "comptime parameters not converted to anytype in function type" {
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
+
+    const T = fn (fn (type) void, void) void;
+    try expectEqualStrings("fn(comptime fn(comptime type) void, void) void", @typeName(T));
+}
+
+test "anon name strategy used in sub expression" {
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
+
+    const S = struct {
+        fn getTheName() []const u8 {
+            return struct {
+                const name = @typeName(@This());
+            }.name;
+        }
+    };
+    try expectEqualStringsIgnoreDigits(
+        "behavior.typename.test.anon name strategy used in sub expression.S.getTheName__struct_0",
+        S.getTheName(),
+    );
 }

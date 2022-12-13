@@ -47,7 +47,14 @@ pub fn ValidationAllocator(comptime T: type) type {
         }
 
         pub fn allocator(self: *Self) Allocator {
-            return Allocator.init(self, alloc, resize, free);
+            return .{
+                .ptr = self,
+                .vtable = &.{
+                    .alloc = alloc,
+                    .resize = resize,
+                    .free = free,
+                },
+            };
         }
 
         fn getUnderlyingAllocatorPtr(self: *Self) Allocator {
@@ -56,72 +63,48 @@ pub fn ValidationAllocator(comptime T: type) type {
         }
 
         pub fn alloc(
-            self: *Self,
+            ctx: *anyopaque,
             n: usize,
-            ptr_align: u29,
-            len_align: u29,
+            log2_ptr_align: u8,
             ret_addr: usize,
-        ) Allocator.Error![]u8 {
+        ) ?[*]u8 {
             assert(n > 0);
-            assert(mem.isValidAlign(ptr_align));
-            if (len_align != 0) {
-                assert(mem.isAlignedAnyAlign(n, len_align));
-                assert(n >= len_align);
-            }
-
+            const self = @ptrCast(*Self, @alignCast(@alignOf(Self), ctx));
             const underlying = self.getUnderlyingAllocatorPtr();
-            const result = try underlying.rawAlloc(n, ptr_align, len_align, ret_addr);
-            assert(mem.isAligned(@ptrToInt(result.ptr), ptr_align));
-            if (len_align == 0) {
-                assert(result.len == n);
-            } else {
-                assert(result.len >= n);
-                assert(mem.isAlignedAnyAlign(result.len, len_align));
-            }
+            const result = underlying.rawAlloc(n, log2_ptr_align, ret_addr) orelse
+                return null;
+            assert(mem.isAlignedLog2(@ptrToInt(result), log2_ptr_align));
             return result;
         }
 
         pub fn resize(
-            self: *Self,
+            ctx: *anyopaque,
             buf: []u8,
-            buf_align: u29,
+            log2_buf_align: u8,
             new_len: usize,
-            len_align: u29,
             ret_addr: usize,
-        ) ?usize {
+        ) bool {
+            const self = @ptrCast(*Self, @alignCast(@alignOf(Self), ctx));
             assert(buf.len > 0);
-            if (len_align != 0) {
-                assert(mem.isAlignedAnyAlign(new_len, len_align));
-                assert(new_len >= len_align);
-            }
             const underlying = self.getUnderlyingAllocatorPtr();
-            const result = underlying.rawResize(buf, buf_align, new_len, len_align, ret_addr) orelse return null;
-            if (len_align == 0) {
-                assert(result == new_len);
-            } else {
-                assert(result >= new_len);
-                assert(mem.isAlignedAnyAlign(result, len_align));
-            }
-            return result;
+            return underlying.rawResize(buf, log2_buf_align, new_len, ret_addr);
         }
 
         pub fn free(
-            self: *Self,
+            ctx: *anyopaque,
             buf: []u8,
-            buf_align: u29,
+            log2_buf_align: u8,
             ret_addr: usize,
         ) void {
-            _ = self;
-            _ = buf_align;
+            _ = ctx;
+            _ = log2_buf_align;
             _ = ret_addr;
             assert(buf.len > 0);
         }
 
-        pub usingnamespace if (T == Allocator or !@hasDecl(T, "reset")) struct {} else struct {
-            pub fn reset(self: *Self) void {
-                self.underlying_allocator.reset();
-            }
-        };
+        pub fn reset(self: *Self) void {
+            self.underlying_allocator.reset();
+        }
     };
 }
 
@@ -151,16 +134,15 @@ const fail_allocator = Allocator{
 
 const failAllocator_vtable = Allocator.VTable{
     .alloc = failAllocatorAlloc,
-    .resize = Allocator.NoResize(anyopaque).noResize,
-    .free = Allocator.NoOpFree(anyopaque).noOpFree,
+    .resize = Allocator.noResize,
+    .free = Allocator.noFree,
 };
 
-fn failAllocatorAlloc(_: *anyopaque, n: usize, alignment: u29, len_align: u29, ra: usize) Allocator.Error![]u8 {
+fn failAllocatorAlloc(_: *anyopaque, n: usize, log2_alignment: u8, ra: usize) ?[*]u8 {
     _ = n;
-    _ = alignment;
-    _ = len_align;
+    _ = log2_alignment;
     _ = ra;
-    return error.OutOfMemory;
+    return null;
 }
 
 test "Allocator basics" {
@@ -188,7 +170,8 @@ test "Allocator.resize" {
         defer testing.allocator.free(values);
 
         for (values) |*v, i| v.* = @intCast(T, i);
-        values = testing.allocator.resize(values, values.len + 10) orelse return error.OutOfMemory;
+        if (!testing.allocator.resize(values, values.len + 10)) return error.OutOfMemory;
+        values = values.ptr[0 .. values.len + 10];
         try testing.expect(values.len == 110);
     }
 
@@ -203,7 +186,8 @@ test "Allocator.resize" {
         defer testing.allocator.free(values);
 
         for (values) |*v, i| v.* = @intToFloat(T, i);
-        values = testing.allocator.resize(values, values.len + 10) orelse return error.OutOfMemory;
+        if (!testing.allocator.resize(values, values.len + 10)) return error.OutOfMemory;
+        values = values.ptr[0 .. values.len + 10];
         try testing.expect(values.len == 110);
     }
 }
@@ -267,7 +251,7 @@ pub fn zeroes(comptime T: type) T {
             return null;
         },
         .Struct => |struct_info| {
-            if (@sizeOf(T) == 0) return T{};
+            if (@sizeOf(T) == 0) return undefined;
             if (struct_info.layout == .Extern) {
                 var item: T = undefined;
                 set(u8, asBytes(&item), 0);
@@ -285,7 +269,14 @@ pub fn zeroes(comptime T: type) T {
         .Pointer => |ptr_info| {
             switch (ptr_info.size) {
                 .Slice => {
-                    return &[_]ptr_info.child{};
+                    if (ptr_info.sentinel) |sentinel| {
+                        if (ptr_info.child == u8 and @ptrCast(*const u8, sentinel).* == 0) {
+                            return ""; // A special case for the most common use-case: null-terminated strings.
+                        }
+                        @compileError("Can't set a sentinel slice to zero. This would require allocating memory.");
+                    } else {
+                        return &[_]ptr_info.child{};
+                    }
                 },
                 .C => {
                     return null;
@@ -297,7 +288,7 @@ pub fn zeroes(comptime T: type) T {
         },
         .Array => |info| {
             if (info.sentinel) |sentinel_ptr| {
-                const sentinel = @ptrCast(*const info.child, sentinel_ptr).*;
+                const sentinel = @ptrCast(*align(1) const info.child, sentinel_ptr).*;
                 return [_:sentinel]info.child{zeroes(info.child)} ** info.len;
             }
             return [_]info.child{zeroes(info.child)} ** info.len;
@@ -317,7 +308,6 @@ pub fn zeroes(comptime T: type) T {
         .ErrorUnion,
         .ErrorSet,
         .Fn,
-        .BoundFn,
         .Type,
         .NoReturn,
         .Undefined,
@@ -331,7 +321,7 @@ pub fn zeroes(comptime T: type) T {
 }
 
 test "zeroes" {
-    if (builtin.zig_backend == .stage1 or builtin.zig_backend == .stage2_llvm) {
+    if (builtin.zig_backend == .stage2_llvm) {
         // Regressed in LLVM 14:
         // https://github.com/llvm/llvm-project/issues/55522
         return error.SkipZigTest;
@@ -373,6 +363,7 @@ test "zeroes" {
             optional: ?*u8,
             c_pointer: [*c]u8,
             slice: []u8,
+            nullTerminatedString: [:0]const u8,
         },
 
         array: [2]u32,
@@ -403,6 +394,7 @@ test "zeroes" {
     try testing.expectEqual(@as(?*u8, null), b.pointers.optional);
     try testing.expectEqual(@as([*c]u8, null), b.pointers.c_pointer);
     try testing.expectEqual(@as([]u8, &[_]u8{}), b.pointers.slice);
+    try testing.expectEqual(@as([:0]const u8, ""), b.pointers.nullTerminatedString);
     for (b.array) |e| {
         try testing.expectEqual(@as(u32, 0), e);
     }
@@ -424,6 +416,9 @@ test "zeroes" {
 
     comptime var comptime_union = zeroes(C_union);
     try testing.expectEqual(@as(u8, 0), comptime_union.a);
+
+    // Ensure zero sized struct with fields is initialized correctly.
+    _ = zeroes(struct { handle: void });
 }
 
 /// Initializes all fields of the struct with their default value, or zero values if no default value is present.
@@ -440,7 +435,7 @@ pub fn zeroInit(comptime T: type, init: anytype) T {
 
                     inline for (struct_info.fields) |field| {
                         if (field.default_value) |default_value_ptr| {
-                            const default_value = @ptrCast(*const field.field_type, default_value_ptr).*;
+                            const default_value = @ptrCast(*align(1) const field.field_type, default_value_ptr).*;
                             @field(value, field.name) = default_value;
                         }
                     }
@@ -684,7 +679,7 @@ pub fn span(ptr: anytype) Span(@TypeOf(ptr)) {
     const l = len(ptr);
     const ptr_info = @typeInfo(Result).Pointer;
     if (ptr_info.sentinel) |s_ptr| {
-        const s = @ptrCast(*const ptr_info.child, s_ptr).*;
+        const s = @ptrCast(*align(1) const ptr_info.child, s_ptr).*;
         return ptr[0..l :s];
     } else {
         return ptr[0..l];
@@ -698,8 +693,6 @@ test "span" {
     try testing.expect(eql(u16, span(&array), &[_]u16{ 1, 2, 3, 4, 5 }));
     try testing.expectEqual(@as(?[:0]u16, null), span(@as(?[*:0]u16, null)));
 }
-
-pub const spanZ = @compileError("deprecated; use use std.mem.span() or std.mem.sliceTo()");
 
 /// Helper for the return type of sliceTo()
 fn SliceTo(comptime T: type, comptime end: meta.Elem(T)) type {
@@ -718,7 +711,7 @@ fn SliceTo(comptime T: type, comptime end: meta.Elem(T)) type {
                         // to find the value searched for, which is only the case if it matches
                         // the sentinel of the type passed.
                         if (array_info.sentinel) |sentinel_ptr| {
-                            const sentinel = @ptrCast(*const array_info.child, sentinel_ptr).*;
+                            const sentinel = @ptrCast(*align(1) const array_info.child, sentinel_ptr).*;
                             if (end == sentinel) {
                                 new_ptr_info.sentinel = &end;
                             } else {
@@ -733,7 +726,7 @@ fn SliceTo(comptime T: type, comptime end: meta.Elem(T)) type {
                     // to find the value searched for, which is only the case if it matches
                     // the sentinel of the type passed.
                     if (ptr_info.sentinel) |sentinel_ptr| {
-                        const sentinel = @ptrCast(*const ptr_info.child, sentinel_ptr).*;
+                        const sentinel = @ptrCast(*align(1) const ptr_info.child, sentinel_ptr).*;
                         if (end == sentinel) {
                             new_ptr_info.sentinel = &end;
                         } else {
@@ -771,7 +764,7 @@ pub fn sliceTo(ptr: anytype, comptime end: meta.Elem(@TypeOf(ptr))) SliceTo(@Typ
     const length = lenSliceTo(ptr, end);
     const ptr_info = @typeInfo(Result).Pointer;
     if (ptr_info.sentinel) |s_ptr| {
-        const s = @ptrCast(*const ptr_info.child, s_ptr).*;
+        const s = @ptrCast(*align(1) const ptr_info.child, s_ptr).*;
         return ptr[0..length :s];
     } else {
         return ptr[0..length];
@@ -824,7 +817,7 @@ fn lenSliceTo(ptr: anytype, comptime end: meta.Elem(@TypeOf(ptr))) usize {
             .One => switch (@typeInfo(ptr_info.child)) {
                 .Array => |array_info| {
                     if (array_info.sentinel) |sentinel_ptr| {
-                        const sentinel = @ptrCast(*const array_info.child, sentinel_ptr).*;
+                        const sentinel = @ptrCast(*align(1) const array_info.child, sentinel_ptr).*;
                         if (sentinel == end) {
                             return indexOfSentinel(array_info.child, end, ptr);
                         }
@@ -834,7 +827,7 @@ fn lenSliceTo(ptr: anytype, comptime end: meta.Elem(@TypeOf(ptr))) usize {
                 else => {},
             },
             .Many => if (ptr_info.sentinel) |sentinel_ptr| {
-                const sentinel = @ptrCast(*const ptr_info.child, sentinel_ptr).*;
+                const sentinel = @ptrCast(*align(1) const ptr_info.child, sentinel_ptr).*;
                 // We may be looking for something other than the sentinel,
                 // but iterating past the sentinel would be a bug so we need
                 // to check for both.
@@ -848,7 +841,7 @@ fn lenSliceTo(ptr: anytype, comptime end: meta.Elem(@TypeOf(ptr))) usize {
             },
             .Slice => {
                 if (ptr_info.sentinel) |sentinel_ptr| {
-                    const sentinel = @ptrCast(*const ptr_info.child, sentinel_ptr).*;
+                    const sentinel = @ptrCast(*align(1) const ptr_info.child, sentinel_ptr).*;
                     if (sentinel == end) {
                         return indexOfSentinel(ptr_info.child, sentinel, ptr);
                     }
@@ -910,7 +903,7 @@ pub fn len(value: anytype) usize {
             .Many => {
                 const sentinel_ptr = info.sentinel orelse
                     @compileError("length of pointer with no sentinel");
-                const sentinel = @ptrCast(*const info.child, sentinel_ptr).*;
+                const sentinel = @ptrCast(*align(1) const info.child, sentinel_ptr).*;
                 return indexOfSentinel(info.child, sentinel, value);
             },
             .C => {
@@ -954,8 +947,6 @@ test "len" {
     }
 }
 
-pub const lenZ = @compileError("deprecated; use std.mem.len() or std.mem.sliceTo().len");
-
 pub fn indexOfSentinel(comptime Elem: type, comptime sentinel: Elem, ptr: [*:sentinel]const Elem) usize {
     var i: usize = 0;
     while (ptr[i] != sentinel) {
@@ -971,9 +962,6 @@ pub fn allEqual(comptime T: type, slice: []const T, scalar: T) bool {
     }
     return true;
 }
-
-pub const dupe = @compileError("deprecated; use `Allocator.dupe`");
-pub const dupeZ = @compileError("deprecated; use `Allocator.dupeZ`");
 
 /// Remove values from the beginning of a slice.
 pub fn trimLeft(comptime T: type, slice: []const T, values_to_strip: []const T) []const T {
@@ -1087,7 +1075,7 @@ fn boyerMooreHorspoolPreprocessReverse(pattern: []const u8, table: *[256]usize) 
 
     var i: usize = pattern.len - 1;
     // The first item is intentionally ignored and the skip size will be pattern.len.
-    // This is the standard way boyer-moore-horspool is implemented.
+    // This is the standard way Boyer-Moore-Horspool is implemented.
     while (i > 0) : (i -= 1) {
         table[pattern[i]] = i;
     }
@@ -1100,14 +1088,15 @@ fn boyerMooreHorspoolPreprocess(pattern: []const u8, table: *[256]usize) void {
 
     var i: usize = 0;
     // The last item is intentionally ignored and the skip size will be pattern.len.
-    // This is the standard way boyer-moore-horspool is implemented.
+    // This is the standard way Boyer-Moore-Horspool is implemented.
     while (i < pattern.len - 1) : (i += 1) {
         table[pattern[i]] = pattern.len - 1 - i;
     }
 }
+
 /// Find the index in a slice of a sub-slice, searching from the end backwards.
 /// To start looking at a different index, slice the haystack first.
-/// Uses the Reverse boyer-moore-horspool algorithm on large inputs;
+/// Uses the Reverse Boyer-Moore-Horspool algorithm on large inputs;
 /// `lastIndexOfLinear` on small inputs.
 pub fn lastIndexOf(comptime T: type, haystack: []const T, needle: []const T) ?usize {
     if (needle.len > haystack.len) return null;
@@ -1135,7 +1124,7 @@ pub fn lastIndexOf(comptime T: type, haystack: []const T, needle: []const T) ?us
     return null;
 }
 
-/// Uses Boyer-moore-horspool algorithm on large inputs; `indexOfPosLinear` on small inputs.
+/// Uses Boyer-Moore-Horspool algorithm on large inputs; `indexOfPosLinear` on small inputs.
 pub fn indexOfPos(comptime T: type, haystack: []const T, start_index: usize, needle: []const T) ?usize {
     if (needle.len > haystack.len) return null;
     if (needle.len == 0) return start_index;
@@ -1187,7 +1176,7 @@ test "indexOf" {
 
 test "indexOf multibyte" {
     {
-        // make haystack and needle long enough to trigger boyer-moore-horspool algorithm
+        // make haystack and needle long enough to trigger Boyer-Moore-Horspool algorithm
         const haystack = [1]u16{0} ** 100 ++ [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee, 0x00ff };
         const needle = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee };
         try testing.expectEqual(indexOfPos(u16, &haystack, 0, &needle), 100);
@@ -1200,7 +1189,7 @@ test "indexOf multibyte" {
     }
 
     {
-        // make haystack and needle long enough to trigger boyer-moore-horspool algorithm
+        // make haystack and needle long enough to trigger Boyer-Moore-Horspool algorithm
         const haystack = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee, 0x00ff } ++ [1]u16{0} ** 100;
         const needle = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee };
         try testing.expectEqual(lastIndexOf(u16, &haystack, &needle), 0);
@@ -1302,6 +1291,76 @@ pub fn readVarInt(comptime ReturnType: type, bytes: []const u8, endian: Endian) 
     return result;
 }
 
+/// Loads an integer from packed memory with provided bit_count, bit_offset, and signedness.
+/// Asserts that T is large enough to store the read value.
+///
+/// Example:
+///     const T = packed struct(u16){ a: u3, b: u7, c: u6 };
+///     var st = T{ .a = 1, .b = 2, .c = 4 };
+///     const b_field = readVarPackedInt(u64, std.mem.asBytes(&st), @bitOffsetOf(T, "b"), 7, builtin.cpu.arch.endian(), .unsigned);
+///
+pub fn readVarPackedInt(
+    comptime T: type,
+    bytes: []const u8,
+    bit_offset: usize,
+    bit_count: usize,
+    endian: std.builtin.Endian,
+    signedness: std.builtin.Signedness,
+) T {
+    const uN = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const iN = std.meta.Int(.signed, @bitSizeOf(T));
+    const Log2N = std.math.Log2Int(T);
+
+    const read_size = (bit_count + (bit_offset % 8) + 7) / 8;
+    const bit_shift = @intCast(u3, bit_offset % 8);
+    const pad = @intCast(Log2N, @bitSizeOf(T) - bit_count);
+
+    const lowest_byte = switch (endian) {
+        .Big => bytes.len - (bit_offset / 8) - read_size,
+        .Little => bit_offset / 8,
+    };
+    const read_bytes = bytes[lowest_byte..][0..read_size];
+
+    if (@bitSizeOf(T) <= 8) {
+        // These are the same shifts/masks we perform below, but adds `@truncate`/`@intCast`
+        // where needed since int is smaller than a byte.
+        const value = if (read_size == 1) b: {
+            break :b @truncate(uN, read_bytes[0] >> bit_shift);
+        } else b: {
+            const i: u1 = @boolToInt(endian == .Big);
+            const head = @truncate(uN, read_bytes[i] >> bit_shift);
+            const tail_shift = @intCast(Log2N, @as(u4, 8) - bit_shift);
+            const tail = @truncate(uN, read_bytes[1 - i]);
+            break :b (tail << tail_shift) | head;
+        };
+        switch (signedness) {
+            .signed => return @intCast(T, (@bitCast(iN, value) << pad) >> pad),
+            .unsigned => return @intCast(T, (@bitCast(uN, value) << pad) >> pad),
+        }
+    }
+
+    // Copy the value out (respecting endianness), accounting for bit_shift
+    var int: uN = 0;
+    switch (endian) {
+        .Big => {
+            for (read_bytes[0 .. read_size - 1]) |elem| {
+                int = elem | (int << 8);
+            }
+            int = (read_bytes[read_size - 1] >> bit_shift) | (int << (@as(u4, 8) - bit_shift));
+        },
+        .Little => {
+            int = read_bytes[0] >> bit_shift;
+            for (read_bytes[1..]) |elem, i| {
+                int |= (@as(uN, elem) << @intCast(Log2N, (8 * (i + 1) - bit_shift)));
+            }
+        },
+    }
+    switch (signedness) {
+        .signed => return @intCast(T, (@bitCast(iN, int) << pad) >> pad),
+        .unsigned => return @intCast(T, (@bitCast(uN, int) << pad) >> pad),
+    }
+}
+
 /// Reads an integer from memory with bit count specified by T.
 /// The bit count of T must be evenly divisible by 8.
 /// This function cannot fail and cannot cause undefined behavior.
@@ -1316,7 +1375,7 @@ pub fn readIntNative(comptime T: type, bytes: *const [@divExact(@typeInfo(T).Int
 /// This function cannot fail and cannot cause undefined behavior.
 /// Assumes the endianness of memory is foreign, so it must byte-swap.
 pub fn readIntForeign(comptime T: type, bytes: *const [@divExact(@typeInfo(T).Int.bits, 8)]u8) T {
-    return @byteSwap(T, readIntNative(T, bytes));
+    return @byteSwap(readIntNative(T, bytes));
 }
 
 pub const readIntLittle = switch (native_endian) {
@@ -1345,7 +1404,7 @@ pub fn readIntSliceNative(comptime T: type, bytes: []const u8) T {
 /// The bit count of T must be evenly divisible by 8.
 /// Assumes the endianness of memory is foreign, so it must byte-swap.
 pub fn readIntSliceForeign(comptime T: type, bytes: []const u8) T {
-    return @byteSwap(T, readIntSliceNative(T, bytes));
+    return @byteSwap(readIntSliceNative(T, bytes));
 }
 
 pub const readIntSliceLittle = switch (native_endian) {
@@ -1366,6 +1425,84 @@ pub fn readInt(comptime T: type, bytes: *const [@divExact(@typeInfo(T).Int.bits,
         return readIntNative(T, bytes);
     } else {
         return readIntForeign(T, bytes);
+    }
+}
+
+fn readPackedIntLittle(comptime T: type, bytes: []const u8, bit_offset: usize) T {
+    const uN = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const Log2N = std.math.Log2Int(T);
+
+    const bit_count = @as(usize, @bitSizeOf(T));
+    const bit_shift = @intCast(u3, bit_offset % 8);
+
+    const load_size = (bit_count + 7) / 8;
+    const load_tail_bits = @intCast(u3, (load_size * 8) - bit_count);
+    const LoadInt = std.meta.Int(.unsigned, load_size * 8);
+
+    if (bit_count == 0)
+        return 0;
+
+    // Read by loading a LoadInt, and then follow it up with a 1-byte read
+    // of the tail if bit_offset pushed us over a byte boundary.
+    const read_bytes = bytes[bit_offset / 8 ..];
+    const val = @truncate(uN, readIntLittle(LoadInt, read_bytes[0..load_size]) >> bit_shift);
+    if (bit_shift > load_tail_bits) {
+        const tail_bits = @intCast(Log2N, bit_shift - load_tail_bits);
+        const tail_byte = read_bytes[load_size];
+        const tail_truncated = if (bit_count < 8) @truncate(uN, tail_byte) else @as(uN, tail_byte);
+        return @bitCast(T, val | (tail_truncated << (@truncate(Log2N, bit_count) -% tail_bits)));
+    } else return @bitCast(T, val);
+}
+
+fn readPackedIntBig(comptime T: type, bytes: []const u8, bit_offset: usize) T {
+    const uN = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const Log2N = std.math.Log2Int(T);
+
+    const bit_count = @as(usize, @bitSizeOf(T));
+    const bit_shift = @intCast(u3, bit_offset % 8);
+    const byte_count = (@as(usize, bit_shift) + bit_count + 7) / 8;
+
+    const load_size = (bit_count + 7) / 8;
+    const load_tail_bits = @intCast(u3, (load_size * 8) - bit_count);
+    const LoadInt = std.meta.Int(.unsigned, load_size * 8);
+
+    if (bit_count == 0)
+        return 0;
+
+    // Read by loading a LoadInt, and then follow it up with a 1-byte read
+    // of the tail if bit_offset pushed us over a byte boundary.
+    const end = bytes.len - (bit_offset / 8);
+    const read_bytes = bytes[(end - byte_count)..end];
+    const val = @truncate(uN, readIntBig(LoadInt, bytes[(end - load_size)..end][0..load_size]) >> bit_shift);
+    if (bit_shift > load_tail_bits) {
+        const tail_bits = @intCast(Log2N, bit_shift - load_tail_bits);
+        const tail_byte = if (bit_count < 8) @truncate(uN, read_bytes[0]) else @as(uN, read_bytes[0]);
+        return @bitCast(T, val | (tail_byte << (@truncate(Log2N, bit_count) -% tail_bits)));
+    } else return @bitCast(T, val);
+}
+
+pub const readPackedIntNative = switch (native_endian) {
+    .Little => readPackedIntLittle,
+    .Big => readPackedIntBig,
+};
+
+pub const readPackedIntForeign = switch (native_endian) {
+    .Little => readPackedIntBig,
+    .Big => readPackedIntLittle,
+};
+
+/// Loads an integer from packed memory.
+/// Asserts that buffer contains at least bit_offset + @bitSizeOf(T) bits.
+///
+/// Example:
+///     const T = packed struct(u16){ a: u3, b: u7, c: u6 };
+///     var st = T{ .a = 1, .b = 2, .c = 4 };
+///     const b_field = readPackedInt(u7, std.mem.asBytes(&st), @bitOffsetOf(T, "b"), builtin.cpu.arch.endian());
+///
+pub fn readPackedInt(comptime T: type, bytes: []const u8, bit_offset: usize, endian: Endian) T {
+    switch (endian) {
+        .Little => return readPackedIntLittle(T, bytes, bit_offset),
+        .Big => return readPackedIntBig(T, bytes, bit_offset),
     }
 }
 
@@ -1427,7 +1564,7 @@ pub fn writeIntNative(comptime T: type, buf: *[(@typeInfo(T).Int.bits + 7) / 8]u
 /// the integer bit width must be divisible by 8.
 /// This function stores in foreign endian, which means it does a @byteSwap first.
 pub fn writeIntForeign(comptime T: type, buf: *[@divExact(@typeInfo(T).Int.bits, 8)]u8, value: T) void {
-    writeIntNative(T, buf, @byteSwap(T, value));
+    writeIntNative(T, buf, @byteSwap(value));
 }
 
 pub const writeIntLittle = switch (native_endian) {
@@ -1448,6 +1585,100 @@ pub fn writeInt(comptime T: type, buffer: *[@divExact(@typeInfo(T).Int.bits, 8)]
         return writeIntNative(T, buffer, value);
     } else {
         return writeIntForeign(T, buffer, value);
+    }
+}
+
+pub fn writePackedIntLittle(comptime T: type, bytes: []u8, bit_offset: usize, value: T) void {
+    const uN = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const Log2N = std.math.Log2Int(T);
+
+    const bit_count = @as(usize, @bitSizeOf(T));
+    const bit_shift = @intCast(u3, bit_offset % 8);
+
+    const store_size = (@bitSizeOf(T) + 7) / 8;
+    const store_tail_bits = @intCast(u3, (store_size * 8) - bit_count);
+    const StoreInt = std.meta.Int(.unsigned, store_size * 8);
+
+    if (bit_count == 0)
+        return;
+
+    // Write by storing a StoreInt, and then follow it up with a 1-byte tail
+    // if bit_offset pushed us over a byte boundary.
+    const write_bytes = bytes[bit_offset / 8 ..];
+    const head = write_bytes[0] & ((@as(u8, 1) << bit_shift) - 1);
+
+    var write_value = (@as(StoreInt, @bitCast(uN, value)) << bit_shift) | @intCast(StoreInt, head);
+    if (bit_shift > store_tail_bits) {
+        const tail_len = @intCast(Log2N, bit_shift - store_tail_bits);
+        write_bytes[store_size] &= ~((@as(u8, 1) << @intCast(u3, tail_len)) - 1);
+        write_bytes[store_size] |= @intCast(u8, (@bitCast(uN, value) >> (@truncate(Log2N, bit_count) -% tail_len)));
+    } else if (bit_shift < store_tail_bits) {
+        const tail_len = store_tail_bits - bit_shift;
+        const tail = write_bytes[store_size - 1] & (@as(u8, 0xfe) << (7 - tail_len));
+        write_value |= @as(StoreInt, tail) << (8 * (store_size - 1));
+    }
+
+    writeIntLittle(StoreInt, write_bytes[0..store_size], write_value);
+}
+
+pub fn writePackedIntBig(comptime T: type, bytes: []u8, bit_offset: usize, value: T) void {
+    const uN = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const Log2N = std.math.Log2Int(T);
+
+    const bit_count = @as(usize, @bitSizeOf(T));
+    const bit_shift = @intCast(u3, bit_offset % 8);
+    const byte_count = (bit_shift + bit_count + 7) / 8;
+
+    const store_size = (@bitSizeOf(T) + 7) / 8;
+    const store_tail_bits = @intCast(u3, (store_size * 8) - bit_count);
+    const StoreInt = std.meta.Int(.unsigned, store_size * 8);
+
+    if (bit_count == 0)
+        return;
+
+    // Write by storing a StoreInt, and then follow it up with a 1-byte tail
+    // if bit_offset pushed us over a byte boundary.
+    const end = bytes.len - (bit_offset / 8);
+    const write_bytes = bytes[(end - byte_count)..end];
+    const head = write_bytes[byte_count - 1] & ((@as(u8, 1) << bit_shift) - 1);
+
+    var write_value = (@as(StoreInt, @bitCast(uN, value)) << bit_shift) | @intCast(StoreInt, head);
+    if (bit_shift > store_tail_bits) {
+        const tail_len = @intCast(Log2N, bit_shift - store_tail_bits);
+        write_bytes[0] &= ~((@as(u8, 1) << @intCast(u3, tail_len)) - 1);
+        write_bytes[0] |= @intCast(u8, (@bitCast(uN, value) >> (@truncate(Log2N, bit_count) -% tail_len)));
+    } else if (bit_shift < store_tail_bits) {
+        const tail_len = store_tail_bits - bit_shift;
+        const tail = write_bytes[0] & (@as(u8, 0xfe) << (7 - tail_len));
+        write_value |= @as(StoreInt, tail) << (8 * (store_size - 1));
+    }
+
+    writeIntBig(StoreInt, write_bytes[(byte_count - store_size)..][0..store_size], write_value);
+}
+
+pub const writePackedIntNative = switch (native_endian) {
+    .Little => writePackedIntLittle,
+    .Big => writePackedIntBig,
+};
+
+pub const writePackedIntForeign = switch (native_endian) {
+    .Little => writePackedIntBig,
+    .Big => writePackedIntLittle,
+};
+
+/// Stores an integer to packed memory.
+/// Asserts that buffer contains at least bit_offset + @bitSizeOf(T) bits.
+///
+/// Example:
+///     const T = packed struct(u16){ a: u3, b: u7, c: u6 };
+///     var st = T{ .a = 1, .b = 2, .c = 4 };
+///     // st.b = 0x7f;
+///     writePackedInt(u7, std.mem.asBytes(&st), @bitOffsetOf(T, "b"), 0x7f, builtin.cpu.arch.endian());
+///
+pub fn writePackedInt(comptime T: type, bytes: []u8, bit_offset: usize, value: T, endian: Endian) void {
+    switch (endian) {
+        .Little => writePackedIntLittle(T, bytes, bit_offset, value),
+        .Big => writePackedIntBig(T, bytes, bit_offset, value),
     }
 }
 
@@ -1527,6 +1758,69 @@ pub fn writeIntSlice(comptime T: type, buffer: []u8, value: T, endian: Endian) v
     };
 }
 
+/// Stores an integer to packed memory with provided bit_count, bit_offset, and signedness.
+/// If negative, the written value is sign-extended.
+///
+/// Example:
+///     const T = packed struct(u16){ a: u3, b: u7, c: u6 };
+///     var st = T{ .a = 1, .b = 2, .c = 4 };
+///     // st.b = 0x7f;
+///     var value: u64 = 0x7f;
+///     writeVarPackedInt(std.mem.asBytes(&st), @bitOffsetOf(T, "b"), 7, value, builtin.cpu.arch.endian());
+///
+pub fn writeVarPackedInt(bytes: []u8, bit_offset: usize, bit_count: usize, value: anytype, endian: std.builtin.Endian) void {
+    const T = @TypeOf(value);
+    const uN = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const Log2N = std.math.Log2Int(T);
+
+    const bit_shift = @intCast(u3, bit_offset % 8);
+    const write_size = (bit_count + bit_shift + 7) / 8;
+    const lowest_byte = switch (endian) {
+        .Big => bytes.len - (bit_offset / 8) - write_size,
+        .Little => bit_offset / 8,
+    };
+    const write_bytes = bytes[lowest_byte..][0..write_size];
+
+    if (write_size == 1) {
+        // Single byte writes are handled specially, since we need to mask bits
+        // on both ends of the byte.
+        const mask = (@as(u8, 0xff) >> @intCast(u3, 8 - bit_count));
+        const new_bits = @intCast(u8, @bitCast(uN, value) & mask) << bit_shift;
+        write_bytes[0] = (write_bytes[0] & ~(mask << bit_shift)) | new_bits;
+        return;
+    }
+
+    var remaining: T = value;
+
+    // Iterate bytes forward for Little-endian, backward for Big-endian
+    const delta: i2 = if (endian == .Big) -1 else 1;
+    const start = if (endian == .Big) @intCast(isize, write_bytes.len - 1) else 0;
+
+    var i: isize = start; // isize for signed index arithmetic
+
+    // Write first byte, using a mask to protects bits preceding bit_offset
+    const head_mask = @as(u8, 0xff) >> bit_shift;
+    write_bytes[@intCast(usize, i)] &= ~(head_mask << bit_shift);
+    write_bytes[@intCast(usize, i)] |= @intCast(u8, @bitCast(uN, remaining) & head_mask) << bit_shift;
+    remaining >>= @intCast(Log2N, @as(u4, 8) - bit_shift);
+    i += delta;
+
+    // Write bytes[1..bytes.len - 1]
+    if (@bitSizeOf(T) > 8) {
+        const loop_end = start + delta * (@intCast(isize, write_size) - 1);
+        while (i != loop_end) : (i += delta) {
+            write_bytes[@intCast(usize, i)] = @truncate(u8, @bitCast(uN, remaining));
+            remaining >>= 8;
+        }
+    }
+
+    // Write last byte, using a mask to protect bits following bit_offset + bit_count
+    const following_bits = -%@truncate(u3, bit_shift + bit_count);
+    const tail_mask = (@as(u8, 0xff) << following_bits) >> following_bits;
+    write_bytes[@intCast(usize, i)] &= ~tail_mask;
+    write_bytes[@intCast(usize, i)] |= @intCast(u8, @bitCast(uN, remaining) & tail_mask);
+}
+
 test "writeIntBig and writeIntLittle" {
     var buf0: [0]u8 = undefined;
     var buf1: [1]u8 = undefined;
@@ -1564,15 +1858,12 @@ test "writeIntBig and writeIntLittle" {
     try testing.expect(eql(u8, buf2[0..], &[_]u8{ 0xfc, 0xff }));
 }
 
-/// TODO delete this deprecated declaration after 0.10.0 is released
-pub const bswapAllFields = @compileError("bswapAllFields has been renamed to byteSwapAllFields");
-
 /// Swap the byte order of all the members of the fields of a struct
 /// (Changing their endianess)
 pub fn byteSwapAllFields(comptime S: type, ptr: *S) void {
     if (@typeInfo(S) != .Struct) @compileError("byteSwapAllFields expects a struct as the first argument");
     inline for (std.meta.fields(S)) |f| {
-        @field(ptr, f.name) = @byteSwap(f.field_type, @field(ptr, f.name));
+        @field(ptr, f.name) = @byteSwap(@field(ptr, f.name));
     }
 }
 
@@ -1897,6 +2188,156 @@ test "splitBackwards (reset)" {
     try testing.expect(eql(u8, it.next().?, "def"));
     try testing.expect(eql(u8, it.next().?, "abc"));
     try testing.expect(it.next() == null);
+}
+
+/// Returns an iterator with a sliding window of slices for `buffer`.
+/// The sliding window has length `size` and on every iteration moves
+/// forward by `advance`.
+///
+/// Extract data for moving average with:
+/// `window(u8, "abcdefg", 3, 1)` will return slices
+/// "abc", "bcd", "cde", "def", "efg", null, in that order.
+///
+/// Chunk or split every N items with:
+/// `window(u8, "abcdefg", 3, 3)` will return slices
+/// "abc", "def", "g", null, in that order.
+///
+/// Pick every even index with:
+/// `window(u8, "abcdefg", 1, 2)` will return slices
+/// "a", "c", "e", "g" null, in that order.
+///
+/// The `size` and `advance` must be not be zero.
+pub fn window(comptime T: type, buffer: []const T, size: usize, advance: usize) WindowIterator(T) {
+    assert(size != 0);
+    assert(advance != 0);
+    return .{
+        .index = 0,
+        .buffer = buffer,
+        .size = size,
+        .advance = advance,
+    };
+}
+
+test "window" {
+    {
+        // moving average size 3
+        var it = window(u8, "abcdefg", 3, 1);
+        try testing.expectEqualSlices(u8, it.next().?, "abc");
+        try testing.expectEqualSlices(u8, it.next().?, "bcd");
+        try testing.expectEqualSlices(u8, it.next().?, "cde");
+        try testing.expectEqualSlices(u8, it.next().?, "def");
+        try testing.expectEqualSlices(u8, it.next().?, "efg");
+        try testing.expectEqual(it.next(), null);
+
+        // multibyte
+        var it16 = window(u16, std.unicode.utf8ToUtf16LeStringLiteral("abcdefg"), 3, 1);
+        try testing.expectEqualSlices(u16, it16.next().?, std.unicode.utf8ToUtf16LeStringLiteral("abc"));
+        try testing.expectEqualSlices(u16, it16.next().?, std.unicode.utf8ToUtf16LeStringLiteral("bcd"));
+        try testing.expectEqualSlices(u16, it16.next().?, std.unicode.utf8ToUtf16LeStringLiteral("cde"));
+        try testing.expectEqualSlices(u16, it16.next().?, std.unicode.utf8ToUtf16LeStringLiteral("def"));
+        try testing.expectEqualSlices(u16, it16.next().?, std.unicode.utf8ToUtf16LeStringLiteral("efg"));
+        try testing.expectEqual(it16.next(), null);
+    }
+
+    {
+        // chunk/split every 3
+        var it = window(u8, "abcdefg", 3, 3);
+        try testing.expectEqualSlices(u8, it.next().?, "abc");
+        try testing.expectEqualSlices(u8, it.next().?, "def");
+        try testing.expectEqualSlices(u8, it.next().?, "g");
+        try testing.expectEqual(it.next(), null);
+    }
+
+    {
+        // pick even
+        var it = window(u8, "abcdefg", 1, 2);
+        try testing.expectEqualSlices(u8, it.next().?, "a");
+        try testing.expectEqualSlices(u8, it.next().?, "c");
+        try testing.expectEqualSlices(u8, it.next().?, "e");
+        try testing.expectEqualSlices(u8, it.next().?, "g");
+        try testing.expectEqual(it.next(), null);
+    }
+
+    {
+        // empty
+        var it = window(u8, "", 1, 1);
+        try testing.expectEqualSlices(u8, it.next().?, "");
+        try testing.expectEqual(it.next(), null);
+
+        it = window(u8, "", 10, 1);
+        try testing.expectEqualSlices(u8, it.next().?, "");
+        try testing.expectEqual(it.next(), null);
+
+        it = window(u8, "", 1, 10);
+        try testing.expectEqualSlices(u8, it.next().?, "");
+        try testing.expectEqual(it.next(), null);
+
+        it = window(u8, "", 10, 10);
+        try testing.expectEqualSlices(u8, it.next().?, "");
+        try testing.expectEqual(it.next(), null);
+    }
+
+    {
+        // first
+        var it = window(u8, "abcdefg", 3, 3);
+        try testing.expectEqualSlices(u8, it.first(), "abc");
+        it.reset();
+        try testing.expectEqualSlices(u8, it.next().?, "abc");
+    }
+
+    {
+        // reset
+        var it = window(u8, "abcdefg", 3, 3);
+        try testing.expectEqualSlices(u8, it.next().?, "abc");
+        try testing.expectEqualSlices(u8, it.next().?, "def");
+        try testing.expectEqualSlices(u8, it.next().?, "g");
+        try testing.expectEqual(it.next(), null);
+
+        it.reset();
+        try testing.expectEqualSlices(u8, it.next().?, "abc");
+        try testing.expectEqualSlices(u8, it.next().?, "def");
+        try testing.expectEqualSlices(u8, it.next().?, "g");
+        try testing.expectEqual(it.next(), null);
+    }
+}
+
+pub fn WindowIterator(comptime T: type) type {
+    return struct {
+        buffer: []const T,
+        index: ?usize,
+        size: usize,
+        advance: usize,
+
+        const Self = @This();
+
+        /// Returns a slice of the first window. This never fails.
+        /// Call this only to get the first window and then use `next` to get
+        /// all subsequent windows.
+        pub fn first(self: *Self) []const T {
+            assert(self.index.? == 0);
+            return self.next().?;
+        }
+
+        /// Returns a slice of the next window, or null if window is at end.
+        pub fn next(self: *Self) ?[]const T {
+            const start = self.index orelse return null;
+            const next_index = start + self.advance;
+            const end = if (start + self.size < self.buffer.len and next_index < self.buffer.len) blk: {
+                self.index = next_index;
+                break :blk start + self.size;
+            } else blk: {
+                self.index = null;
+                break :blk self.buffer.len;
+            };
+
+            return self.buffer[start..end];
+        }
+
+        /// Resets the iterator to the initial window.
+        pub fn reset(self: *Self) void {
+            self.index = 0;
+        }
+    };
 }
 
 pub fn startsWith(comptime T: type, haystack: []const T, needle: []const T) bool {
@@ -2574,6 +3015,55 @@ test "reverse" {
     try testing.expect(eql(i32, &arr, &[_]i32{ 4, 2, 1, 3, 5 }));
 }
 
+fn ReverseIterator(comptime T: type) type {
+    const info: struct { Child: type, Pointer: type } = blk: {
+        switch (@typeInfo(T)) {
+            .Pointer => |info| switch (info.size) {
+                .Slice => break :blk .{
+                    .Child = info.child,
+                    .Pointer = @Type(.{ .Pointer = .{
+                        .size = .Many,
+                        .is_const = info.is_const,
+                        .is_volatile = info.is_volatile,
+                        .alignment = info.alignment,
+                        .address_space = info.address_space,
+                        .child = info.child,
+                        .is_allowzero = info.is_allowzero,
+                        .sentinel = info.sentinel,
+                    } }),
+                },
+                else => {},
+            },
+            else => {},
+        }
+        @compileError("reverse iterator expects slice, found " ++ @typeName(T));
+    };
+    return struct {
+        ptr: info.Pointer,
+        index: usize,
+        pub fn next(self: *@This()) ?info.Child {
+            if (self.index == 0) return null;
+            self.index -= 1;
+            return self.ptr[self.index];
+        }
+    };
+}
+
+/// Iterate over a slice in reverse.
+pub fn reverseIterator(slice: anytype) ReverseIterator(@TypeOf(slice)) {
+    return .{ .ptr = slice.ptr, .index = slice.len };
+}
+
+test "reverseIterator" {
+    const slice: []const i32 = &[_]i32{ 5, 3, 1, 2 };
+    var it = reverseIterator(slice);
+    try testing.expectEqual(@as(?i32, 2), it.next());
+    try testing.expectEqual(@as(?i32, 1), it.next());
+    try testing.expectEqual(@as(?i32, 3), it.next());
+    try testing.expectEqual(@as(?i32, 5), it.next());
+    try testing.expectEqual(@as(?i32, null), it.next());
+}
+
 /// In-place rotation of the values in an array ([0 1 2 3] becomes [1 2 3 0] if we rotate by 1)
 /// Assumes 0 <= amount <= items.len
 pub fn rotate(comptime T: type, items: []T, amount: usize) void {
@@ -2592,6 +3082,7 @@ test "rotate" {
 /// Replace needle with replacement as many times as possible, writing to an output buffer which is assumed to be of
 /// appropriate size. Use replacementSize to calculate an appropriate buffer size.
 /// The needle must not be empty.
+/// Returns the number of replacements made.
 pub fn replace(comptime T: type, input: []const T, needle: []const T, replacement: []const T, output: []T) usize {
     // Empty needle will loop until output buffer overflows.
     assert(needle.len > 0);
@@ -2749,14 +3240,14 @@ test "replaceOwned" {
 pub fn littleToNative(comptime T: type, x: T) T {
     return switch (native_endian) {
         .Little => x,
-        .Big => @byteSwap(T, x),
+        .Big => @byteSwap(x),
     };
 }
 
 /// Converts a big-endian integer to host endianness.
 pub fn bigToNative(comptime T: type, x: T) T {
     return switch (native_endian) {
-        .Little => @byteSwap(T, x),
+        .Little => @byteSwap(x),
         .Big => x,
     };
 }
@@ -2781,14 +3272,14 @@ pub fn nativeTo(comptime T: type, x: T, desired_endianness: Endian) T {
 pub fn nativeToLittle(comptime T: type, x: T) T {
     return switch (native_endian) {
         .Little => x,
-        .Big => @byteSwap(T, x),
+        .Big => @byteSwap(x),
     };
 }
 
 /// Converts an integer which has host endianness to big endian.
 pub fn nativeToBig(comptime T: type, x: T) T {
     return switch (native_endian) {
-        .Little => @byteSwap(T, x),
+        .Little => @byteSwap(x),
         .Big => x,
     };
 }
@@ -2799,8 +3290,8 @@ pub fn nativeToBig(comptime T: type, x: T) T {
 /// - The aligned pointer would not fit the address space,
 /// - The delta required to align the pointer is not a multiple of the pointee's
 ///   type.
-pub fn alignPointerOffset(ptr: anytype, align_to: u29) ?usize {
-    assert(align_to != 0 and @popCount(u29, align_to) == 1);
+pub fn alignPointerOffset(ptr: anytype, align_to: usize) ?usize {
+    assert(align_to != 0 and @popCount(align_to) == 1);
 
     const T = @TypeOf(ptr);
     const info = @typeInfo(T);
@@ -2831,7 +3322,7 @@ pub fn alignPointerOffset(ptr: anytype, align_to: u29) ?usize {
 /// - The aligned pointer would not fit the address space,
 /// - The delta required to align the pointer is not a multiple of the pointee's
 ///   type.
-pub fn alignPointer(ptr: anytype, align_to: u29) ?@TypeOf(ptr) {
+pub fn alignPointer(ptr: anytype, align_to: usize) ?@TypeOf(ptr) {
     const adjust_off = alignPointerOffset(ptr, align_to) orelse return null;
     const T = @TypeOf(ptr);
     // Avoid the use of intToPtr to avoid losing the pointer provenance info.
@@ -2840,7 +3331,7 @@ pub fn alignPointer(ptr: anytype, align_to: u29) ?@TypeOf(ptr) {
 
 test "alignPointer" {
     const S = struct {
-        fn checkAlign(comptime T: type, base: usize, align_to: u29, expected: usize) !void {
+        fn checkAlign(comptime T: type, base: usize, align_to: usize, expected: usize) !void {
             var ptr = @intToPtr(T, base);
             var aligned = alignPointer(ptr, align_to);
             try testing.expectEqual(expected, @ptrToInt(aligned));
@@ -2889,12 +3380,11 @@ fn AsBytesReturnType(comptime P: type) type {
 /// Given a pointer to a single item, returns a slice of the underlying bytes, preserving pointer attributes.
 pub fn asBytes(ptr: anytype) AsBytesReturnType(@TypeOf(ptr)) {
     const P = @TypeOf(ptr);
-    return @ptrCast(AsBytesReturnType(P), ptr);
+    const T = AsBytesReturnType(P);
+    return @ptrCast(T, @alignCast(meta.alignment(T), ptr));
 }
 
 test "asBytes" {
-    if (builtin.zig_backend == .stage1) return error.SkipZigTest;
-
     const deadbeef = @as(u32, 0xDEADBEEF);
     const deadbeef_bytes = switch (native_endian) {
         .Big => "\xDE\xAD\xBE\xEF",
@@ -2988,8 +3478,6 @@ pub fn bytesAsValue(comptime T: type, bytes: anytype) BytesAsValueReturnType(T, 
 }
 
 test "bytesAsValue" {
-    if (builtin.zig_backend == .stage1) return error.SkipZigTest;
-
     const deadbeef = @as(u32, 0xDEADBEEF);
     const deadbeef_bytes = switch (native_endian) {
         .Big => "\xDE\xAD\xBE\xEF",
@@ -3191,8 +3679,6 @@ test "sliceAsBytes with sentinel slice" {
 }
 
 test "sliceAsBytes packed struct at runtime and comptime" {
-    if (builtin.zig_backend == .stage1) return error.SkipZigTest;
-
     const Foo = packed struct {
         a: u4,
         b: u4,
@@ -3249,14 +3735,21 @@ test "sliceAsBytes preserves pointer attributes" {
     try testing.expectEqual(in.alignment, out.alignment);
 }
 
-/// Round an address up to the nearest aligned address
+/// Round an address up to the next (or current) aligned address.
 /// The alignment must be a power of 2 and greater than 0.
+/// Asserts that rounding up the address does not cause integer overflow.
 pub fn alignForward(addr: usize, alignment: usize) usize {
     return alignForwardGeneric(usize, addr, alignment);
 }
 
-/// Round an address up to the nearest aligned address
+pub fn alignForwardLog2(addr: usize, log2_alignment: u8) usize {
+    const alignment = @as(usize, 1) << @intCast(math.Log2Int(usize), log2_alignment);
+    return alignForward(addr, alignment);
+}
+
+/// Round an address up to the next (or current) aligned address.
 /// The alignment must be a power of 2 and greater than 0.
+/// Asserts that rounding up the address does not cause integer overflow.
 pub fn alignForwardGeneric(comptime T: type, addr: T, alignment: T) T {
     return alignBackwardGeneric(T, addr + (alignment - 1), alignment);
 }
@@ -3264,12 +3757,75 @@ pub fn alignForwardGeneric(comptime T: type, addr: T, alignment: T) T {
 /// Force an evaluation of the expression; this tries to prevent
 /// the compiler from optimizing the computation away even if the
 /// result eventually gets discarded.
+// TODO: use @declareSideEffect() when it is available - https://github.com/ziglang/zig/issues/6168
 pub fn doNotOptimizeAway(val: anytype) void {
-    asm volatile (""
-        :
-        : [val] "rm" (val),
-        : "memory"
-    );
+    var a: u8 = 0;
+    if (@typeInfo(@TypeOf(.{a})).Struct.fields[0].is_comptime) return;
+
+    const max_gp_register_bits = @bitSizeOf(c_long);
+    const t = @typeInfo(@TypeOf(val));
+    switch (t) {
+        .Void, .Null, .ComptimeInt, .ComptimeFloat => return,
+        .Enum => doNotOptimizeAway(@enumToInt(val)),
+        .Bool => doNotOptimizeAway(@boolToInt(val)),
+        .Int => {
+            const bits = t.Int.bits;
+            if (bits <= max_gp_register_bits) {
+                const val2 = @as(
+                    std.meta.Int(t.Int.signedness, @max(8, std.math.ceilPowerOfTwoAssert(u16, bits))),
+                    val,
+                );
+                asm volatile (""
+                    :
+                    : [val2] "r" (val2),
+                );
+            } else doNotOptimizeAway(&val);
+        },
+        .Float => {
+            if (t.Float.bits == 32 or t.Float.bits == 64) {
+                asm volatile (""
+                    :
+                    : [val] "rm" (val),
+                );
+            } else doNotOptimizeAway(&val);
+        },
+        .Pointer => asm volatile (""
+            :
+            : [val] "m" (val),
+            : "memory"
+        ),
+        .Array => {
+            if (t.Array.len * @sizeOf(t.Array.child) <= 64) {
+                for (val) |v| doNotOptimizeAway(v);
+            } else doNotOptimizeAway(&val);
+        },
+        else => doNotOptimizeAway(&val),
+    }
+}
+
+test "doNotOptimizeAway" {
+    comptime doNotOptimizeAway("test");
+
+    doNotOptimizeAway(null);
+    doNotOptimizeAway(true);
+    doNotOptimizeAway(0);
+    doNotOptimizeAway(0.0);
+    doNotOptimizeAway(@as(u1, 0));
+    doNotOptimizeAway(@as(u3, 0));
+    doNotOptimizeAway(@as(u8, 0));
+    doNotOptimizeAway(@as(u16, 0));
+    doNotOptimizeAway(@as(u32, 0));
+    doNotOptimizeAway(@as(u64, 0));
+    doNotOptimizeAway(@as(u128, 0));
+    doNotOptimizeAway(@as(u13, 0));
+    doNotOptimizeAway(@as(u37, 0));
+    doNotOptimizeAway(@as(u96, 0));
+    doNotOptimizeAway(@as(u200, 0));
+    doNotOptimizeAway(@as(f32, 0.0));
+    doNotOptimizeAway(@as(f64, 0.0));
+    doNotOptimizeAway([_]u8{0} ** 4);
+    doNotOptimizeAway([_]u8{0} ** 100);
+    doNotOptimizeAway(@as(std.builtin.Endian, .Little));
 }
 
 test "alignForward" {
@@ -3287,25 +3843,25 @@ test "alignForward" {
     try testing.expect(alignForward(17, 8) == 24);
 }
 
-/// Round an address up to the previous aligned address
+/// Round an address down to the previous (or current) aligned address.
 /// Unlike `alignBackward`, `alignment` can be any positive number, not just a power of 2.
 pub fn alignBackwardAnyAlign(i: usize, alignment: usize) usize {
-    if (@popCount(usize, alignment) == 1)
+    if (@popCount(alignment) == 1)
         return alignBackward(i, alignment);
     assert(alignment != 0);
     return i - @mod(i, alignment);
 }
 
-/// Round an address up to the previous aligned address
+/// Round an address down to the previous (or current) aligned address.
 /// The alignment must be a power of 2 and greater than 0.
 pub fn alignBackward(addr: usize, alignment: usize) usize {
     return alignBackwardGeneric(usize, addr, alignment);
 }
 
-/// Round an address up to the previous aligned address
+/// Round an address down to the previous (or current) aligned address.
 /// The alignment must be a power of 2 and greater than 0.
 pub fn alignBackwardGeneric(comptime T: type, addr: T, alignment: T) T {
-    assert(@popCount(T, alignment) == 1);
+    assert(@popCount(alignment) == 1);
     // 000010000 // example alignment
     // 000001111 // subtract 1
     // 111110000 // binary not
@@ -3314,15 +3870,19 @@ pub fn alignBackwardGeneric(comptime T: type, addr: T, alignment: T) T {
 
 /// Returns whether `alignment` is a valid alignment, meaning it is
 /// a positive power of 2.
-pub fn isValidAlign(alignment: u29) bool {
-    return @popCount(u29, alignment) == 1;
+pub fn isValidAlign(alignment: usize) bool {
+    return @popCount(alignment) == 1;
 }
 
 pub fn isAlignedAnyAlign(i: usize, alignment: usize) bool {
-    if (@popCount(usize, alignment) == 1)
+    if (@popCount(alignment) == 1)
         return isAligned(i, alignment);
     assert(alignment != 0);
     return 0 == @mod(i, alignment);
+}
+
+pub fn isAlignedLog2(addr: usize, log2_alignment: u8) bool {
+    return @ctz(addr) >= log2_alignment;
 }
 
 /// Given an address and an alignment, return true if the address is a multiple of the alignment
@@ -3358,7 +3918,7 @@ test "freeing empty string with null-terminated sentinel" {
 
 /// Returns a slice with the given new alignment,
 /// all other pointer attributes copied from `AttributeSource`.
-fn AlignedSlice(comptime AttributeSource: type, comptime new_alignment: u29) type {
+fn AlignedSlice(comptime AttributeSource: type, comptime new_alignment: usize) type {
     const info = @typeInfo(AttributeSource).Pointer;
     return @Type(.{
         .Pointer = .{
@@ -3398,4 +3958,166 @@ pub fn alignInSlice(slice: anytype, comptime new_alignment: usize) ?AlignedSlice
     const slice_length_bytes = aligned_bytes.len - (aligned_bytes.len % @sizeOf(Element));
     const aligned_slice = bytesAsSlice(Element, aligned_bytes[0..slice_length_bytes]);
     return @alignCast(new_alignment, aligned_slice);
+}
+
+test "read/write(Var)PackedInt" {
+    switch (builtin.cpu.arch) {
+        // This test generates too much code to execute on WASI.
+        // LLVM backend fails with "too many locals: locals exceed maximum"
+        .wasm32, .wasm64 => return error.SkipZigTest,
+        else => {},
+    }
+
+    const foreign_endian: Endian = if (native_endian == .Big) .Little else .Big;
+    const expect = std.testing.expect;
+    var prng = std.rand.DefaultPrng.init(1234);
+    const random = prng.random();
+
+    @setEvalBranchQuota(10_000);
+    inline for ([_]type{ u8, u16, u32, u128 }) |BackingType| {
+        for ([_]BackingType{
+            @as(BackingType, 0), // all zeros
+            -%@as(BackingType, 1), // all ones
+            random.int(BackingType), // random
+            random.int(BackingType), // random
+            random.int(BackingType), // random
+        }) |init_value| {
+            const uTs = [_]type{ u1, u3, u7, u8, u9, u10, u15, u16, u86 };
+            const iTs = [_]type{ i1, i3, i7, i8, i9, i10, i15, i16, i86 };
+            inline for (uTs ++ iTs) |PackedType| {
+                if (@bitSizeOf(PackedType) > @bitSizeOf(BackingType))
+                    continue;
+
+                const iPackedType = std.meta.Int(.signed, @bitSizeOf(PackedType));
+                const uPackedType = std.meta.Int(.unsigned, @bitSizeOf(PackedType));
+                const Log2T = std.math.Log2Int(BackingType);
+
+                const offset_at_end = @bitSizeOf(BackingType) - @bitSizeOf(PackedType);
+                for ([_]usize{ 0, 1, 7, 8, 9, 10, 15, 16, 86, offset_at_end }) |offset| {
+                    if (offset > offset_at_end or offset == @bitSizeOf(BackingType))
+                        continue;
+
+                    for ([_]PackedType{
+                        ~@as(PackedType, 0), // all ones: -1 iN / maxInt uN
+                        @as(PackedType, 0), // all zeros: 0 iN / 0 uN
+                        @bitCast(PackedType, @as(iPackedType, math.maxInt(iPackedType))), // maxInt iN
+                        @bitCast(PackedType, @as(iPackedType, math.minInt(iPackedType))), // maxInt iN
+                        random.int(PackedType), // random
+                        random.int(PackedType), // random
+                    }) |write_value| {
+                        { // Fixed-size Read/Write (Native-endian)
+
+                            // Initialize Value
+                            var value: BackingType = init_value;
+
+                            // Read
+                            const read_value1 = readPackedInt(PackedType, asBytes(&value), offset, native_endian);
+                            try expect(read_value1 == @bitCast(PackedType, @truncate(uPackedType, value >> @intCast(Log2T, offset))));
+
+                            // Write
+                            writePackedInt(PackedType, asBytes(&value), offset, write_value, native_endian);
+                            try expect(write_value == @bitCast(PackedType, @truncate(uPackedType, value >> @intCast(Log2T, offset))));
+
+                            // Read again
+                            const read_value2 = readPackedInt(PackedType, asBytes(&value), offset, native_endian);
+                            try expect(read_value2 == write_value);
+
+                            // Verify bits outside of the target integer are unmodified
+                            const diff_bits = init_value ^ value;
+                            if (offset != offset_at_end)
+                                try expect(diff_bits >> @intCast(Log2T, offset + @bitSizeOf(PackedType)) == 0);
+                            if (offset != 0)
+                                try expect(diff_bits << @intCast(Log2T, @bitSizeOf(BackingType) - offset) == 0);
+                        }
+
+                        { // Fixed-size Read/Write (Foreign-endian)
+
+                            // Initialize Value
+                            var value: BackingType = @byteSwap(init_value);
+
+                            // Read
+                            const read_value1 = readPackedInt(PackedType, asBytes(&value), offset, foreign_endian);
+                            try expect(read_value1 == @bitCast(PackedType, @truncate(uPackedType, @byteSwap(value) >> @intCast(Log2T, offset))));
+
+                            // Write
+                            writePackedInt(PackedType, asBytes(&value), offset, write_value, foreign_endian);
+                            try expect(write_value == @bitCast(PackedType, @truncate(uPackedType, @byteSwap(value) >> @intCast(Log2T, offset))));
+
+                            // Read again
+                            const read_value2 = readPackedInt(PackedType, asBytes(&value), offset, foreign_endian);
+                            try expect(read_value2 == write_value);
+
+                            // Verify bits outside of the target integer are unmodified
+                            const diff_bits = init_value ^ @byteSwap(value);
+                            if (offset != offset_at_end)
+                                try expect(diff_bits >> @intCast(Log2T, offset + @bitSizeOf(PackedType)) == 0);
+                            if (offset != 0)
+                                try expect(diff_bits << @intCast(Log2T, @bitSizeOf(BackingType) - offset) == 0);
+                        }
+
+                        const signedness = @typeInfo(PackedType).Int.signedness;
+                        const NextPowerOfTwoInt = std.meta.Int(signedness, comptime try std.math.ceilPowerOfTwo(u16, @bitSizeOf(PackedType)));
+                        const ui64 = std.meta.Int(signedness, 64);
+                        inline for ([_]type{ PackedType, NextPowerOfTwoInt, ui64 }) |U| {
+                            { // Variable-size Read/Write (Native-endian)
+
+                                if (@bitSizeOf(U) < @bitSizeOf(PackedType))
+                                    continue;
+
+                                // Initialize Value
+                                var value: BackingType = init_value;
+
+                                // Read
+                                const read_value1 = readVarPackedInt(U, asBytes(&value), offset, @bitSizeOf(PackedType), native_endian, signedness);
+                                try expect(read_value1 == @bitCast(PackedType, @truncate(uPackedType, value >> @intCast(Log2T, offset))));
+
+                                // Write
+                                writeVarPackedInt(asBytes(&value), offset, @bitSizeOf(PackedType), @as(U, write_value), native_endian);
+                                try expect(write_value == @bitCast(PackedType, @truncate(uPackedType, value >> @intCast(Log2T, offset))));
+
+                                // Read again
+                                const read_value2 = readVarPackedInt(U, asBytes(&value), offset, @bitSizeOf(PackedType), native_endian, signedness);
+                                try expect(read_value2 == write_value);
+
+                                // Verify bits outside of the target integer are unmodified
+                                const diff_bits = init_value ^ value;
+                                if (offset != offset_at_end)
+                                    try expect(diff_bits >> @intCast(Log2T, offset + @bitSizeOf(PackedType)) == 0);
+                                if (offset != 0)
+                                    try expect(diff_bits << @intCast(Log2T, @bitSizeOf(BackingType) - offset) == 0);
+                            }
+
+                            { // Variable-size Read/Write (Foreign-endian)
+
+                                if (@bitSizeOf(U) < @bitSizeOf(PackedType))
+                                    continue;
+
+                                // Initialize Value
+                                var value: BackingType = @byteSwap(init_value);
+
+                                // Read
+                                const read_value1 = readVarPackedInt(U, asBytes(&value), offset, @bitSizeOf(PackedType), foreign_endian, signedness);
+                                try expect(read_value1 == @bitCast(PackedType, @truncate(uPackedType, @byteSwap(value) >> @intCast(Log2T, offset))));
+
+                                // Write
+                                writeVarPackedInt(asBytes(&value), offset, @bitSizeOf(PackedType), @as(U, write_value), foreign_endian);
+                                try expect(write_value == @bitCast(PackedType, @truncate(uPackedType, @byteSwap(value) >> @intCast(Log2T, offset))));
+
+                                // Read again
+                                const read_value2 = readVarPackedInt(U, asBytes(&value), offset, @bitSizeOf(PackedType), foreign_endian, signedness);
+                                try expect(read_value2 == write_value);
+
+                                // Verify bits outside of the target integer are unmodified
+                                const diff_bits = init_value ^ @byteSwap(value);
+                                if (offset != offset_at_end)
+                                    try expect(diff_bits >> @intCast(Log2T, offset + @bitSizeOf(PackedType)) == 0);
+                                if (offset != 0)
+                                    try expect(diff_bits << @intCast(Log2T, @bitSizeOf(BackingType) - offset) == 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

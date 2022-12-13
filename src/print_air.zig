@@ -170,6 +170,7 @@ const Writer = struct {
             .bool_to_int,
             .ret,
             .ret_load,
+            .is_named_enum_value,
             .tag_name,
             .error_name,
             .sqrt,
@@ -196,6 +197,7 @@ const Writer = struct {
             .unreach,
             .ret_addr,
             .frame_addr,
+            .save_err_return_trace_index,
             => try w.writeNoOp(s, inst),
 
             .const_ty,
@@ -242,6 +244,8 @@ const Writer = struct {
             .popcount,
             .byte_swap,
             .bit_reverse,
+            .error_set_has_value,
+            .addrspace_cast,
             => try w.writeTyOp(s, inst),
 
             .block,
@@ -322,7 +326,6 @@ const Writer = struct {
     fn writeNoOp(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {
         _ = w;
         _ = inst;
-        _ = s;
         // no-op, no argument to write
     }
 
@@ -397,9 +400,13 @@ const Writer = struct {
     }
 
     fn writeTyPlBin(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {
-        const ty_pl = w.air.instructions.items(.data)[inst].ty_pl;
+        const data = w.air.instructions.items(.data);
+        const ty_pl = data[inst].ty_pl;
         const extra = w.air.extraData(Air.Bin, ty_pl.payload).data;
 
+        const inst_ty = w.air.getRefType(data[inst].ty_pl.ty);
+        try w.writeType(s, inst_ty);
+        try s.writeAll(", ");
         try w.writeOperand(s, inst, 0, extra.lhs);
         try s.writeAll(", ");
         try w.writeOperand(s, inst, 1, extra.rhs);
@@ -743,6 +750,9 @@ const Writer = struct {
     fn writeSwitchBr(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {
         const pl_op = w.air.instructions.items(.data)[inst].pl_op;
         const switch_br = w.air.extraData(Air.SwitchBr, pl_op.payload);
+        const liveness = w.liveness.getSwitchBr(w.gpa, inst, switch_br.data.cases_len + 1) catch
+            @panic("out of memory");
+        defer w.gpa.free(liveness.deaths);
         var extra_index: usize = switch_br.end;
         var case_i: u32 = 0;
 
@@ -763,6 +773,17 @@ const Writer = struct {
             }
             try s.writeAll("] => {\n");
             w.indent += 2;
+
+            const deaths = liveness.deaths[case_i];
+            if (deaths.len != 0) {
+                try s.writeByteNTimes(' ', w.indent);
+                for (deaths) |operand, i| {
+                    if (i != 0) try s.writeAll(" ");
+                    try s.print("%{d}!", .{operand});
+                }
+                try s.writeAll("\n");
+            }
+
             try w.writeBody(s, case_body);
             w.indent -= 2;
             try s.writeByteNTimes(' ', w.indent);
@@ -773,6 +794,17 @@ const Writer = struct {
         if (else_body.len != 0) {
             try s.writeAll(", else => {\n");
             w.indent += 2;
+
+            const deaths = liveness.deaths[liveness.deaths.len - 1];
+            if (deaths.len != 0) {
+                try s.writeByteNTimes(' ', w.indent);
+                for (deaths) |operand, i| {
+                    if (i != 0) try s.writeAll(" ");
+                    try s.print("%{d}!", .{operand});
+                }
+                try s.writeAll("\n");
+            }
+
             try w.writeBody(s, else_body);
             w.indent -= 2;
             try s.writeByteNTimes(' ', w.indent);
@@ -816,7 +848,7 @@ const Writer = struct {
                 if ((bits >> 31) != 0) break :blk false;
                 extra_index += 1;
                 tomb_op_index += 31;
-            } else unreachable;
+            }
         };
         return w.writeInstRef(s, operand, dies);
     }

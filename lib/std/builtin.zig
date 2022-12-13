@@ -38,12 +38,13 @@ pub const StackTrace = struct {
         options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
+        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
+
         // TODO: re-evaluate whether to use format() methods at all.
         // Until then, avoid an error when using GeneralPurposeAllocator with WebAssembly
         // where it tries to call detectTTYConfig here.
         if (builtin.os.tag == .freestanding) return;
 
-        _ = fmt;
         _ = options;
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -157,6 +158,7 @@ pub const CallingConvention = enum {
     SysV,
     Win64,
     PtxKernel,
+    AmdgpuKernel,
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -166,7 +168,7 @@ pub const AddressSpace = enum {
     gs,
     fs,
     ss,
-    // GPU address spaces
+    // GPU address spaces.
     global,
     constant,
     param,
@@ -184,9 +186,7 @@ pub const SourceLocation = struct {
 };
 
 pub const TypeId = std.meta.Tag(Type);
-
-/// TODO deprecated, use `Type`
-pub const TypeInfo = Type;
+pub const TypeInfo = @compileError("deprecated; use Type");
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
@@ -210,7 +210,6 @@ pub const Type = union(enum) {
     Enum: Enum,
     Union: Union,
     Fn: Fn,
-    BoundFn: Fn,
     Opaque: Opaque,
     Frame: Frame,
     AnyFrame: AnyFrame,
@@ -294,6 +293,8 @@ pub const Type = union(enum) {
     /// therefore must be kept in sync with the compiler implementation.
     pub const Struct = struct {
         layout: ContainerLayout,
+        /// Only valid if layout is .Packed
+        backing_integer: ?type = null,
         fields: []const StructField,
         decls: []const Declaration,
         is_tuple: bool,
@@ -357,8 +358,7 @@ pub const Type = union(enum) {
         decls: []const Declaration,
     };
 
-    /// TODO deprecated use Fn.Param
-    pub const FnArg = Fn.Param;
+    pub const FnArg = @compileError("deprecated; use Fn.Param");
 
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
@@ -534,7 +534,7 @@ pub const Version = struct {
                 return std.fmt.format(out_stream, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
             }
         } else {
-            @compileError("Unknown format string: '" ++ fmt ++ "'");
+            std.fmt.invalidFmtError(fmt, self);
         }
     }
 };
@@ -545,7 +545,7 @@ test "Version.parse" {
     comptime (try testVersionParse());
 }
 
-pub fn testVersionParse() !void {
+fn testVersionParse() !void {
     const f = struct {
         fn eql(text: []const u8, v1: u32, v2: u32, v3: u32) !void {
             const v = try Version.parse(text);
@@ -591,45 +591,38 @@ pub fn testVersionParse() !void {
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
-pub const CallOptions = struct {
-    modifier: Modifier = .auto,
+pub const CallModifier = enum {
+    /// Equivalent to function call syntax.
+    auto,
 
-    /// Only valid when `Modifier` is `Modifier.async_kw`.
-    stack: ?[]align(std.Target.stack_align) u8 = null,
+    /// Equivalent to async keyword used with function call syntax.
+    async_kw,
 
-    pub const Modifier = enum {
-        /// Equivalent to function call syntax.
-        auto,
+    /// Prevents tail call optimization. This guarantees that the return
+    /// address will point to the callsite, as opposed to the callsite's
+    /// callsite. If the call is otherwise required to be tail-called
+    /// or inlined, a compile error is emitted instead.
+    never_tail,
 
-        /// Equivalent to async keyword used with function call syntax.
-        async_kw,
+    /// Guarantees that the call will not be inlined. If the call is
+    /// otherwise required to be inlined, a compile error is emitted instead.
+    never_inline,
 
-        /// Prevents tail call optimization. This guarantees that the return
-        /// address will point to the callsite, as opposed to the callsite's
-        /// callsite. If the call is otherwise required to be tail-called
-        /// or inlined, a compile error is emitted instead.
-        never_tail,
+    /// Asserts that the function call will not suspend. This allows a
+    /// non-async function to call an async function.
+    no_async,
 
-        /// Guarantees that the call will not be inlined. If the call is
-        /// otherwise required to be inlined, a compile error is emitted instead.
-        never_inline,
+    /// Guarantees that the call will be generated with tail call optimization.
+    /// If this is not possible, a compile error is emitted instead.
+    always_tail,
 
-        /// Asserts that the function call will not suspend. This allows a
-        /// non-async function to call an async function.
-        no_async,
+    /// Guarantees that the call will inlined at the callsite.
+    /// If this is not possible, a compile error is emitted instead.
+    always_inline,
 
-        /// Guarantees that the call will be generated with tail call optimization.
-        /// If this is not possible, a compile error is emitted instead.
-        always_tail,
-
-        /// Guarantees that the call will inlined at the callsite.
-        /// If this is not possible, a compile error is emitted instead.
-        always_inline,
-
-        /// Evaluates the call at compile-time. If the call cannot be completed at
-        /// compile-time, a compile error is emitted instead.
-        compile_time,
-    };
+    /// Evaluates the call at compile-time. If the call cannot be completed at
+    /// compile-time, a compile error is emitted instead.
+    compile_time,
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -697,8 +690,9 @@ pub const CompilerBackend = enum(u64) {
     /// in which case this value is appropriate. Be cool and make sure your
     /// code supports `other` Zig compilers!
     other = 0,
-    /// The original Zig compiler created in 2015 by Andrew Kelley.
-    /// Implemented in C++. Uses LLVM.
+    /// The original Zig compiler created in 2015 by Andrew Kelley. Implemented
+    /// in C++. Used LLVM. Deleted from the ZSF ziglang/zig codebase on
+    /// December 6th, 2022.
     stage1 = 1,
     /// The reference implementation self-hosted compiler of Zig, using the
     /// LLVM backend.
@@ -737,19 +731,13 @@ pub const CompilerBackend = enum(u64) {
 /// therefore must be kept in sync with the compiler implementation.
 pub const TestFn = struct {
     name: []const u8,
-    func: testFnProto,
+    func: *const fn () anyerror!void,
     async_frame_size: ?usize,
-};
-
-/// stage1 is *wrong*. It is not yet updated to support the new function type semantics.
-const testFnProto = switch (builtin.zig_backend) {
-    .stage1 => fn () anyerror!void, // wrong!
-    else => *const fn () anyerror!void,
 };
 
 /// This function type is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
-pub const PanicFn = fn ([]const u8, ?*StackTrace) noreturn;
+pub const PanicFn = fn ([]const u8, ?*StackTrace, ?usize) noreturn;
 
 /// This function is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
@@ -762,11 +750,11 @@ else
 
 /// This function is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
-pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace) noreturn {
+pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace, ret_addr: ?usize) noreturn {
     @setCold(true);
 
-    // Until self-hosted catches up with stage1 language features, we have a simpler
-    // default panic function:
+    // For backends that cannot handle the language features depended on by the
+    // default panic handler, we have a simpler panic handler:
     if (builtin.zig_backend == .stage2_c or
         builtin.zig_backend == .stage2_wasm or
         builtin.zig_backend == .stage2_arm or
@@ -839,8 +827,9 @@ pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace) noreturn
             // Didn't have boot_services, just fallback to whatever.
             std.os.abort();
         },
+        .cuda => std.os.abort(),
         else => {
-            const first_trace_addr = @returnAddress();
+            const first_trace_addr = ret_addr orelse @returnAddress();
             std.debug.panicImpl(error_return_trace, first_trace_addr, msg);
         },
     }
@@ -854,29 +843,64 @@ pub fn checkNonScalarSentinel(expected: anytype, actual: @TypeOf(expected)) void
 
 pub fn panicSentinelMismatch(expected: anytype, actual: @TypeOf(expected)) noreturn {
     @setCold(true);
-    std.debug.panic("sentinel mismatch: expected {any}, found {any}", .{ expected, actual });
+    std.debug.panicExtra(null, @returnAddress(), "sentinel mismatch: expected {any}, found {any}", .{ expected, actual });
 }
 
 pub fn panicUnwrapError(st: ?*StackTrace, err: anyerror) noreturn {
     @setCold(true);
-    std.debug.panicExtra(st, "attempt to unwrap error: {s}", .{@errorName(err)});
+    std.debug.panicExtra(st, @returnAddress(), "attempt to unwrap error: {s}", .{@errorName(err)});
 }
 
 pub fn panicOutOfBounds(index: usize, len: usize) noreturn {
     @setCold(true);
-    std.debug.panic("attempt to index out of bound: index {d}, len {d}", .{ index, len });
+    std.debug.panicExtra(null, @returnAddress(), "index out of bounds: index {d}, len {d}", .{ index, len });
 }
 
-pub noinline fn returnError(maybe_st: ?*StackTrace) void {
+pub fn panicStartGreaterThanEnd(start: usize, end: usize) noreturn {
+    @setCold(true);
+    std.debug.panicExtra(null, @returnAddress(), "start index {d} is larger than end index {d}", .{ start, end });
+}
+
+pub fn panicInactiveUnionField(active: anytype, wanted: @TypeOf(active)) noreturn {
+    @setCold(true);
+    std.debug.panicExtra(null, @returnAddress(), "access of union field '{s}' while field '{s}' is active", .{ @tagName(wanted), @tagName(active) });
+}
+
+pub const panic_messages = struct {
+    pub const unreach = "reached unreachable code";
+    pub const unwrap_null = "attempt to use null value";
+    pub const cast_to_null = "cast causes pointer to be null";
+    pub const incorrect_alignment = "incorrect alignment";
+    pub const invalid_error_code = "invalid error code";
+    pub const cast_truncated_data = "integer cast truncated bits";
+    pub const negative_to_unsigned = "attempt to cast negative value to unsigned integer";
+    pub const integer_overflow = "integer overflow";
+    pub const shl_overflow = "left shift overflowed bits";
+    pub const shr_overflow = "right shift overflowed bits";
+    pub const divide_by_zero = "division by zero";
+    pub const exact_division_remainder = "exact division produced remainder";
+    pub const inactive_union_field = "access of inactive union field";
+    pub const integer_part_out_of_bounds = "integer part of floating point value out of bounds";
+    pub const corrupt_switch = "switch on corrupt value";
+    pub const shift_rhs_too_big = "shift amount is greater than the type size";
+    pub const invalid_enum_value = "invalid enum value";
+    pub const sentinel_mismatch = "sentinel mismatch";
+    pub const unwrap_error = "attempt to unwrap error";
+    pub const index_out_of_bounds = "index out of bounds";
+    pub const start_index_greater_than_end = "start index is larger than end index";
+};
+
+pub noinline fn returnError(st: *StackTrace) void {
     @setCold(true);
     @setRuntimeSafety(false);
-    const st = maybe_st orelse return;
     addErrRetTraceAddr(st, @returnAddress());
 }
 
 pub inline fn addErrRetTraceAddr(st: *StackTrace, addr: usize) void {
-    st.instruction_addresses[st.index & (st.instruction_addresses.len - 1)] = addr;
-    st.index +%= 1;
+    if (st.index < st.instruction_addresses.len)
+        st.instruction_addresses[st.index] = addr;
+
+    st.index += 1;
 }
 
 const std = @import("std.zig");

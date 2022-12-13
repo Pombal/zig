@@ -8,9 +8,8 @@ comptime {
         @export(__gnu_f2h_ieee, .{ .name = "__gnu_f2h_ieee", .linkage = common.linkage });
     } else if (common.want_aeabi) {
         @export(__aeabi_f2h, .{ .name = "__aeabi_f2h", .linkage = common.linkage });
-    } else {
-        @export(__truncsfhf2, .{ .name = "__truncsfhf2", .linkage = common.linkage });
     }
+    @export(__truncsfhf2, .{ .name = "__truncsfhf2", .linkage = common.linkage });
 }
 
 pub fn __truncsfhf2(a: f32) callconv(.C) common.F16T {

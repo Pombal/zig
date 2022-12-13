@@ -7,10 +7,7 @@ const iovec_const = std.os.iovec_const;
 extern "c" fn __errno() *c_int;
 pub const _errno = __errno;
 
-pub const dl_iterate_phdr_callback = switch (builtin.zig_backend) {
-    .stage1 => fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-    else => *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-};
+pub const dl_iterate_phdr_callback = *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int;
 pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*anyopaque) c_int;
 
 pub extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
@@ -982,11 +979,11 @@ pub const winsize = extern struct {
 const NSIG = 33;
 
 pub const SIG = struct {
-    pub const DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
-    pub const ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
-    pub const CATCH = @intToPtr(?Sigaction.sigaction_fn, 2);
-    pub const HOLD = @intToPtr(?Sigaction.sigaction_fn, 3);
+    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
+    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
+    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
+    pub const CATCH = @intToPtr(?Sigaction.handler_fn, 2);
+    pub const HOLD = @intToPtr(?Sigaction.handler_fn, 3);
 
     pub const HUP = 1;
     pub const INT = 2;
@@ -1029,14 +1026,8 @@ pub const SIG = struct {
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const handler_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int) callconv(.C) void,
-        else => *const fn (c_int) callconv(.C) void,
-    };
-    pub const sigaction_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-        else => *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-    };
+    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
+    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
 
     /// signal handler
     handler: extern union {
@@ -1119,25 +1110,10 @@ pub usingnamespace switch (builtin.cpu.arch) {
             sc_rsp: c_long,
             sc_ss: c_long,
 
-            sc_fpstate: fxsave64,
+            sc_fpstate: *anyopaque, // struct fxsave64 *
             __sc_unused: c_int,
             sc_mask: c_int,
             sc_cookie: c_long,
-        };
-
-        pub const fxsave64 = packed struct {
-            fx_fcw: u16,
-            fx_fsw: u16,
-            fx_ftw: u8,
-            fx_unused1: u8,
-            fx_fop: u16,
-            fx_rip: u64,
-            fx_rdp: u64,
-            fx_mxcsr: u32,
-            fx_mxcsr_mask: u32,
-            fx_st: [8][2]u64,
-            fx_xmm: [16][2]u64,
-            fx_unused3: [96]u8,
         };
     },
     else => struct {},
@@ -1271,7 +1247,7 @@ pub const E = enum(u16) {
 };
 
 const _MAX_PAGE_SHIFT = switch (builtin.cpu.arch) {
-    .i386 => 12,
+    .x86 => 12,
     .sparc64 => 13,
 };
 pub const MINSIGSTKSZ = 1 << _MAX_PAGE_SHIFT;

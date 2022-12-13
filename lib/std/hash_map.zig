@@ -120,8 +120,6 @@ pub const StringIndexAdapter = struct {
     }
 };
 
-pub const DefaultMaxLoadPercentage = @compileError("deprecated; use `default_max_load_percentage`");
-
 pub const default_max_load_percentage = 80;
 
 /// This function issues a compile error with a helpful message if there
@@ -517,8 +515,6 @@ pub fn HashMap(
             return self.unmanaged.getOrPutValueContext(self.allocator, key, value, self.ctx);
         }
 
-        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
-
         /// Increases capacity, guaranteeing that insertions up until the
         /// `expected_count` will not cause an allocation, and therefore cannot fail.
         pub fn ensureTotalCapacity(self: *Self, expected_count: Size) Allocator.Error!void {
@@ -676,6 +672,14 @@ pub fn HashMap(
         ) Allocator.Error!HashMap(K, V, @TypeOf(new_ctx), max_load_percentage) {
             var other = try self.unmanaged.cloneContext(new_allocator, new_ctx);
             return other.promoteContext(new_allocator, new_ctx);
+        }
+
+        /// Set the map to an empty state, making deinitialization a no-op, and
+        /// returning a copy of the original.
+        pub fn move(self: *Self) Self {
+            const result = self.*;
+            self.unmanaged = .{};
+            return result;
         }
     };
 }
@@ -899,8 +903,6 @@ pub fn HashMapUnmanaged(
             new_cap = math.ceilPowerOfTwo(u32, new_cap) catch unreachable;
             return new_cap;
         }
-
-        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
 
         pub fn ensureTotalCapacity(self: *Self, allocator: Allocator, new_size: Size) Allocator.Error!void {
             if (@sizeOf(Context) != 0)
@@ -1492,6 +1494,14 @@ pub fn HashMapUnmanaged(
             }
 
             return other;
+        }
+
+        /// Set the map to an empty state, making deinitialization a no-op, and
+        /// returning a copy of the original.
+        pub fn move(self: *Self) Self {
+            const result = self.*;
+            self.* = .{};
+            return result;
         }
 
         fn grow(self: *Self, allocator: Allocator, new_capacity: Size, ctx: Context) Allocator.Error!void {

@@ -37,10 +37,7 @@ pub extern "c" fn sendfile(
     flags: u32,
 ) c_int;
 
-pub const dl_iterate_phdr_callback = switch (builtin.zig_backend) {
-    .stage1 => fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-    else => *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-};
+pub const dl_iterate_phdr_callback = *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int;
 pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*anyopaque) c_int;
 
 pub const pthread_mutex_t = extern struct {
@@ -54,8 +51,7 @@ pub const pthread_rwlock_t = extern struct {
 };
 
 pub const pthread_attr_t = extern struct {
-    __size: [56]u8,
-    __align: c_long,
+    inner: ?*anyopaque = null,
 };
 
 pub const sem_t = extern struct {
@@ -181,6 +177,7 @@ pub const AI = struct {
 pub const blksize_t = i32;
 pub const blkcnt_t = i64;
 pub const clockid_t = i32;
+pub const fflags_t = u32;
 pub const fsblkcnt_t = u64;
 pub const fsfilcnt_t = u64;
 pub const nlink_t = u64;
@@ -201,13 +198,20 @@ pub const suseconds_t = c_long;
 
 /// Renamed from `kevent` to `Kevent` to avoid conflict with function name.
 pub const Kevent = extern struct {
+    /// Identifier for this event.
     ident: usize,
+    /// Filter for event.
     filter: i16,
+    /// Action flags for kqueue.
     flags: u16,
+    /// Filter flag value.
     fflags: u32,
+    /// Filter data value.
     data: i64,
+    /// Opaque user data identifier.
     udata: usize,
-    // TODO ext
+    /// Future extensions.
+    _ext: [4]u64 = [_]u64{0} ** 4,
 };
 
 // Modes and flags for dlopen()
@@ -230,90 +234,108 @@ pub const RTLD = struct {
     /// Do not load if not already loaded.
     pub const NOLOAD = 0x02000;
 };
+
 pub const dl_phdr_info = extern struct {
-    dlpi_addr: usize,
+    /// Module relocation base.
+    dlpi_addr: if (builtin.cpu.arch.ptrBitWidth() == 32) std.elf.Elf32_Addr else std.elf.Elf64_Addr,
+    /// Module name.
     dlpi_name: ?[*:0]const u8,
+    /// Pointer to module's phdr.
     dlpi_phdr: [*]std.elf.Phdr,
+    /// Number of entries in phdr.
     dlpi_phnum: u16,
+    /// Total number of loads.
+    dlpi_adds: u64,
+    /// Total number of unloads.
+    dlpi_subs: u64,
+    dlpi_tls_modid: usize,
+    dlpi_tls_data: ?*anyopaque,
 };
 
 pub const Flock = extern struct {
+    /// Starting offset.
     start: off_t,
+    /// Number of consecutive bytes to be locked.
+    /// A value of 0 means to the end of the file.
     len: off_t,
+    /// Lock owner.
     pid: pid_t,
+    /// Lock type.
     type: i16,
+    /// Type of the start member.
     whence: i16,
+    /// Remote system id or zero for local.
     sysid: i32,
-    __unused: [4]u8,
 };
 
 pub const msghdr = extern struct {
-    /// optional address
+    /// Optional address.
     msg_name: ?*sockaddr,
-
-    /// size of address
+    /// Size of address.
     msg_namelen: socklen_t,
-
-    /// scatter/gather array
+    /// Scatter/gather array.
     msg_iov: [*]iovec,
-
-    /// # elements in msg_iov
+    /// Number of elements in msg_iov.
     msg_iovlen: i32,
-
-    /// ancillary data
+    /// Ancillary data.
     msg_control: ?*anyopaque,
-
-    /// ancillary data buffer len
+    /// Ancillary data buffer length.
     msg_controllen: socklen_t,
-
-    /// flags on received message
+    /// Flags on received message.
     msg_flags: i32,
 };
 
 pub const msghdr_const = extern struct {
-    /// optional address
+    /// Optional address.
     msg_name: ?*const sockaddr,
-
-    /// size of address
+    /// Size of address.
     msg_namelen: socklen_t,
-
-    /// scatter/gather array
+    /// Scatter/gather array.
     msg_iov: [*]iovec_const,
-
-    /// # elements in msg_iov
+    /// Number of elements in msg_iov.
     msg_iovlen: i32,
-
-    /// ancillary data
+    /// Ancillary data.
     msg_control: ?*anyopaque,
-
-    /// ancillary data buffer len
+    /// Ancillary data buffer length.
     msg_controllen: socklen_t,
-
-    /// flags on received message
+    /// Flags on received message.
     msg_flags: i32,
 };
 
 pub const Stat = extern struct {
+    /// The inode's device.
     dev: dev_t,
+    /// The inode's number.
     ino: ino_t,
+    /// Number of hard links.
     nlink: nlink_t,
-
+    /// Inode protection mode.
     mode: mode_t,
-    __pad0: u16,
+    __pad0: i16,
+    /// User ID of the file's owner.
     uid: uid_t,
+    /// Group ID of the file's group.
     gid: gid_t,
-    __pad1: u32,
+    __pad1: i32,
+    /// Device type.
     rdev: dev_t,
-
+    /// Time of last access.
     atim: timespec,
+    /// Time of last data modification.
     mtim: timespec,
+    /// Time of last file status change.
     ctim: timespec,
+    /// Time of file creation.
     birthtim: timespec,
-
+    /// File size, in bytes.
     size: off_t,
-    blocks: i64,
-    blksize: isize,
-    flags: u32,
+    /// Blocks allocated for file.
+    blocks: blkcnt_t,
+    /// Optimal blocksize for I/O.
+    blksize: blksize_t,
+    /// User defined flags for file.
+    flags: fflags_t,
+    /// File generation number.
     gen: u64,
     __spare: [10]u64,
 
@@ -347,14 +369,20 @@ pub const timeval = extern struct {
 };
 
 pub const dirent = extern struct {
-    d_fileno: usize,
-    d_off: i64,
+    /// File number of entry.
+    d_fileno: ino_t,
+    /// Directory offset of entry.
+    d_off: off_t,
+    /// Length of this record.
     d_reclen: u16,
+    /// File type, one of DT_.
     d_type: u8,
-    d_pad0: u8,
+    _d_pad0: u8,
+    /// Length of the d_name member.
     d_namlen: u16,
-    d_pad1: u16,
-    d_name: [256]u8,
+    _d_pad1: u16,
+    /// Name of entry.
+    d_name: [255:0]u8,
 
     pub fn reclen(self: dirent) u16 {
         return self.d_reclen;
@@ -410,7 +438,7 @@ pub const kinfo_file = extern struct {
     /// A zero value is for the sentinel record at the end of an array.
     structsize: c_int,
     /// Descriptor type.
-    @"type": c_int,
+    type: c_int,
     /// Array index.
     fd: fd_t,
     /// Reference count.
@@ -428,7 +456,7 @@ pub const kinfo_file = extern struct {
             /// Socket domain.
             domain: c_int,
             /// Socket type.
-            @"type": c_int,
+            type: c_int,
             /// Socket protocol.
             protocol: c_int,
             /// Socket address.
@@ -450,7 +478,7 @@ pub const kinfo_file = extern struct {
         },
         file: extern struct {
             /// Vnode type.
-            @"type": i32,
+            type: i32,
             // Reserved for future use
             _spare1: [3]i32,
             _spare2: [30]u64,
@@ -670,9 +698,9 @@ pub const SIG = struct {
     pub const UNBLOCK = 2;
     pub const SETMASK = 3;
 
-    pub const DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
-    pub const ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
+    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
+    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
+    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
 
     pub const WORDS = 4;
     pub const MAXSIG = 128;
@@ -1169,14 +1197,8 @@ const NSIG = 32;
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const handler_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int) callconv(.C) void,
-        else => *const fn (c_int) callconv(.C) void,
-    };
-    pub const sigaction_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-        else => *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-    };
+    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
+    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
 
     /// signal handler
     handler: extern union {
@@ -1192,16 +1214,30 @@ pub const Sigaction = extern struct {
 };
 
 pub const siginfo_t = extern struct {
+    // Signal number.
     signo: c_int,
+    // Errno association.
     errno: c_int,
+    /// Signal code.
+    ///
+    /// Cause of signal, one of the SI_ macros or signal-specific values, i.e.
+    /// one of the FPE_... values for SIGFPE.
+    /// This value is equivalent to the second argument to an old-style FreeBSD
+    /// signal handler.
     code: c_int,
+    /// Sending process.
     pid: pid_t,
+    /// Sender's ruid.
     uid: uid_t,
+    /// Exit value.
     status: c_int,
+    /// Faulting instruction.
     addr: ?*anyopaque,
+    /// Signal value.
     value: sigval,
     reason: extern union {
         fault: extern struct {
+            /// Machine specific trap code.
             trapno: c_int,
         },
         timer: extern struct {
@@ -1212,6 +1248,7 @@ pub const siginfo_t = extern struct {
             mqd: c_int,
         },
         poll: extern struct {
+            /// Band event for SIGPOLL. UNUSED.
             band: c_long,
         },
         spare: extern struct {
@@ -1263,6 +1300,15 @@ pub usingnamespace switch (builtin.cpu.arch) {
             rflags: u64,
             rsp: u64,
             ss: u64,
+            len: u64,
+            fpformat: u64,
+            ownedfp: u64,
+            fpstate: [64]u64 align(16),
+            fsbase: u64,
+            gsbase: u64,
+            xfpustate: u64,
+            xfpustate_len: u64,
+            spare: [4]u64,
         };
     },
     else => struct {},
@@ -1394,11 +1440,12 @@ pub const E = enum(u16) {
     CAPMODE = 94, // Not permitted in capability mode
     NOTRECOVERABLE = 95, // State not recoverable
     OWNERDEAD = 96, // Previous owner died
+    INTEGRITY = 97, // Integrity check failed
     _,
 };
 
 pub const MINSIGSTKSZ = switch (builtin.cpu.arch) {
-    .i386, .x86_64 => 2048,
+    .x86, .x86_64 => 2048,
     .arm, .aarch64 => 4096,
     else => @compileError("MINSIGSTKSZ not defined for this architecture"),
 };
@@ -1408,8 +1455,11 @@ pub const SS_ONSTACK = 1;
 pub const SS_DISABLE = 4;
 
 pub const stack_t = extern struct {
-    sp: [*]u8,
-    size: isize,
+    /// Signal stack base.
+    sp: *anyopaque,
+    /// Signal stack length.
+    size: usize,
+    /// SS_DISABLE and/or SS_ONSTACK.
     flags: i32,
 };
 
@@ -1826,3 +1876,4 @@ pub const MFD = struct {
 };
 
 pub extern "c" fn memfd_create(name: [*:0]const u8, flags: c_uint) c_int;
+pub extern "c" fn copy_file_range(fd_in: fd_t, off_in: ?*off_t, fd_out: fd_t, off_out: ?*off_t, len: usize, flags: u32) usize;

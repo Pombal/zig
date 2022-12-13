@@ -9,10 +9,7 @@ const rusage = std.c.rusage;
 extern "c" fn __errno() *c_int;
 pub const _errno = __errno;
 
-pub const dl_iterate_phdr_callback = switch (builtin.zig_backend) {
-    .stage1 => fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-    else => *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-};
+pub const dl_iterate_phdr_callback = *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int;
 pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*anyopaque) c_int;
 
 pub extern "c" fn _lwp_self() lwpid_t;
@@ -83,7 +80,7 @@ pub const pthread_cond_t = extern struct {
 pub const pthread_rwlock_t = extern struct {
     magic: c_uint = 0x99990009,
     interlock: switch (builtin.cpu.arch) {
-        .aarch64, .sparc, .x86_64, .i386 => u8,
+        .aarch64, .sparc, .x86_64, .x86 => u8,
         .arm, .powerpc => c_int,
         else => unreachable,
     } = 0,
@@ -100,7 +97,7 @@ const pthread_spin_t = switch (builtin.cpu.arch) {
     .aarch64, .aarch64_be, .aarch64_32 => u8,
     .mips, .mipsel, .mips64, .mips64el => u32,
     .powerpc, .powerpc64, .powerpc64le => i32,
-    .i386, .x86_64 => u8,
+    .x86, .x86_64 => u8,
     .arm, .armeb, .thumb, .thumbeb => i32,
     .sparc, .sparcel, .sparc64 => u8,
     .riscv32, .riscv64 => u32,
@@ -108,7 +105,7 @@ const pthread_spin_t = switch (builtin.cpu.arch) {
 };
 
 const padded_pthread_spin_t = switch (builtin.cpu.arch) {
-    .i386, .x86_64 => u32,
+    .x86, .x86_64 => u32,
     .sparc, .sparcel, .sparc64 => u32,
     else => pthread_spin_t,
 };
@@ -910,9 +907,9 @@ pub const winsize = extern struct {
 const NSIG = 32;
 
 pub const SIG = struct {
-    pub const DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
-    pub const ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
+    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
+    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
+    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
 
     pub const WORDS = 4;
     pub const MAXSIG = 128;
@@ -974,14 +971,8 @@ pub const SIG = struct {
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const handler_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int) callconv(.C) void,
-        else => *const fn (c_int) callconv(.C) void,
-    };
-    pub const sigaction_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-        else => *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-    };
+    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
+    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
 
     /// signal handler
     handler: extern union {
@@ -1076,7 +1067,7 @@ pub const ucontext_t = extern struct {
     mcontext: mcontext_t,
     __pad: [
         switch (builtin.cpu.arch) {
-            .i386 => 4,
+            .x86 => 4,
             .mips, .mipsel, .mips64, .mips64el => 14,
             .arm, .armeb, .thumb, .thumbeb => 1,
             .sparc, .sparcel, .sparc64 => if (@sizeOf(usize) == 4) 43 else 8,

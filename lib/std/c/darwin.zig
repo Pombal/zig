@@ -80,11 +80,11 @@ pub extern "c" fn posix_memalign(memptr: *?*anyopaque, alignment: usize, size: u
 pub const posix_spawnattr_t = *opaque {};
 pub const posix_spawn_file_actions_t = *opaque {};
 pub extern "c" fn posix_spawnattr_init(attr: *posix_spawnattr_t) c_int;
-pub extern "c" fn posix_spawnattr_destroy(attr: *posix_spawnattr_t) void;
+pub extern "c" fn posix_spawnattr_destroy(attr: *posix_spawnattr_t) c_int;
 pub extern "c" fn posix_spawnattr_setflags(attr: *posix_spawnattr_t, flags: c_short) c_int;
 pub extern "c" fn posix_spawnattr_getflags(attr: *const posix_spawnattr_t, flags: *c_short) c_int;
 pub extern "c" fn posix_spawn_file_actions_init(actions: *posix_spawn_file_actions_t) c_int;
-pub extern "c" fn posix_spawn_file_actions_destroy(actions: *posix_spawn_file_actions_t) void;
+pub extern "c" fn posix_spawn_file_actions_destroy(actions: *posix_spawn_file_actions_t) c_int;
 pub extern "c" fn posix_spawn_file_actions_addclose(actions: *posix_spawn_file_actions_t, filedes: fd_t) c_int;
 pub extern "c" fn posix_spawn_file_actions_addopen(
     actions: *posix_spawn_file_actions_t,
@@ -703,11 +703,18 @@ pub extern "c" fn os_unfair_lock_assert_not_owner(o: os_unfair_lock_t) void;
 
 // See: https://opensource.apple.com/source/xnu/xnu-6153.141.1/bsd/sys/_types.h.auto.html
 // TODO: audit mode_t/pid_t, should likely be u16/i32
+pub const blkcnt_t = i64;
+pub const blksize_t = i32;
+pub const dev_t = i32;
 pub const fd_t = c_int;
 pub const pid_t = c_int;
 pub const mode_t = c_uint;
 pub const uid_t = u32;
 pub const gid_t = u32;
+
+// machine/_types.h
+pub const clock_t = c_ulong;
+pub const time_t = c_long;
 
 pub const in_port_t = u16;
 pub const sa_family_t = u8;
@@ -814,10 +821,10 @@ pub const sigset_t = u32;
 pub const empty_sigset: sigset_t = 0;
 
 pub const SIG = struct {
-    pub const ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
-    pub const DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
-    pub const HOLD = @intToPtr(?Sigaction.sigaction_fn, 5);
+    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
+    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
+    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
+    pub const HOLD = @intToPtr(?Sigaction.handler_fn, 5);
 
     /// block specified signal set
     pub const _BLOCK = 1;
@@ -911,14 +918,8 @@ pub const siginfo_t = extern struct {
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with function name.
 pub const Sigaction = extern struct {
-    pub const handler_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int) callconv(.C) void,
-        else => *const fn (c_int) callconv(.C) void,
-    };
-    pub const sigaction_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-        else => *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-    };
+    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
+    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
 
     handler: extern union {
         handler: ?handler_fn,
@@ -1013,6 +1014,7 @@ pub const vm_machine_attribute_val_t = isize;
 pub const CALENDAR_CLOCK = 1;
 
 pub const PATH_MAX = 1024;
+pub const NAME_MAX = 255;
 pub const IOV_MAX = 16;
 
 pub const STDIN_FILENO = 0;

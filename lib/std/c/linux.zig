@@ -263,10 +263,7 @@ pub extern "c" fn inotify_rm_watch(fd: fd_t, wd: c_int) c_int;
 /// See std.elf for constants for this
 pub extern "c" fn getauxval(__type: c_ulong) c_ulong;
 
-pub const dl_iterate_phdr_callback = switch (builtin.zig_backend) {
-    .stage1 => fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-    else => *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-};
+pub const dl_iterate_phdr_callback = *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int;
 
 pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*anyopaque) c_int;
 
@@ -312,22 +309,10 @@ pub const pthread_cond_t = extern struct {
 pub const pthread_rwlock_t = switch (native_abi) {
     .android => switch (@sizeOf(usize)) {
         4 => extern struct {
-            lock: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER,
-            cond: std.c.pthread_cond_t = std.c.PTHREAD_COND_INITIALIZER,
-            numLocks: c_int = 0,
-            writerThreadId: c_int = 0,
-            pendingReaders: c_int = 0,
-            pendingWriters: c_int = 0,
-            attr: i32 = 0,
-            __reserved: [12]u8 = [_]u8{0} ** 2,
+            size: [40]u8 align(@alignOf(usize)) = [_]u8{0} ** 40,
         },
         8 => extern struct {
-            numLocks: c_int = 0,
-            writerThreadId: c_int = 0,
-            pendingReaders: c_int = 0,
-            pendingWriters: c_int = 0,
-            attr: i32 = 0,
-            __reserved: [36]u8 = [_]u8{0} ** 36,
+            size: [56]u8 align(@alignOf(usize)) = [_]u8{0} ** 56,
         },
         else => @compileError("impossible pointer size"),
     },
@@ -335,6 +320,9 @@ pub const pthread_rwlock_t = switch (native_abi) {
         size: [56]u8 align(@alignOf(usize)) = [_]u8{0} ** 56,
     },
 };
+pub usingnamespace if (native_abi == .android) struct {
+    pub const pthread_key_t = c_int;
+} else struct {};
 pub const sem_t = extern struct {
     __size: [__SIZEOF_SEM_T]u8 align(@alignOf(usize)),
 };

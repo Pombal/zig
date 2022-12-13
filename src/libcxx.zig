@@ -7,6 +7,13 @@ const Compilation = @import("Compilation.zig");
 const build_options = @import("build_options");
 const trace = @import("tracy.zig").trace;
 
+pub const AbiVersion = enum(u2) {
+    @"1" = 1,
+    @"2" = 2,
+
+    pub const default: AbiVersion = .@"1";
+};
+
 const libcxxabi_files = [_][]const u8{
     "src/abort_message.cpp",
     "src/cxa_aux_runtime.cpp",
@@ -54,6 +61,7 @@ const libcxx_files = [_][]const u8{
     "src/ios.cpp",
     "src/ios.instantiations.cpp",
     "src/iostream.cpp",
+    "src/legacy_debug_handler.cpp",
     "src/legacy_pointer_safety.cpp",
     "src/locale.cpp",
     "src/memory.cpp",
@@ -85,6 +93,7 @@ const libcxx_files = [_][]const u8{
     "src/valarray.cpp",
     "src/variant.cpp",
     "src/vector.cpp",
+    "src/verbose_abort.cpp",
 };
 
 pub fn buildLibCXX(comp: *Compilation) !void {
@@ -118,6 +127,12 @@ pub fn buildLibCXX(comp: *Compilation) !void {
     const cxxabi_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxxabi", "include" });
     const cxx_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", "include" });
     const cxx_src_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", "src" });
+    const abi_version_arg = try std.fmt.allocPrint(arena, "-D_LIBCPP_ABI_VERSION={d}", .{
+        @enumToInt(comp.libcxx_abi_version),
+    });
+    const abi_namespace_arg = try std.fmt.allocPrint(arena, "-D_LIBCPP_ABI_NAMESPACE=__{d}", .{
+        @enumToInt(comp.libcxx_abi_version),
+    });
     var c_source_files = try std.ArrayList(Compilation.CSourceFile).initCapacity(arena, libcxx_files.len);
 
     for (libcxx_files) |cxx_src| {
@@ -150,6 +165,10 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         try cflags.append("-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS");
         try cflags.append("-D_LIBCPP_DISABLE_NEW_DELETE_DEFINITIONS");
         try cflags.append("-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS");
+
+        try cflags.append(abi_version_arg);
+        try cflags.append(abi_namespace_arg);
+
         try cflags.append("-fvisibility=hidden");
         try cflags.append("-fvisibility-inlines-hidden");
 
@@ -168,15 +187,6 @@ pub fn buildLibCXX(comp: *Compilation) !void {
             try cflags.append("-faligned-allocation");
         }
 
-        try cflags.append("-I");
-        try cflags.append(cxx_include_path);
-
-        try cflags.append("-I");
-        try cflags.append(cxxabi_include_path);
-
-        try cflags.append("-I");
-        try cflags.append(cxx_src_include_path);
-
         if (target_util.supports_fpic(target)) {
             try cflags.append("-fPIC");
         }
@@ -184,9 +194,24 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         try cflags.append("-std=c++20");
         try cflags.append("-Wno-user-defined-literals");
 
+        // These depend on only the zig lib directory file path, which is
+        // purposefully either in the cache or not in the cache. The decision
+        // should not be overridden here.
+        var cache_exempt_flags = std.ArrayList([]const u8).init(arena);
+
+        try cache_exempt_flags.append("-I");
+        try cache_exempt_flags.append(cxx_include_path);
+
+        try cache_exempt_flags.append("-I");
+        try cache_exempt_flags.append(cxxabi_include_path);
+
+        try cache_exempt_flags.append("-I");
+        try cache_exempt_flags.append(cxx_src_include_path);
+
         c_source_files.appendAssumeCapacity(.{
             .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", cxx_src }),
             .extra_flags = cflags.items,
+            .cache_exempt_flags = cache_exempt_flags.items,
         });
     }
 
@@ -206,6 +231,7 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         .link_mode = link_mode,
         .want_sanitize_c = false,
         .want_stack_check = false,
+        .want_stack_protector = 0,
         .want_red_zone = comp.bin_file.options.red_zone,
         .omit_frame_pointer = comp.bin_file.options.omit_frame_pointer,
         .want_valgrind = false,
@@ -274,6 +300,12 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
     const cxxabi_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxxabi", "include" });
     const cxx_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", "include" });
     const cxx_src_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", "src" });
+    const abi_version_arg = try std.fmt.allocPrint(arena, "-D_LIBCPP_ABI_VERSION={d}", .{
+        @enumToInt(comp.libcxx_abi_version),
+    });
+    const abi_namespace_arg = try std.fmt.allocPrint(arena, "-D_LIBCPP_ABI_NAMESPACE=__{d}", .{
+        @enumToInt(comp.libcxx_abi_version),
+    });
     var c_source_files = try std.ArrayList(Compilation.CSourceFile).initCapacity(arena, libcxxabi_files.len);
 
     for (libcxxabi_files) |cxxabi_src| {
@@ -294,7 +326,7 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
             }
             try cflags.append("-D_LIBCXXABI_HAS_NO_THREADS");
             try cflags.append("-D_LIBCPP_HAS_NO_THREADS");
-        } else {
+        } else if (target.abi.isGnu()) {
             try cflags.append("-DHAVE___CXA_THREAD_ATEXIT_IMPL");
         }
 
@@ -303,6 +335,10 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
         try cflags.append("-D_LIBCXXABI_BUILDING_LIBRARY");
         try cflags.append("-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS");
         try cflags.append("-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS");
+
+        try cflags.append(abi_version_arg);
+        try cflags.append(abi_namespace_arg);
+
         try cflags.append("-fvisibility=hidden");
         try cflags.append("-fvisibility-inlines-hidden");
 
@@ -310,26 +346,32 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
             try cflags.append("-D_LIBCPP_HAS_MUSL_LIBC");
         }
 
-        try cflags.append("-I");
-        try cflags.append(cxxabi_include_path);
-
-        try cflags.append("-I");
-        try cflags.append(cxx_include_path);
-
-        try cflags.append("-I");
-        try cflags.append(cxx_src_include_path);
-
         if (target_util.supports_fpic(target)) {
             try cflags.append("-fPIC");
         }
         try cflags.append("-nostdinc++");
         try cflags.append("-fstrict-aliasing");
         try cflags.append("-funwind-tables");
-        try cflags.append("-std=c++11");
+        try cflags.append("-std=c++20");
+
+        // These depend on only the zig lib directory file path, which is
+        // purposefully either in the cache or not in the cache. The decision
+        // should not be overridden here.
+        var cache_exempt_flags = std.ArrayList([]const u8).init(arena);
+
+        try cache_exempt_flags.append("-I");
+        try cache_exempt_flags.append(cxxabi_include_path);
+
+        try cache_exempt_flags.append("-I");
+        try cache_exempt_flags.append(cxx_include_path);
+
+        try cache_exempt_flags.append("-I");
+        try cache_exempt_flags.append(cxx_src_include_path);
 
         c_source_files.appendAssumeCapacity(.{
             .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxxabi", cxxabi_src }),
             .extra_flags = cflags.items,
+            .cache_exempt_flags = cache_exempt_flags.items,
         });
     }
 
@@ -349,6 +391,7 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
         .link_mode = link_mode,
         .want_sanitize_c = false,
         .want_stack_check = false,
+        .want_stack_protector = 0,
         .want_red_zone = comp.bin_file.options.red_zone,
         .omit_frame_pointer = comp.bin_file.options.omit_frame_pointer,
         .want_valgrind = false,

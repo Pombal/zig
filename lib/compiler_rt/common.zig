@@ -9,6 +9,7 @@ pub const want_aeabi = switch (builtin.abi) {
     .musleabihf,
     .gnueabi,
     .gnueabihf,
+    .android,
     => switch (builtin.cpu.arch) {
         .arm, .armeb, .thumb, .thumbeb => true,
         else => false,
@@ -19,7 +20,7 @@ pub const want_ppc_abi = builtin.cpu.arch.isPPC() or builtin.cpu.arch.isPPC64();
 
 // Libcalls that involve u128 on Windows x86-64 are expected by LLVM to use the
 // calling convention of @Vector(2, u64), rather than what's standard.
-pub const want_windows_v2u64_abi = builtin.os.tag == .windows and builtin.cpu.arch == .x86_64;
+pub const want_windows_v2u64_abi = builtin.os.tag == .windows and builtin.cpu.arch == .x86_64 and @import("builtin").object_format != .c;
 
 /// This governs whether to use these symbol names for f16/f32 conversions
 /// rather than the standard names:
@@ -40,7 +41,14 @@ pub const want_windows_v2u64_abi = builtin.os.tag == .windows and builtin.cpu.ar
 ///   x86_64-windows-msvc => true
 ///   any-macos-any => false
 pub const gnu_f16_abi = switch (builtin.cpu.arch) {
-    .wasm32, .wasm64, .riscv64, .riscv32 => false,
+    .wasm32,
+    .wasm64,
+    .riscv64,
+    .riscv32,
+    .x86_64,
+    => false,
+
+    .x86 => true,
 
     .arm, .armeb, .thumb, .thumbeb => switch (builtin.abi) {
         .eabi, .eabihf => false,
@@ -54,7 +62,7 @@ pub const want_sparc_abi = builtin.cpu.arch.isSPARC();
 
 // Avoid dragging in the runtime safety mechanisms into this .o file,
 // unless we're trying to test compiler-rt.
-pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace) noreturn {
+pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     _ = error_return_trace;
     if (builtin.is_test) {
         @setCold(true);
@@ -71,6 +79,7 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace) nore
 pub const F16T = switch (builtin.cpu.arch) {
     .aarch64, .aarch64_be, .aarch64_32 => f16,
     .riscv64 => if (builtin.zig_backend == .stage1) u16 else f16,
+    .x86, .x86_64 => f16,
     else => u16,
 };
 
@@ -192,7 +201,7 @@ pub fn normalize(comptime T: type, significand: *std.meta.Int(.unsigned, @typeIn
     const Z = std.meta.Int(.unsigned, @typeInfo(T).Float.bits);
     const integerBit = @as(Z, 1) << std.math.floatFractionalBits(T);
 
-    const shift = @clz(Z, significand.*) - @clz(Z, integerBit);
+    const shift = @clz(significand.*) - @clz(integerBit);
     significand.* <<= @intCast(std.math.Log2Int(Z), shift);
     return @as(i32, 1) - shift;
 }

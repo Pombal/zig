@@ -57,6 +57,55 @@ test "std.meta.tagName" {
     try testing.expect(mem.eql(u8, tagName(u2b), "D"));
 }
 
+/// Given an enum or tagged union, returns true if the comptime-supplied
+/// string matches the name of the tag value.  This match process should
+/// be, at runtime, O(1) in the number of tags available to the enum or
+/// union, and it should also be O(1) in the length of the comptime tag
+/// names.
+pub fn isTag(tagged_value: anytype, comptime tag_name: []const u8) bool {
+    const T = @TypeOf(tagged_value);
+    const type_info = @typeInfo(T);
+    const type_name = @typeName(T);
+
+    // select the Enum type out of the type (in the case of the tagged union, extract it)
+    const E = if (.Enum == type_info) T else if (.Union == type_info) (type_info.Union.tag_type orelse {
+        @compileError("attempted to use isTag on the untagged union " ++ type_name);
+    }) else {
+        @compileError("attempted to use isTag on a value of type (" ++ type_name ++ ") that isn't an enum or a union.");
+    };
+
+    return tagged_value == @field(E, tag_name);
+}
+
+test "std.meta.isTag for Enums" {
+    const EnumType = enum { a, b };
+    var a_type: EnumType = .a;
+    var b_type: EnumType = .b;
+
+    try testing.expect(isTag(a_type, "a"));
+    try testing.expect(!isTag(a_type, "b"));
+    try testing.expect(isTag(b_type, "b"));
+    try testing.expect(!isTag(b_type, "a"));
+}
+
+test "std.meta.isTag for Tagged Unions" {
+    const TaggedUnionEnum = enum { int, flt };
+
+    const TaggedUnionType = union(TaggedUnionEnum) {
+        int: i64,
+        flt: f64,
+    };
+
+    var int = TaggedUnionType{ .int = 1234 };
+    var flt = TaggedUnionType{ .flt = 12.34 };
+
+    try testing.expect(isTag(int, "int"));
+    try testing.expect(!isTag(int, "flt"));
+    try testing.expect(isTag(flt, "flt"));
+    try testing.expect(!isTag(flt, "int"));
+}
+
+/// Returns the variant of an enum type, `T`, which is named `str`, or `null` if no such variant exists.
 pub fn stringToEnum(comptime T: type, str: []const u8) ?T {
     // Using ComptimeStringMap here is more performant, but it will start to take too
     // long to compile if the enum is large enough, due to the current limits of comptime
@@ -66,16 +115,10 @@ pub fn stringToEnum(comptime T: type, str: []const u8) ?T {
     // - https://github.com/ziglang/zig/issues/3863
     if (@typeInfo(T).Enum.fields.len <= 100) {
         const kvs = comptime build_kvs: {
-            // In order to generate an array of structs that play nice with anonymous
-            // list literals, we need to give them "0" and "1" field names.
-            // TODO https://github.com/ziglang/zig/issues/4335
-            const EnumKV = struct {
-                @"0": []const u8,
-                @"1": T,
-            };
+            const EnumKV = struct { []const u8, T };
             var kvs_array: [@typeInfo(T).Enum.fields.len]EnumKV = undefined;
             inline for (@typeInfo(T).Enum.fields) |enumField, i| {
-                kvs_array[i] = .{ .@"0" = enumField.name, .@"1" = @field(T, enumField.name) };
+                kvs_array[i] = .{ enumField.name, @field(T, enumField.name) };
             }
             break :build_kvs kvs_array[0..];
         };
@@ -144,6 +187,7 @@ test "std.meta.alignment" {
     try testing.expect(alignment(fn () align(128) void) == 128);
 }
 
+/// Given a parameterized type (array, vector, pointer, optional), returns the "child type".
 pub fn Child(comptime T: type) type {
     return switch (@typeInfo(T)) {
         .Array => |info| info.child,
@@ -162,7 +206,7 @@ test "std.meta.Child" {
     try testing.expect(Child(Vector(2, u8)) == u8);
 }
 
-/// Given a "memory span" type, returns the "element type".
+/// Given a "memory span" type (array, slice, vector, or pointer to such), returns the "element type".
 pub fn Elem(comptime T: type) type {
     switch (@typeInfo(T)) {
         .Array => |info| return info.child,
@@ -204,12 +248,12 @@ pub fn sentinel(comptime T: type) ?Elem(T) {
             switch (info.size) {
                 .Many, .Slice => {
                     const sentinel_ptr = info.sentinel orelse return null;
-                    return @ptrCast(*const info.child, sentinel_ptr).*;
+                    return @ptrCast(*align(1) const info.child, sentinel_ptr).*;
                 },
                 .One => switch (@typeInfo(info.child)) {
                     .Array => |array_info| {
                         const sentinel_ptr = array_info.sentinel orelse return null;
-                        return @ptrCast(*const array_info.child, sentinel_ptr).*;
+                        return @ptrCast(*align(1) const array_info.child, sentinel_ptr).*;
                     },
                     else => {},
                 },
@@ -254,7 +298,7 @@ pub fn Sentinel(comptime T: type, comptime sentinel_val: Elem(T)) type {
                             .Array = .{
                                 .len = array_info.len,
                                 .child = array_info.child,
-                                .sentinel = &sentinel_val,
+                                .sentinel = @ptrCast(?*const anyopaque, &sentinel_val),
                             },
                         }),
                         .is_allowzero = info.is_allowzero,
@@ -272,7 +316,7 @@ pub fn Sentinel(comptime T: type, comptime sentinel_val: Elem(T)) type {
                     .address_space = info.address_space,
                     .child = info.child,
                     .is_allowzero = info.is_allowzero,
-                    .sentinel = &sentinel_val,
+                    .sentinel = @ptrCast(?*const anyopaque, &sentinel_val),
                 },
             }),
             else => {},
@@ -290,7 +334,7 @@ pub fn Sentinel(comptime T: type, comptime sentinel_val: Elem(T)) type {
                                 .address_space = ptr_info.address_space,
                                 .child = ptr_info.child,
                                 .is_allowzero = ptr_info.is_allowzero,
-                                .sentinel = &sentinel_val,
+                                .sentinel = @ptrCast(?*const anyopaque, &sentinel_val),
                             },
                         }),
                     },
@@ -311,11 +355,7 @@ pub fn assumeSentinel(p: anytype, comptime sentinel_val: Elem(@TypeOf(p))) Senti
     const ReturnType = Sentinel(T, sentinel_val);
     switch (@typeInfo(T)) {
         .Pointer => |info| switch (info.size) {
-            .Slice => if (@import("builtin").zig_backend == .stage1)
-                return @bitCast(ReturnType, p)
-            else
-                return @ptrCast(ReturnType, p),
-            .Many, .One => return @ptrCast(ReturnType, p),
+            .Slice, .Many, .One => return @ptrCast(ReturnType, p),
             .C => {},
         },
         .Optional => |info| switch (@typeInfo(info.child)) {
@@ -457,7 +497,6 @@ test "std.meta.declarationInfo" {
         try testing.expect(!info.is_pub);
     }
 }
-
 pub fn fields(comptime T: type) switch (@typeInfo(T)) {
     .Struct => []const Type.StructField,
     .Union => []const Type.UnionField,
@@ -604,8 +643,33 @@ test "std.meta.tags" {
     try testing.expectEqual(E2.A, e2_tags[0]);
 }
 
+/// Returns an enum with a variant named after each field of `T`.
 pub fn FieldEnum(comptime T: type) type {
     const field_infos = fields(T);
+
+    if (field_infos.len == 0) {
+        return @Type(.{
+            .Enum = .{
+                .layout = .Auto,
+                .tag_type = u0,
+                .fields = &.{},
+                .decls = &.{},
+                .is_exhaustive = true,
+            },
+        });
+    }
+
+    if (@typeInfo(T) == .Union) {
+        if (@typeInfo(T).Union.tag_type) |tag_type| {
+            for (std.enums.values(tag_type)) |v, i| {
+                if (@enumToInt(v) != i) break; // enum values not consecutive
+                if (!std.mem.eql(u8, @tagName(v), field_infos[i].name)) break; // fields out of order
+            } else {
+                return tag_type;
+            }
+        }
+    }
+
     var enumFields: [field_infos.len]std.builtin.Type.EnumField = undefined;
     var decls = [_]std.builtin.Type.Declaration{};
     inline for (field_infos) |field, i| {
@@ -666,9 +730,21 @@ fn expectEqualEnum(expected: anytype, actual: @TypeOf(expected)) !void {
 }
 
 test "std.meta.FieldEnum" {
+    try expectEqualEnum(enum {}, FieldEnum(struct {}));
     try expectEqualEnum(enum { a }, FieldEnum(struct { a: u8 }));
     try expectEqualEnum(enum { a, b, c }, FieldEnum(struct { a: u8, b: void, c: f32 }));
     try expectEqualEnum(enum { a, b, c }, FieldEnum(union { a: u8, b: void, c: f32 }));
+
+    const Tagged = union(enum) { a: u8, b: void, c: f32 };
+    try testing.expectEqual(Tag(Tagged), FieldEnum(Tagged));
+
+    const Tag2 = enum { b, c, a };
+    const Tagged2 = union(Tag2) { a: u8, b: void, c: f32 };
+    try testing.expect(Tag(Tagged2) != FieldEnum(Tagged2));
+
+    const Tag3 = enum(u8) { a, b, c = 7 };
+    const Tagged3 = union(Tag3) { a: u8, b: void, c: f32 };
+    try testing.expect(Tag(Tagged3) != FieldEnum(Tagged3));
 }
 
 pub fn DeclEnum(comptime T: type) type {
@@ -764,7 +840,7 @@ const TagPayloadType = TagPayload;
 
 ///Given a tagged union type, and an enum, return the type of the union
 /// field corresponding to the enum tag.
-pub fn TagPayload(comptime U: type, tag: Tag(U)) type {
+pub fn TagPayload(comptime U: type, comptime tag: Tag(U)) type {
     comptime debug.assert(trait.is(.Union)(U));
 
     const info = @typeInfo(U).Union;
@@ -1024,28 +1100,13 @@ pub fn ArgsTuple(comptime Function: type) type {
     if (function_info.is_var_args)
         @compileError("Cannot create ArgsTuple for variadic function");
 
-    var argument_field_list: [function_info.args.len]std.builtin.Type.StructField = undefined;
+    var argument_field_list: [function_info.args.len]type = undefined;
     inline for (function_info.args) |arg, i| {
         const T = arg.arg_type.?;
-        @setEvalBranchQuota(10_000);
-        var num_buf: [128]u8 = undefined;
-        argument_field_list[i] = .{
-            .name = std.fmt.bufPrint(&num_buf, "{d}", .{i}) catch unreachable,
-            .field_type = T,
-            .default_value = null,
-            .is_comptime = false,
-            .alignment = if (@sizeOf(T) > 0) @alignOf(T) else 0,
-        };
+        argument_field_list[i] = T;
     }
 
-    return @Type(.{
-        .Struct = .{
-            .is_tuple = true,
-            .layout = .Auto,
-            .decls = &.{},
-            .fields = &argument_field_list,
-        },
-    });
+    return CreateUniqueTuple(argument_field_list.len, argument_field_list);
 }
 
 /// For a given anonymous list of types, returns a new tuple type
@@ -1056,6 +1117,10 @@ pub fn ArgsTuple(comptime Function: type) type {
 /// - `Tuple(&[_]type {f32})` ⇒ `tuple { f32 }`
 /// - `Tuple(&[_]type {f32,u32})` ⇒ `tuple { f32, u32 }`
 pub fn Tuple(comptime types: []const type) type {
+    return CreateUniqueTuple(types.len, types[0..types.len].*);
+}
+
+fn CreateUniqueTuple(comptime N: comptime_int, comptime types: [N]type) type {
     var tuple_fields: [types.len]std.builtin.Type.StructField = undefined;
     inline for (types) |T, i| {
         @setEvalBranchQuota(10_000);
@@ -1116,6 +1181,32 @@ test "Tuple" {
     TupleTester.assertTuple(.{u32}, Tuple(&[_]type{u32}));
     TupleTester.assertTuple(.{ u32, f16 }, Tuple(&[_]type{ u32, f16 }));
     TupleTester.assertTuple(.{ u32, f16, []const u8, void }, Tuple(&[_]type{ u32, f16, []const u8, void }));
+}
+
+test "Tuple deduplication" {
+    const T1 = std.meta.Tuple(&.{ u32, f32, i8 });
+    const T2 = std.meta.Tuple(&.{ u32, f32, i8 });
+    const T3 = std.meta.Tuple(&.{ u32, f32, i7 });
+
+    if (T1 != T2) {
+        @compileError("std.meta.Tuple doesn't deduplicate tuple types.");
+    }
+    if (T1 == T3) {
+        @compileError("std.meta.Tuple fails to generate different types.");
+    }
+}
+
+test "ArgsTuple forwarding" {
+    const T1 = std.meta.Tuple(&.{ u32, f32, i8 });
+    const T2 = std.meta.ArgsTuple(fn (u32, f32, i8) void);
+    const T3 = std.meta.ArgsTuple(fn (u32, f32, i8) callconv(.C) noreturn);
+
+    if (T1 != T2) {
+        @compileError("std.meta.ArgsTuple produces different types than std.meta.Tuple");
+    }
+    if (T1 != T3) {
+        @compileError("std.meta.ArgsTuple produces different types for the same argument lists.");
+    }
 }
 
 /// TODO: https://github.com/ziglang/zig/issues/425

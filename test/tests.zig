@@ -52,6 +52,9 @@ const test_targets = blk: {
         },
 
         .{
+            .target = .{
+                .ofmt = .c,
+            },
             .link_libc = true,
             .backend = .stage2_c,
         },
@@ -78,20 +81,22 @@ const test_targets = blk: {
             .single_threaded = true,
             .backend = .stage2_wasm,
         },
-        .{
-            .target = .{
-                .cpu_arch = .arm,
-                .os_tag = .linux,
-            },
-            .backend = .stage2_wasm,
-        },
-        .{
-            .target = CrossTarget.parse(.{
-                .arch_os_abi = "arm-linux-none",
-                .cpu_features = "generic+v8a",
-            }) catch unreachable,
-            .backend = .stage2_arm,
-        },
+        // https://github.com/ziglang/zig/issues/13623
+        //.{
+        //    .target = .{
+        //        .cpu_arch = .arm,
+        //        .os_tag = .linux,
+        //    },
+        //    .backend = .stage2_arm,
+        //},
+        // https://github.com/ziglang/zig/issues/13623
+        //.{
+        //    .target = CrossTarget.parse(.{
+        //        .arch_os_abi = "arm-linux-none",
+        //        .cpu_features = "generic+v8a",
+        //    }) catch unreachable,
+        //    .backend = .stage2_arm,
+        //},
         .{
             .target = .{
                 .cpu_arch = .aarch64,
@@ -105,6 +110,14 @@ const test_targets = blk: {
                 .cpu_arch = .x86_64,
                 .os_tag = .macos,
                 .abi = .none,
+            },
+            .backend = .stage2_x86_64,
+        },
+        .{
+            .target = .{
+                .cpu_arch = .x86_64,
+                .os_tag = .windows,
+                .abi = .gnu,
             },
             .backend = .stage2_x86_64,
         },
@@ -152,14 +165,14 @@ const test_targets = blk: {
 
         .{
             .target = .{
-                .cpu_arch = .i386,
+                .cpu_arch = .x86,
                 .os_tag = .linux,
                 .abi = .none,
             },
         },
         .{
             .target = .{
-                .cpu_arch = .i386,
+                .cpu_arch = .x86,
                 .os_tag = .linux,
                 .abi = .musl,
             },
@@ -167,7 +180,7 @@ const test_targets = blk: {
         },
         .{
             .target = .{
-                .cpu_arch = .i386,
+                .cpu_arch = .x86,
                 .os_tag = .linux,
                 .abi = .gnu,
             },
@@ -309,6 +322,30 @@ const test_targets = blk: {
 
         .{
             .target = .{
+                .cpu_arch = .powerpc64le,
+                .os_tag = .linux,
+                .abi = .none,
+            },
+        },
+        .{
+            .target = .{
+                .cpu_arch = .powerpc64le,
+                .os_tag = .linux,
+                .abi = .musl,
+            },
+            .link_libc = true,
+        },
+        .{
+            .target = .{
+                .cpu_arch = .powerpc64le,
+                .os_tag = .linux,
+                .abi = .gnu,
+            },
+            .link_libc = true,
+        },
+
+        .{
+            .target = .{
                 .cpu_arch = .riscv64,
                 .os_tag = .linux,
                 .abi = .none,
@@ -352,7 +389,7 @@ const test_targets = blk: {
 
         .{
             .target = .{
-                .cpu_arch = .i386,
+                .cpu_arch = .x86,
                 .os_tag = .windows,
                 .abi = .msvc,
             },
@@ -368,7 +405,7 @@ const test_targets = blk: {
 
         .{
             .target = .{
-                .cpu_arch = .i386,
+                .cpu_arch = .x86,
                 .os_tag = .windows,
                 .abi = .gnu,
             },
@@ -468,6 +505,7 @@ pub fn addStandaloneTests(
     enable_rosetta: bool,
     enable_wasmtime: bool,
     enable_wine: bool,
+    enable_symlinks_windows: bool,
 ) *build.Step {
     const cases = b.allocator.create(StandaloneContext) catch unreachable;
     cases.* = StandaloneContext{
@@ -485,6 +523,7 @@ pub fn addStandaloneTests(
         .enable_rosetta = enable_rosetta,
         .enable_wasmtime = enable_wasmtime,
         .enable_wine = enable_wine,
+        .enable_symlinks_windows = enable_symlinks_windows,
     };
 
     standalone.addCases(cases);
@@ -498,6 +537,7 @@ pub fn addLinkTests(
     modes: []const Mode,
     enable_macos_sdk: bool,
     omit_stage2: bool,
+    enable_symlinks_windows: bool,
 ) *build.Step {
     const cases = b.allocator.create(StandaloneContext) catch unreachable;
     cases.* = StandaloneContext{
@@ -510,6 +550,7 @@ pub fn addLinkTests(
         .enable_macos_sdk = enable_macos_sdk,
         .target = .{},
         .omit_stage2 = omit_stage2,
+        .enable_symlinks_windows = enable_symlinks_windows,
     };
     link.addCases(cases);
     return cases.step;
@@ -605,7 +646,6 @@ pub fn addPkgTests(
     skip_libc: bool,
     skip_stage1: bool,
     skip_stage2: bool,
-    is_stage1: bool,
 ) *build.Step {
     const step = b.step(b.fmt("test-{s}", .{name}), desc);
 
@@ -633,8 +673,9 @@ pub fn addPkgTests(
 
         if (test_target.backend) |backend| switch (backend) {
             .stage1 => if (skip_stage1) continue,
+            .stage2_llvm => {},
             else => if (skip_stage2) continue,
-        } else if (is_stage1 and skip_stage1) continue;
+        };
 
         const want_this_mode = for (modes) |m| {
             if (m == test_target.mode) break true;
@@ -672,20 +713,19 @@ pub fn addPkgTests(
         these_tests.addIncludePath("test");
         if (test_target.backend) |backend| switch (backend) {
             .stage1 => {
-                these_tests.use_stage1 = true;
+                @panic("stage1 testing requested");
             },
             .stage2_llvm => {
-                these_tests.use_stage1 = false;
                 these_tests.use_llvm = true;
             },
             .stage2_c => {
-                these_tests.use_stage1 = false;
                 these_tests.use_llvm = false;
-                these_tests.ofmt = .c;
             },
             else => {
-                these_tests.use_stage1 = false;
                 these_tests.use_llvm = false;
+                // TODO: force self-hosted linkers to avoid LLD creeping in
+                // until the auto-select mechanism deems them worthy
+                these_tests.use_lld = false;
             },
         };
 
@@ -929,9 +969,9 @@ pub const StackTracesContext = struct {
                     try buf.appendSlice(line[pos + 1 .. marks[2] + delims[2].len]);
                     try buf.appendSlice(" [address]");
                     if (self.mode == .Debug) {
-                        if (mem.lastIndexOfScalar(u8, line[marks[4]..marks[5]], '.')) |idot| {
-                            // On certain platforms (windows) or possibly depending on how we choose to link main
-                            // the object file extension may be present so we simply strip any extension.
+                        // On certain platforms (windows) or possibly depending on how we choose to link main
+                        // the object file extension may be present so we simply strip any extension.
+                        if (mem.indexOfScalar(u8, line[marks[4]..marks[5]], '.')) |idot| {
                             try buf.appendSlice(line[marks[3] .. marks[4] + idot]);
                             try buf.appendSlice(line[marks[5]..]);
                         } else {
@@ -943,7 +983,7 @@ pub const StackTracesContext = struct {
                     }
                     try buf.appendSlice("\n");
                 }
-                break :got_result buf.toOwnedSlice();
+                break :got_result try buf.toOwnedSlice();
             };
 
             if (!mem.eql(u8, self.expect_output, got)) {
@@ -977,6 +1017,7 @@ pub const StandaloneContext = struct {
     enable_rosetta: bool = false,
     enable_wasmtime: bool = false,
     enable_wine: bool = false,
+    enable_symlinks_windows: bool,
 
     pub fn addC(self: *StandaloneContext, root_src: []const u8) void {
         self.addAllArgs(root_src, true);
@@ -992,11 +1033,14 @@ pub const StandaloneContext = struct {
         requires_macos_sdk: bool = false,
         requires_stage2: bool = false,
         use_emulation: bool = false,
+        requires_symlinks: bool = false,
+        extra_argv: []const []const u8 = &.{},
     }) void {
         const b = self.b;
 
         if (features.requires_macos_sdk and !self.enable_macos_sdk) return;
         if (features.requires_stage2 and self.omit_stage2) return;
+        if (features.requires_symlinks and !self.enable_symlinks_windows and builtin.os.tag == .windows) return;
 
         const annotated_case_name = b.fmt("build {s}", .{build_file});
         if (self.test_filter) |filter| {
@@ -1010,6 +1054,8 @@ pub const StandaloneContext = struct {
 
         zig_args.append("--build-file") catch unreachable;
         zig_args.append(b.pathFromRoot(build_file)) catch unreachable;
+
+        zig_args.appendSlice(features.extra_argv) catch unreachable;
 
         zig_args.append("test") catch unreachable;
 
@@ -1226,4 +1272,81 @@ fn printInvocation(args: []const []const u8) void {
         std.debug.print("{s} ", .{arg});
     }
     std.debug.print("\n", .{});
+}
+
+const c_abi_targets = [_]CrossTarget{
+    .{},
+    .{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .musl,
+    },
+    .{
+        .cpu_arch = .x86,
+        .os_tag = .linux,
+        .abi = .musl,
+    },
+    .{
+        .cpu_arch = .aarch64,
+        .os_tag = .linux,
+        .abi = .musl,
+    },
+    .{
+        .cpu_arch = .arm,
+        .os_tag = .linux,
+        .abi = .musleabihf,
+    },
+    .{
+        .cpu_arch = .mips,
+        .os_tag = .linux,
+        .abi = .musl,
+    },
+    .{
+        .cpu_arch = .riscv64,
+        .os_tag = .linux,
+        .abi = .musl,
+    },
+    .{
+        .cpu_arch = .wasm32,
+        .os_tag = .wasi,
+        .abi = .musl,
+    },
+    .{
+        .cpu_arch = .powerpc,
+        .os_tag = .linux,
+        .abi = .musl,
+    },
+    .{
+        .cpu_arch = .powerpc64le,
+        .os_tag = .linux,
+        .abi = .musl,
+    },
+};
+
+pub fn addCAbiTests(b: *build.Builder, skip_non_native: bool) *build.Step {
+    const step = b.step("test-c-abi", "Run the C ABI tests");
+
+    for (c_abi_targets) |c_abi_target| {
+        if (skip_non_native and !c_abi_target.isNative())
+            continue;
+
+        const test_step = b.addTest("test/c_abi/main.zig");
+        test_step.setTarget(c_abi_target);
+        if (c_abi_target.abi != null and c_abi_target.abi.?.isMusl()) {
+            // TODO NativeTargetInfo insists on dynamically linking musl
+            // for some reason?
+            test_step.target_info.dynamic_linker.max_byte = null;
+        }
+        test_step.linkLibC();
+        test_step.addCSourceFile("test/c_abi/cfuncs.c", &.{"-std=c99"});
+
+        const triple_prefix = c_abi_target.zigTriple(b.allocator) catch unreachable;
+        test_step.setNamePrefix(b.fmt("{s}-{s} ", .{
+            "test-c-abi",
+            triple_prefix,
+        }));
+
+        step.dependOn(&test_step.step);
+    }
+    return step;
 }

@@ -178,10 +178,7 @@ pub fn syscall6(
     );
 }
 
-const CloneFn = switch (@import("builtin").zig_backend) {
-    .stage1 => fn (arg: usize) callconv(.C) u8,
-    else => *const fn (arg: usize) callconv(.C) u8,
-};
+const CloneFn = *const fn (arg: usize) callconv(.C) u8;
 
 /// This matches the libc clone function.
 pub extern fn clone(func: CloneFn, stack: usize, flags: usize, arg: usize, ptid: *i32, tls: usize, ctid: *i32) usize;
@@ -438,7 +435,7 @@ pub const fpu_t = extern struct {
 pub const mcontext_t = extern struct {
     gregs: gregset_t,
     fp: greg_t,
-    @"i7": greg_t,
+    i7: greg_t,
     fpregs: fpu_t,
 };
 

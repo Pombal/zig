@@ -142,6 +142,8 @@ pub fn main() !void {
                     return usageAndErr(builder, false, stderr_stream);
                 };
                 try debug_log_scopes.append(next_arg);
+            } else if (mem.eql(u8, arg, "--debug-compile-errors")) {
+                builder.debug_compile_errors = true;
             } else if (mem.eql(u8, arg, "--glibc-runtimes")) {
                 builder.glibc_runtimes_dir = nextArg(args, &arg_idx) orelse {
                     std.debug.print("Expected argument after --glibc-runtimes\n\n", .{});
@@ -181,10 +183,16 @@ pub fn main() !void {
                 builder.enable_darling = true;
             } else if (mem.eql(u8, arg, "-fno-darling")) {
                 builder.enable_darling = false;
-            } else if (mem.eql(u8, arg, "-fstage1")) {
-                builder.use_stage1 = true;
-            } else if (mem.eql(u8, arg, "-fno-stage1")) {
-                builder.use_stage1 = false;
+            } else if (mem.eql(u8, arg, "-freference-trace")) {
+                builder.reference_trace = 256;
+            } else if (mem.startsWith(u8, arg, "-freference-trace=")) {
+                const num = arg["-freference-trace=".len..];
+                builder.reference_trace = std.fmt.parseUnsigned(u32, num, 10) catch |err| {
+                    std.debug.print("unable to parse reference_trace count '{s}': {s}", .{ num, @errorName(err) });
+                    process.exit(1);
+                };
+            } else if (mem.eql(u8, arg, "-fno-reference-trace")) {
+                builder.reference_trace = null;
             } else if (mem.eql(u8, arg, "--")) {
                 builder.args = argsRest(args, arg_idx);
                 break;
@@ -306,8 +314,8 @@ fn usage(builder: *Builder, already_ran_build: bool, out_stream: anytype) !void 
     try out_stream.writeAll(
         \\
         \\Advanced Options:
-        \\  -fstage1                     Force using bootstrap compiler as the codegen backend
-        \\  -fno-stage1                  Prevent using bootstrap compiler as the codegen backend
+        \\  -freference-trace[=num]      How many lines of reference trace should be shown per compile error
+        \\  -fno-reference-trace         Disable reference trace
         \\  --build-file [file]          Override path to build.zig
         \\  --cache-dir [path]           Override path to local Zig cache directory
         \\  --global-cache-dir [path]    Override path to global Zig cache directory

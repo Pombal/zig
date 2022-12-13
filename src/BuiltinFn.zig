@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const Tag = enum {
     add_with_overflow,
+    addrspace_cast,
     align_cast,
     align_of,
     as,
@@ -57,10 +58,10 @@ pub const Tag = enum {
     int_to_error,
     int_to_float,
     int_to_ptr,
-    maximum,
+    max,
     memcpy,
     memset,
-    minimum,
+    min,
     wasm_memory_size,
     wasm_memory_grow,
     mod,
@@ -150,6 +151,13 @@ pub const list = list: {
             .{
                 .tag = .add_with_overflow,
                 .param_count = 4,
+            },
+        },
+        .{
+            "@addrSpaceCast",
+            .{
+                .tag = .addrspace_cast,
+                .param_count = 2,
             },
         },
         .{
@@ -250,14 +258,14 @@ pub const list = list: {
             "@byteSwap",
             .{
                 .tag = .byte_swap,
-                .param_count = 2,
+                .param_count = 1,
             },
         },
         .{
             "@bitReverse",
             .{
                 .tag = .bit_reverse,
-                .param_count = 2,
+                .param_count = 1,
             },
         },
         .{
@@ -301,7 +309,7 @@ pub const list = list: {
             "@clz",
             .{
                 .tag = .clz,
-                .param_count = 2,
+                .param_count = 1,
             },
         },
         .{
@@ -336,7 +344,7 @@ pub const list = list: {
             "@ctz",
             .{
                 .tag = .ctz,
-                .param_count = 2,
+                .param_count = 1,
             },
         },
         .{
@@ -548,9 +556,9 @@ pub const list = list: {
             },
         },
         .{
-            "@maximum",
+            "@max",
             .{
-                .tag = .maximum,
+                .tag = .max,
                 .param_count = 2,
             },
         },
@@ -569,9 +577,9 @@ pub const list = list: {
             },
         },
         .{
-            "@minimum",
+            "@min",
             .{
-                .tag = .minimum,
+                .tag = .min,
                 .param_count = 2,
             },
         },
@@ -614,7 +622,7 @@ pub const list = list: {
             "@popCount",
             .{
                 .tag = .pop_count,
-                .param_count = 2,
+                .param_count = 1,
             },
         },
         .{

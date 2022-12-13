@@ -104,7 +104,8 @@ fn testZigInitLib(zig_exe: []const u8, dir_path: []const u8) !void {
 fn testZigInitExe(zig_exe: []const u8, dir_path: []const u8) !void {
     _ = try exec(dir_path, true, &[_][]const u8{ zig_exe, "init-exe" });
     const run_result = try exec(dir_path, true, &[_][]const u8{ zig_exe, "build", "run" });
-    try testing.expectEqualStrings("info: All your codebase are belong to us.\n", run_result.stderr);
+    try testing.expectEqualStrings("All your codebase are belong to us.\n", run_result.stderr);
+    try testing.expectEqualStrings("Run `zig build test` to run the tests.\n", run_result.stdout);
 }
 
 fn testGodboltApi(zig_exe: []const u8, dir_path: []const u8) anyerror!void {
@@ -119,7 +120,7 @@ fn testGodboltApi(zig_exe: []const u8, dir_path: []const u8) anyerror!void {
         \\    return num * num;
         \\}
         \\extern fn zig_panic() noreturn;
-        \\pub fn panic(msg: []const u8, error_return_trace: ?*@import("std").builtin.StackTrace) noreturn {
+        \\pub fn panic(msg: []const u8, error_return_trace: ?*@import("std").builtin.StackTrace, _: ?usize) noreturn {
         \\    _ = msg;
         \\    _ = error_return_trace;
         \\    zig_panic();
@@ -132,7 +133,7 @@ fn testGodboltApi(zig_exe: []const u8, dir_path: []const u8) anyerror!void {
         "--cache-dir",    dir_path,
         "--name",         "example",
         "-fno-emit-bin",  "-fno-emit-h",
-        "--strip",        "-OReleaseFast",
+        "-fstrip",        "-OReleaseFast",
         example_zig_path,
     });
 

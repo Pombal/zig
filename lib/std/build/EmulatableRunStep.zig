@@ -95,12 +95,12 @@ fn make(step: *Step) !void {
             if (glibc_dir_arg) |dir| {
                 // TODO look into making this a call to `linuxTriple`. This
                 // needs the directory to be called "i686" rather than
-                // "i386" which is why we do it manually here.
+                // "x86" which is why we do it manually here.
                 const fmt_str = "{s}" ++ fs.path.sep_str ++ "{s}-{s}-{s}";
                 const cpu_arch = self.exe.target.getCpuArch();
                 const os_tag = self.exe.target.getOsTag();
                 const abi = self.exe.target.getAbi();
-                const cpu_arch_name: []const u8 = if (cpu_arch == .i386)
+                const cpu_arch_name: []const u8 = if (cpu_arch == .x86)
                     "i686"
                 else
                     @tagName(cpu_arch);
@@ -158,7 +158,7 @@ fn warnAboutForeignBinaries(step: *EmulatableRunStep) void {
 
     const host_name = builder.host.target.zigTriple(builder.allocator) catch unreachable;
     const foreign_name = artifact.target.zigTriple(builder.allocator) catch unreachable;
-    const target_info = std.zig.system.NativeTargetInfo.detect(builder.allocator, artifact.target) catch unreachable;
+    const target_info = std.zig.system.NativeTargetInfo.detect(artifact.target) catch unreachable;
     const need_cross_glibc = artifact.target.isGnuLibC() and artifact.is_linking_libc;
     switch (builder.host.getExternalExecutor(target_info, .{
         .qemu_fixes_dl = need_cross_glibc and builder.glibc_runtimes_dir != null,

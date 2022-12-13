@@ -36,14 +36,19 @@ pub fn append(section: *Section, allocator: Allocator, other_section: Section) !
     try section.instructions.appendSlice(allocator, other_section.instructions.items);
 }
 
+/// Ensure capacity of at least `capacity` more words in this section.
+pub fn ensureUnusedCapacity(section: *Section, allocator: Allocator, capacity: usize) !void {
+    try section.instructions.ensureUnusedCapacity(allocator, capacity);
+}
+
 /// Write an instruction and size, operands are to be inserted manually.
 pub fn emitRaw(
     section: *Section,
     allocator: Allocator,
     opcode: Opcode,
-    operands: usize, // opcode itself not included
+    operand_words: usize, // opcode itself not included
 ) !void {
-    const word_count = 1 + operands;
+    const word_count = 1 + operand_words;
     try section.instructions.ensureUnusedCapacity(allocator, word_count);
     section.writeWord((@intCast(Word, word_count << 16)) | @enumToInt(opcode));
 }
@@ -96,7 +101,7 @@ pub fn writeWords(section: *Section, words: []const Word) void {
     section.instructions.appendSliceAssumeCapacity(words);
 }
 
-fn writeDoubleWord(section: *Section, dword: DoubleWord) void {
+pub fn writeDoubleWord(section: *Section, dword: DoubleWord) void {
     section.writeWords(&.{
         @truncate(Word, dword),
         @truncate(Word, dword >> @bitSizeOf(Word)),
@@ -328,8 +333,6 @@ fn extendedUnionSize(comptime Operand: type, operand: Operand) usize {
 }
 
 test "SPIR-V Section emit() - no operands" {
-    if (@import("builtin").zig_backend == .stage1) return error.SkipZigTest;
-
     var section = Section{};
     defer section.deinit(std.testing.allocator);
 
@@ -339,8 +342,6 @@ test "SPIR-V Section emit() - no operands" {
 }
 
 test "SPIR-V Section emit() - simple" {
-    if (@import("builtin").zig_backend == .stage1) return error.SkipZigTest;
-
     var section = Section{};
     defer section.deinit(std.testing.allocator);
 
@@ -357,8 +358,6 @@ test "SPIR-V Section emit() - simple" {
 }
 
 test "SPIR-V Section emit() - string" {
-    if (@import("builtin").zig_backend == .stage1) return error.SkipZigTest;
-
     var section = Section{};
     defer section.deinit(std.testing.allocator);
 
@@ -384,8 +383,6 @@ test "SPIR-V Section emit() - string" {
 }
 
 test "SPIR-V Section emit()- extended mask" {
-    if (@import("builtin").zig_backend == .stage1) return error.SkipZigTest;
-
     var section = Section{};
     defer section.deinit(std.testing.allocator);
 
@@ -410,8 +407,6 @@ test "SPIR-V Section emit()- extended mask" {
 }
 
 test "SPIR-V Section emit() - extended union" {
-    if (@import("builtin").zig_backend == .stage1) return error.SkipZigTest;
-
     var section = Section{};
     defer section.deinit(std.testing.allocator);
 

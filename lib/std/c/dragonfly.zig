@@ -13,10 +13,7 @@ pub extern "c" fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) c_int;
 pub extern "c" fn getrandom(buf_ptr: [*]u8, buf_len: usize, flags: c_uint) isize;
 pub extern "c" fn pipe2(fds: *[2]fd_t, flags: u32) c_int;
 
-pub const dl_iterate_phdr_callback = switch (builtin.zig_backend) {
-    .stage1 => fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-    else => *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int,
-};
+pub const dl_iterate_phdr_callback = *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int;
 pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*anyopaque) c_int;
 
 pub extern "c" fn lwp_gettid() c_int;
@@ -237,6 +234,7 @@ pub const SA = struct {
 };
 
 pub const PATH_MAX = 1024;
+pub const NAME_MAX = 255;
 pub const IOV_MAX = KERN.IOV_MAX;
 
 pub const ino_t = c_ulong;
@@ -609,9 +607,9 @@ pub const S = struct {
 pub const BADSIG = SIG.ERR;
 
 pub const SIG = struct {
-    pub const DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
-    pub const ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
+    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
+    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
+    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
 
     pub const BLOCK = 1;
     pub const UNBLOCK = 2;
@@ -683,14 +681,8 @@ pub const empty_sigset = sigset_t{ .__bits = [_]c_uint{0} ** _SIG_WORDS };
 pub const sig_atomic_t = c_int;
 
 pub const Sigaction = extern struct {
-    pub const handler_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int) callconv(.C) void,
-        else => *const fn (c_int) callconv(.C) void,
-    };
-    pub const sigaction_fn = switch (builtin.zig_backend) {
-        .stage1 => fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-        else => *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void,
-    };
+    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
+    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
 
     /// signal handler
     handler: extern union {

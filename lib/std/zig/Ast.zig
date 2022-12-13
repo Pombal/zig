@@ -197,7 +197,7 @@ pub fn renderError(tree: Ast, parse_error: Error, stream: anytype) !void {
             });
         },
         .expected_labelable => {
-            return stream.print("expected 'while', 'for', 'inline', 'suspend', or '{{', found '{s}'", .{
+            return stream.print("expected 'while', 'for', 'inline', or '{{', found '{s}'", .{
                 token_tags[parse_error.token + @boolToInt(parse_error.token_is_prev)].symbol(),
             });
         },
@@ -356,6 +356,12 @@ pub fn renderError(tree: Ast, parse_error: Error, stream: anytype) !void {
         .next_field => {
             return stream.writeAll("field after declarations here");
         },
+        .expected_var_const => {
+            return stream.writeAll("expected 'var' or 'const' before variable declaration");
+        },
+        .wrong_equal_var_decl => {
+            return stream.writeAll("variable initialized with '==' instead of '='");
+        },
 
         .expected_token => {
             const found_tag = token_tags[parse_error.token + @boolToInt(parse_error.token_is_prev)];
@@ -406,8 +412,7 @@ pub fn firstToken(tree: Ast, node: Node.Index) TokenIndex {
         .identifier,
         .anyframe_literal,
         .char_literal,
-        .integer_literal,
-        .float_literal,
+        .number_literal,
         .unreachable_literal,
         .string_literal,
         .multiline_string_literal,
@@ -554,6 +559,7 @@ pub fn firstToken(tree: Ast, node: Node.Index) TokenIndex {
         .container_field,
         => {
             const name_token = main_tokens[n];
+            if (token_tags[name_token + 1] != .colon) return name_token - end_offset;
             if (name_token > 0 and token_tags[name_token - 1] == .keyword_comptime) {
                 end_offset += 1;
             }
@@ -644,10 +650,22 @@ pub fn firstToken(tree: Ast, node: Node.Index) TokenIndex {
                 n = datas[n].lhs;
             }
         },
+        .switch_case_inline_one => {
+            if (datas[n].lhs == 0) {
+                return main_tokens[n] - 2 - end_offset; // else token
+            } else {
+                return firstToken(tree, datas[n].lhs) - 1;
+            }
+        },
         .switch_case => {
             const extra = tree.extraData(datas[n].lhs, Node.SubRange);
             assert(extra.end - extra.start > 0);
             n = tree.extra_data[extra.start];
+        },
+        .switch_case_inline => {
+            const extra = tree.extraData(datas[n].lhs, Node.SubRange);
+            assert(extra.end - extra.start > 0);
+            return firstToken(tree, tree.extra_data[extra.start]) - 1;
         },
 
         .asm_output, .asm_input => {
@@ -764,7 +782,9 @@ pub fn lastToken(tree: Ast, node: Node.Index) TokenIndex {
         .ptr_type_bit_range,
         .array_type,
         .switch_case_one,
+        .switch_case_inline_one,
         .switch_case,
+        .switch_case_inline,
         .switch_range,
         => n = datas[n].rhs,
 
@@ -781,8 +801,7 @@ pub fn lastToken(tree: Ast, node: Node.Index) TokenIndex {
 
         .anyframe_literal,
         .char_literal,
-        .integer_literal,
-        .float_literal,
+        .number_literal,
         .unreachable_literal,
         .identifier,
         .deref,
@@ -1302,33 +1321,39 @@ pub fn containerField(tree: Ast, node: Node.Index) full.ContainerField {
     assert(tree.nodes.items(.tag)[node] == .container_field);
     const data = tree.nodes.items(.data)[node];
     const extra = tree.extraData(data.rhs, Node.ContainerField);
+    const main_token = tree.nodes.items(.main_token)[node];
     return tree.fullContainerField(.{
-        .name_token = tree.nodes.items(.main_token)[node],
+        .main_token = main_token,
         .type_expr = data.lhs,
         .value_expr = extra.value_expr,
         .align_expr = extra.align_expr,
+        .tuple_like = tree.tokens.items(.tag)[main_token + 1] != .colon,
     });
 }
 
 pub fn containerFieldInit(tree: Ast, node: Node.Index) full.ContainerField {
     assert(tree.nodes.items(.tag)[node] == .container_field_init);
     const data = tree.nodes.items(.data)[node];
+    const main_token = tree.nodes.items(.main_token)[node];
     return tree.fullContainerField(.{
-        .name_token = tree.nodes.items(.main_token)[node],
+        .main_token = main_token,
         .type_expr = data.lhs,
         .value_expr = data.rhs,
         .align_expr = 0,
+        .tuple_like = tree.tokens.items(.tag)[main_token + 1] != .colon,
     });
 }
 
 pub fn containerFieldAlign(tree: Ast, node: Node.Index) full.ContainerField {
     assert(tree.nodes.items(.tag)[node] == .container_field_align);
     const data = tree.nodes.items(.data)[node];
+    const main_token = tree.nodes.items(.main_token)[node];
     return tree.fullContainerField(.{
-        .name_token = tree.nodes.items(.main_token)[node],
+        .main_token = main_token,
         .type_expr = data.lhs,
         .value_expr = 0,
         .align_expr = data.rhs,
+        .tuple_like = tree.tokens.items(.tag)[main_token + 1] != .colon,
     });
 }
 
@@ -1757,7 +1782,7 @@ pub fn switchCaseOne(tree: Ast, node: Node.Index) full.SwitchCase {
         .values = if (data.lhs == 0) values[0..0] else values[0..1],
         .arrow_token = tree.nodes.items(.main_token)[node],
         .target_expr = data.rhs,
-    });
+    }, node);
 }
 
 pub fn switchCase(tree: Ast, node: Node.Index) full.SwitchCase {
@@ -1767,7 +1792,7 @@ pub fn switchCase(tree: Ast, node: Node.Index) full.SwitchCase {
         .values = tree.extra_data[extra.start..extra.end],
         .arrow_token = tree.nodes.items(.main_token)[node],
         .target_expr = data.rhs,
-    });
+    }, node);
 }
 
 pub fn asmSimple(tree: Ast, node: Node.Index) full.Asm {
@@ -1926,10 +1951,14 @@ fn fullContainerField(tree: Ast, info: full.ContainerField.Components) full.Cont
         .ast = info,
         .comptime_token = null,
     };
-    // comptime name: type = init,
-    // ^
-    if (info.name_token > 0 and token_tags[info.name_token - 1] == .keyword_comptime) {
-        result.comptime_token = info.name_token - 1;
+    if (token_tags[info.main_token] == .keyword_comptime) {
+        // comptime type = init,
+        // ^
+        result.comptime_token = info.main_token;
+    } else if (info.main_token > 0 and token_tags[info.main_token - 1] == .keyword_comptime) {
+        // comptime name: type = init,
+        // ^
+        result.comptime_token = info.main_token - 1;
     }
     return result;
 }
@@ -1980,8 +2009,6 @@ fn fullStructInit(tree: Ast, info: full.StructInit.Components) full.StructInit {
 
 fn fullPtrType(tree: Ast, info: full.PtrType.Components) full.PtrType {
     const token_tags = tree.tokens.items(.tag);
-    // TODO: looks like stage1 isn't quite smart enough to handle enum
-    // literals in some places here
     const Size = std.builtin.Type.Pointer.Size;
     const size: Size = switch (token_tags[info.main_token]) {
         .asterisk,
@@ -2040,14 +2067,20 @@ fn fullContainerDecl(tree: Ast, info: full.ContainerDecl.Components) full.Contai
     return result;
 }
 
-fn fullSwitchCase(tree: Ast, info: full.SwitchCase.Components) full.SwitchCase {
+fn fullSwitchCase(tree: Ast, info: full.SwitchCase.Components, node: Node.Index) full.SwitchCase {
     const token_tags = tree.tokens.items(.tag);
+    const node_tags = tree.nodes.items(.tag);
     var result: full.SwitchCase = .{
         .ast = info,
         .payload_token = null,
+        .inline_token = null,
     };
     if (token_tags[info.arrow_token + 1] == .pipe) {
         result.payload_token = info.arrow_token + 2;
+    }
+    switch (node_tags[node]) {
+        .switch_case_inline, .switch_case_inline_one => result.inline_token = firstToken(tree, node),
+        else => {},
     }
     return result;
 }
@@ -2232,14 +2265,26 @@ pub const full = struct {
         ast: Components,
 
         pub const Components = struct {
-            name_token: TokenIndex,
+            main_token: TokenIndex,
             type_expr: Node.Index,
             value_expr: Node.Index,
             align_expr: Node.Index,
+            tuple_like: bool,
         };
 
         pub fn firstToken(cf: ContainerField) TokenIndex {
-            return cf.comptime_token orelse cf.ast.name_token;
+            return cf.comptime_token orelse cf.ast.main_token;
+        }
+
+        pub fn convertToNonTupleLike(cf: *ContainerField, nodes: NodeList.Slice) void {
+            if (!cf.ast.tuple_like) return;
+            if (cf.ast.type_expr == 0) return;
+            if (nodes.items(.tag)[cf.ast.type_expr] != .identifier) return;
+
+            const ident = nodes.items(.main_token)[cf.ast.type_expr];
+            cf.ast.tuple_like = false;
+            cf.ast.main_token = ident;
+            cf.ast.type_expr = 0;
         }
     };
 
@@ -2456,6 +2501,7 @@ pub const full = struct {
     };
 
     pub const SwitchCase = struct {
+        inline_token: ?TokenIndex,
         /// Points to the first token after the `|`. Will either be an identifier or
         /// a `*` (with an identifier immediately after it).
         payload_token: ?TokenIndex,
@@ -2560,6 +2606,8 @@ pub const Error = struct {
         mismatched_binary_op_whitespace,
         invalid_ampersand_ampersand,
         c_style_container,
+        expected_var_const,
+        wrong_equal_var_decl,
 
         zig_style_container,
         previous_field,
@@ -2849,9 +2897,13 @@ pub const Node = struct {
         /// `lhs => rhs`. If lhs is omitted it means `else`.
         /// main_token is the `=>`
         switch_case_one,
+        /// Same ast `switch_case_one` but the case is inline
+        switch_case_inline_one,
         /// `a, b, c => rhs`. `SubRange[lhs]`.
         /// main_token is the `=>`
         switch_case,
+        /// Same ast `switch_case` but the case is inline
+        switch_case_inline,
         /// `lhs...rhs`.
         switch_range,
         /// `while (lhs) rhs`.
@@ -2919,9 +2971,7 @@ pub const Node = struct {
         /// Both lhs and rhs unused.
         char_literal,
         /// Both lhs and rhs unused.
-        integer_literal,
-        /// Both lhs and rhs unused.
-        float_literal,
+        number_literal,
         /// Both lhs and rhs unused.
         unreachable_literal,
         /// Both lhs and rhs unused.
@@ -2967,7 +3017,7 @@ pub const Node = struct {
         /// Same as ContainerDeclTwo except there is known to be a trailing comma
         /// or semicolon before the rbrace.
         container_decl_two_trailing,
-        /// `union(lhs)` / `enum(lhs)`. `SubRange[rhs]`.
+        /// `struct(lhs)` / `union(lhs)` / `enum(lhs)`. `SubRange[rhs]`.
         container_decl_arg,
         /// Same as container_decl_arg but there is known to be a trailing
         /// comma or semicolon before the rbrace.

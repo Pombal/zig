@@ -185,8 +185,6 @@ pub fn PriorityQueue(comptime T: type, comptime Context: type, comptime compareF
             return queue;
         }
 
-        pub const ensureCapacity = @compileError("deprecated; use ensureUnusedCapacity or ensureTotalCapacity");
-
         /// Ensure that the queue can fit at least `new_capacity` items.
         pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) !void {
             var better_capacity = self.capacity();
@@ -220,8 +218,10 @@ pub fn PriorityQueue(comptime T: type, comptime Context: type, comptime compareF
 
         pub fn update(self: *Self, elem: T, new_elem: T) !void {
             const update_index = blk: {
-                for (self.items) |item, idx| {
-                    if (compareFn(self.context, item, elem).compare(.eq)) break :blk idx;
+                var idx: usize = 0;
+                while (idx < self.len) : (idx += 1) {
+                    const item = self.items[idx];
+                    if (compareFn(self.context, item, elem) == .eq) break :blk idx;
                 }
                 return error.ElementNotFound;
             };
@@ -591,6 +591,15 @@ test "std.PriorityQueue: update same max heap" {
     try expectEqual(@as(u32, 4), queue.remove());
     try expectEqual(@as(u32, 2), queue.remove());
     try expectEqual(@as(u32, 1), queue.remove());
+}
+
+test "std.PriorityQueue: update after remove" {
+    var queue = PQlt.init(testing.allocator, {});
+    defer queue.deinit();
+
+    try queue.add(1);
+    try expectEqual(@as(u32, 1), queue.remove());
+    try expectError(error.ElementNotFound, queue.update(1, 1));
 }
 
 test "std.PriorityQueue: siftUp in remove" {

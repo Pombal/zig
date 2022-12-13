@@ -285,6 +285,7 @@ const Code = struct {
     link_objects: []const []const u8,
     target_str: ?[]const u8,
     link_libc: bool,
+    backend_stage1: bool,
     link_mode: ?std.builtin.LinkMode,
     disable_cache: bool,
     verbose_cimport: bool,
@@ -470,7 +471,7 @@ fn genToc(allocator: Allocator, tokenizer: *Tokenizer) !Toc {
                             },
                             Token.Id.Separator => {},
                             Token.Id.BracketClose => {
-                                try nodes.append(Node{ .SeeAlso = list.toOwnedSlice() });
+                                try nodes.append(Node{ .SeeAlso = try list.toOwnedSlice() });
                                 break;
                             },
                             else => return parseError(tokenizer, see_also_tok, "invalid see_also token", .{}),
@@ -554,6 +555,7 @@ fn genToc(allocator: Allocator, tokenizer: *Tokenizer) !Toc {
                     var link_mode: ?std.builtin.LinkMode = null;
                     var disable_cache = false;
                     var verbose_cimport = false;
+                    var backend_stage1 = false;
 
                     const source_token = while (true) {
                         const content_tok = try eatToken(tokenizer, Token.Id.Content);
@@ -586,6 +588,8 @@ fn genToc(allocator: Allocator, tokenizer: *Tokenizer) !Toc {
                             link_libc = true;
                         } else if (mem.eql(u8, end_tag_name, "link_mode_dynamic")) {
                             link_mode = .Dynamic;
+                        } else if (mem.eql(u8, end_tag_name, "backend_stage1")) {
+                            backend_stage1 = true;
                         } else if (mem.eql(u8, end_tag_name, "code_end")) {
                             _ = try eatToken(tokenizer, Token.Id.BracketClose);
                             break content_tok;
@@ -606,9 +610,10 @@ fn genToc(allocator: Allocator, tokenizer: *Tokenizer) !Toc {
                             .source_token = source_token,
                             .just_check_syntax = just_check_syntax,
                             .mode = mode,
-                            .link_objects = link_objects.toOwnedSlice(),
+                            .link_objects = try link_objects.toOwnedSlice(),
                             .target_str = target_str,
                             .link_libc = link_libc,
+                            .backend_stage1 = backend_stage1,
                             .link_mode = link_mode,
                             .disable_cache = disable_cache,
                             .verbose_cimport = verbose_cimport,
@@ -691,7 +696,7 @@ fn genToc(allocator: Allocator, tokenizer: *Tokenizer) !Toc {
                             );
                         }
                         _ = try eatToken(tokenizer, Token.Id.BracketClose);
-                    } else unreachable; // TODO issue #707
+                    };
                     try nodes.append(Node{ .SyntaxBlock = SyntaxBlock{ .source_type = source_type, .name = name, .source_token = source_token } });
                 } else {
                     return parseError(tokenizer, tag_token, "unrecognized tag name: {s}", .{tag_name});
@@ -702,8 +707,8 @@ fn genToc(allocator: Allocator, tokenizer: *Tokenizer) !Toc {
     }
 
     return Toc{
-        .nodes = nodes.toOwnedSlice(),
-        .toc = toc_buf.toOwnedSlice(),
+        .nodes = try nodes.toOwnedSlice(),
+        .toc = try toc_buf.toOwnedSlice(),
         .urls = urls,
     };
 }
@@ -724,7 +729,7 @@ fn urlize(allocator: Allocator, input: []const u8) ![]u8 {
             else => {},
         }
     }
-    return buf.toOwnedSlice();
+    return try buf.toOwnedSlice();
 }
 
 fn escapeHtml(allocator: Allocator, input: []const u8) ![]u8 {
@@ -733,7 +738,7 @@ fn escapeHtml(allocator: Allocator, input: []const u8) ![]u8 {
 
     const out = buf.writer();
     try writeEscaped(out, input);
-    return buf.toOwnedSlice();
+    return try buf.toOwnedSlice();
 }
 
 fn writeEscaped(out: anytype, input: []const u8) !void {
@@ -849,14 +854,15 @@ fn termColor(allocator: Allocator, input: []const u8) ![]u8 {
             },
         }
     }
-    return buf.toOwnedSlice();
+    return try buf.toOwnedSlice();
 }
 
 const builtin_types = [_][]const u8{
-    "f16",         "f32",      "f64",       "f128",     "c_longdouble", "c_short",
-    "c_ushort",    "c_int",    "c_uint",    "c_long",   "c_ulong",      "c_longlong",
-    "c_ulonglong", "c_char",   "anyopaque", "void",     "bool",         "isize",
-    "usize",       "noreturn", "type",      "anyerror", "comptime_int", "comptime_float",
+    "f16",          "f32",     "f64",        "f80",          "f128",
+    "c_longdouble", "c_short", "c_ushort",   "c_int",        "c_uint",
+    "c_long",       "c_ulong", "c_longlong", "c_ulonglong",  "c_char",
+    "anyopaque",    "void",    "bool",       "isize",        "usize",
+    "noreturn",     "type",    "anyerror",   "comptime_int", "comptime_float",
 };
 
 fn isType(name: []const u8) bool {
@@ -1052,9 +1058,7 @@ fn tokenizeAndPrintRaw(
                 }
             },
 
-            .integer_literal,
-            .float_literal,
-            => {
+            .number_literal => {
                 try out.writeAll("<span class=\"tok-number\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
@@ -1164,7 +1168,7 @@ fn printSourceBlock(allocator: Allocator, docgen_tokenizer: *Tokenizer, out: any
     try out.writeAll("</pre></figure>");
 }
 
-fn printShell(out: anytype, shell_content: []const u8) !void {
+fn printShell(out: anytype, shell_content: []const u8, escape: bool) !void {
     const trimmed_shell_content = mem.trim(u8, shell_content, " \n");
     try out.writeAll("<figure><figcaption class=\"shell-cap\">Shell</figcaption><pre><samp>");
     var cmd_cont: bool = false;
@@ -1172,20 +1176,49 @@ fn printShell(out: anytype, shell_content: []const u8) !void {
     while (iter.next()) |orig_line| {
         const line = mem.trimRight(u8, orig_line, " ");
         if (!cmd_cont and line.len > 1 and mem.eql(u8, line[0..2], "$ ") and line[line.len - 1] != '\\') {
-            try out.print(start_line ++ "$ <kbd>{s}</kbd>" ++ end_line ++ "\n", .{std.mem.trimLeft(u8, line[1..], " ")});
+            try out.writeAll(start_line ++ "$ <kbd>");
+            const s = std.mem.trimLeft(u8, line[1..], " ");
+            if (escape) {
+                try writeEscaped(out, s);
+            } else {
+                try out.writeAll(s);
+            }
+            try out.writeAll("</kbd>" ++ end_line ++ "\n");
         } else if (!cmd_cont and line.len > 1 and mem.eql(u8, line[0..2], "$ ") and line[line.len - 1] == '\\') {
-            try out.print(start_line ++ "$ <kbd>{s}" ++ end_line ++ "\n", .{std.mem.trimLeft(u8, line[1..], " ")});
+            try out.writeAll(start_line ++ "$ <kbd>");
+            const s = std.mem.trimLeft(u8, line[1..], " ");
+            if (escape) {
+                try writeEscaped(out, s);
+            } else {
+                try out.writeAll(s);
+            }
+            try out.writeAll(end_line ++ "\n");
             cmd_cont = true;
         } else if (line.len > 0 and line[line.len - 1] != '\\' and cmd_cont) {
-            try out.print(start_line ++ "{s}</kbd>" ++ end_line ++ "\n", .{line});
+            try out.writeAll(start_line);
+            if (escape) {
+                try writeEscaped(out, line);
+            } else {
+                try out.writeAll(line);
+            }
+            try out.writeAll("</kbd>" ++ end_line ++ "\n");
             cmd_cont = false;
         } else {
-            try out.print(start_line ++ "{s}" ++ end_line ++ "\n", .{line});
+            try out.writeAll(start_line);
+            if (escape) {
+                try writeEscaped(out, line);
+            } else {
+                try out.writeAll(line);
+            }
+            try out.writeAll(end_line ++ "\n");
         }
     }
 
     try out.writeAll("</samp></pre></figure>");
 }
+
+// Override this to skip to later tests
+const debug_start_line = 0;
 
 fn genHtml(
     allocator: Allocator,
@@ -1202,7 +1235,7 @@ fn genHtml(
     var env_map = try process.getEnvMap(allocator);
     try env_map.put("ZIG_DEBUG_COLOR", "1");
 
-    const host = try std.zig.system.NativeTargetInfo.detect(allocator, .{});
+    const host = try std.zig.system.NativeTargetInfo.detect(.{});
     const builtin_code = try getBuiltinCode(allocator, &env_map, zig_exe);
 
     for (toc.nodes) |node| {
@@ -1247,7 +1280,7 @@ fn genHtml(
             },
             .Shell => |content_tok| {
                 const raw_shell_content = tokenizer.buffer[content_tok.start..content_tok.end];
-                try printShell(out, raw_shell_content);
+                try printShell(out, raw_shell_content, true);
             },
             .SyntaxBlock => |syntax_block| {
                 try printSourceBlock(allocator, tokenizer, out, syntax_block);
@@ -1264,6 +1297,13 @@ fn genHtml(
 
                 if (!do_code_tests) {
                     continue;
+                }
+
+                if (debug_start_line > 0) {
+                    const loc = tokenizer.getTokenLocation(code.source_token);
+                    if (debug_start_line > loc.line) {
+                        continue;
+                    }
                 }
 
                 const raw_source = tokenizer.buffer[code.source_token.start..code.source_token.end];
@@ -1310,6 +1350,10 @@ fn genHtml(
                         if (code.link_libc) {
                             try build_args.append("-lc");
                             try shell_out.print("-lc ", .{});
+                        }
+                        if (code.backend_stage1) {
+                            try build_args.append("-fstage1");
+                            try shell_out.print("-fstage1", .{});
                         }
                         const target = try std.zig.CrossTarget.parse(.{
                             .arch_os_abi = code.target_str orelse "native",
@@ -1443,6 +1487,10 @@ fn genHtml(
                             try test_args.append("-lc");
                             try shell_out.print("-lc ", .{});
                         }
+                        if (code.backend_stage1) {
+                            try test_args.append("-fstage1");
+                            try shell_out.print("-fstage1", .{});
+                        }
                         if (code.target_str) |triple| {
                             try test_args.appendSlice(&[_][]const u8{ "-target", triple });
                             try shell_out.print("-target {s} ", .{triple});
@@ -1451,7 +1499,6 @@ fn genHtml(
                                 .arch_os_abi = triple,
                             });
                             const target_info = try std.zig.system.NativeTargetInfo.detect(
-                                allocator,
                                 cross_target,
                             );
                             switch (host.getExternalExecutor(target_info, .{
@@ -1489,6 +1536,14 @@ fn genHtml(
                                 try test_args.appendSlice(&[_][]const u8{ "-O", @tagName(code.mode) });
                                 try shell_out.print("-O {s} ", .{@tagName(code.mode)});
                             },
+                        }
+                        if (code.link_libc) {
+                            try test_args.append("-lc");
+                            try shell_out.print("-lc ", .{});
+                        }
+                        if (code.backend_stage1) {
+                            try test_args.append("-fstage1");
+                            try shell_out.print("-fstage1", .{});
                         }
                         const result = try ChildProcess.exec(.{
                             .allocator = allocator,
@@ -1701,7 +1756,7 @@ fn genHtml(
                 }
 
                 if (!code.just_check_syntax) {
-                    try printShell(out, shell_buffer.items);
+                    try printShell(out, shell_buffer.items, false);
                 }
             },
         }
@@ -1759,7 +1814,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         std.log.emerg("{s}", .{buffer.items});
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
@@ -1777,7 +1832,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1796,7 +1851,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1817,7 +1872,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1836,7 +1891,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1859,7 +1914,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1881,7 +1936,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1898,7 +1953,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1917,7 +1972,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
     {
@@ -1932,7 +1987,7 @@ test "shell parsed" {
         var buffer = std.ArrayList(u8).init(test_allocator);
         defer buffer.deinit();
 
-        try printShell(buffer.writer(), shell_out);
+        try printShell(buffer.writer(), shell_out, false);
         try testing.expectEqualSlices(u8, expected, buffer.items);
     }
 }

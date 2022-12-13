@@ -75,7 +75,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    _ = c.printf("0.0e0: %.013a\n",
         \\         @as(f64, 0.0e0));
         \\    _ = c.printf("000000000000000000000000000000000000000000000000000000000.0e0: %.013a\n",
-        \\         @as(f64, 000000000000000000000000000000000000000000000000000000000.0e0));
+        \\         @as(f64, 0.0e0));
         \\    _ = c.printf("0.000000000000000000000000000000000000000000000000000000000e0: %.013a\n",
         \\         @as(f64, 0.000000000000000000000000000000000000000000000000000000000e0));
         \\    _ = c.printf("0.0e000000000000000000000000000000000000000000000000000000000: %.013a\n",
@@ -504,9 +504,10 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    const allocator = logging_allocator.allocator();
         \\
         \\    var a = try allocator.alloc(u8, 10);
-        \\    a = allocator.shrink(a, 5);
+        \\    try std.testing.expect(allocator.resize(a, 5));
+        \\    a = a[0..5];
         \\    try std.testing.expect(a.len == 5);
-        \\    try std.testing.expect(allocator.resize(a, 20) == null);
+        \\    try std.testing.expect(!allocator.resize(a, 20));
         \\    allocator.free(a);
         \\}
         \\
@@ -522,9 +523,9 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    nosuspend stdout.print(level_txt ++ prefix2 ++ format ++ "\n", args) catch return;
         \\}
     ,
-        \\debug: alloc - success - len: 10, ptr_align: 1, len_align: 0
-        \\debug: shrink - success - 10 to 5, len_align: 0, buf_align: 1
-        \\error: expand - failure - 5 to 20, len_align: 0, buf_align: 1
+        \\debug: alloc - success - len: 10, ptr_align: 0
+        \\debug: shrink - success - 10 to 5, buf_align: 0
+        \\error: expand - failure - 5 to 20, buf_align: 0
         \\debug: free - len: 5
         \\
     );

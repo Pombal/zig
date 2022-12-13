@@ -387,10 +387,10 @@ fn callFn(comptime f: anytype, args: anytype) switch (Impl) {
 
     switch (@typeInfo(@typeInfo(@TypeOf(f)).Fn.return_type.?)) {
         .NoReturn => {
-            @call(.{}, f, args);
+            @call(.auto, f, args);
         },
         .Void => {
-            @call(.{}, f, args);
+            @call(.auto, f, args);
             return default_value;
         },
         .Int => |info| {
@@ -398,13 +398,12 @@ fn callFn(comptime f: anytype, args: anytype) switch (Impl) {
                 @compileError(bad_fn_ret);
             }
 
-            const status = @call(.{}, f, args);
+            const status = @call(.auto, f, args);
             if (Impl != PosixThreadImpl) {
                 return status;
             }
 
             // pthreads don't support exit status, ignore value
-            _ = status;
             return default_value;
         },
         .ErrorUnion => |info| {
@@ -412,7 +411,7 @@ fn callFn(comptime f: anytype, args: anytype) switch (Impl) {
                 @compileError(bad_fn_ret);
             }
 
-            @call(.{}, f, args) catch |err| {
+            @call(.auto, f, args) catch |err| {
                 std.debug.print("error: {s}\n", .{@errorName(err)});
                 if (@errorReturnTrace()) |trace| {
                     std.debug.dumpStackTrace(trace.*);
@@ -754,7 +753,7 @@ const LinuxThreadImpl = struct {
         /// https://github.com/ifduyue/musl/search?q=__unmapself
         fn freeAndExit(self: *ThreadCompletion) noreturn {
             switch (target.cpu.arch) {
-                .i386 => asm volatile (
+                .x86 => asm volatile (
                     \\  movl $91, %%eax
                     \\  movl %[ptr], %%ebx
                     \\  movl %[len], %%ecx
@@ -769,16 +768,13 @@ const LinuxThreadImpl = struct {
                 ),
                 .x86_64 => asm volatile (
                     \\  movq $11, %%rax
-                    \\  movq %[ptr], %%rbx
-                    \\  movq %[len], %%rcx
                     \\  syscall
                     \\  movq $60, %%rax
                     \\  movq $1, %%rdi
                     \\  syscall
                     :
-                    : [ptr] "r" (@ptrToInt(self.mapped.ptr)),
-                      [len] "r" (self.mapped.len),
-                    : "memory"
+                    : [ptr] "{rdi}" (@ptrToInt(self.mapped.ptr)),
+                      [len] "{rsi}" (self.mapped.len),
                 ),
                 .arm, .armeb, .thumb, .thumbeb => asm volatile (
                     \\  mov r7, #91
@@ -963,10 +959,10 @@ const LinuxThreadImpl = struct {
             else => |e| return e,
         };
 
-        // Prepare the TLS segment and prepare a user_desc struct when needed on i386
+        // Prepare the TLS segment and prepare a user_desc struct when needed on x86
         var tls_ptr = os.linux.tls.prepareTLS(mapped[tls_offset..]);
-        var user_desc: if (target.cpu.arch == .i386) os.linux.user_desc else void = undefined;
-        if (target.cpu.arch == .i386) {
+        var user_desc: if (target.cpu.arch == .x86) os.linux.user_desc else void = undefined;
+        if (target.cpu.arch == .x86) {
             defer tls_ptr = @ptrToInt(&user_desc);
             user_desc = .{
                 .entry_number = os.linux.tls.tls_image.gdt_entry_number,

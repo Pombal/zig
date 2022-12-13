@@ -282,8 +282,7 @@ pub const Insn = extern struct {
         writer: anytype,
     ) !void {
         _ = opts;
-        if (comptime layout.len != 0 and layout[0] != 's')
-            @compileError("Unsupported format specifier for BPF Insn type '" ++ layout ++ "'.");
+        if (layout.len != 0) std.fmt.invalidFmtError(layout, self);
 
         try std.fmt.format(
             writer,
@@ -691,14 +690,14 @@ test "tcpdump filter" {
     );
 }
 
-fn expectPass(data: anytype, filter: []Insn) !void {
+fn expectPass(data: anytype, filter: []const Insn) !void {
     try expectEqual(
         @as(u32, 0),
         try simulate(mem.asBytes(data), filter, .Big),
     );
 }
 
-fn expectFail(expected_error: anyerror, data: anytype, filter: []Insn) !void {
+fn expectFail(expected_error: anyerror, data: anytype, filter: []const Insn) !void {
     try expectError(
         expected_error,
         simulate(mem.asBytes(data), filter, native_endian),

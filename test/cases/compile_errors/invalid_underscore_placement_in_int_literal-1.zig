@@ -1,5 +1,5 @@
 fn main() void {
-    var bad: u128 = 0010_;
+    var bad: u128 = 10_;
     _ = bad;
 }
 
@@ -7,5 +7,4 @@ fn main() void {
 // backend=llvm
 // target=native
 //
-// :2:21: error: expected expression, found 'invalid bytes'
-// :2:26: note: invalid byte: ';'
+// :2:23: error: trailing digit separator

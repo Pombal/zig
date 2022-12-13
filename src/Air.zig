@@ -660,6 +660,10 @@ pub const Inst = struct {
         /// Uses the `pl_op` field with payload `AtomicRmw`. Operand is `ptr`.
         atomic_rmw,
 
+        /// Returns true if enum tag value has a name.
+        /// Uses the `un_op` field.
+        is_named_enum_value,
+
         /// Given an enum tag value, returns the tag name. The enum type may be non-exhaustive.
         /// Result type is always `[:0]const u8`.
         /// Uses the `un_op` field.
@@ -668,6 +672,10 @@ pub const Inst = struct {
         /// Given an error value, return the error name. Result type is always `[:0] const u8`.
         /// Uses the `un_op` field.
         error_name,
+
+        /// Returns true if error set has error with value.
+        /// Uses the `ty_op` field.
+        error_set_has_value,
 
         /// Constructs a vector, tuple, struct, or array value out of runtime-known elements.
         /// Some of the elements may be comptime-known.
@@ -720,6 +728,14 @@ pub const Inst = struct {
 
         /// Sets the operand as the current error return trace,
         set_err_return_trace,
+
+        /// Convert the address space of a pointer.
+        /// Uses the `ty_op` field.
+        addrspace_cast,
+
+        /// Saves the error return trace index, if any. Otherwise, returns 0.
+        /// Uses the `ty_pl` field.
+        save_err_return_trace_index,
 
         pub fn fromCmpOp(op: std.math.CompareOperator, optimized: bool) Tag {
             switch (op) {
@@ -803,7 +819,7 @@ pub const Inst = struct {
         // bigger than expected. Note that in Debug builds, Zig is allowed
         // to insert a secret field for safety checks.
         comptime {
-            if (builtin.mode != .Debug) {
+            if (builtin.mode != .Debug and builtin.mode != .ReleaseSafe) {
                 assert(@sizeOf(Data) == 8);
             }
         }
@@ -1057,6 +1073,8 @@ pub fn typeOfIndex(air: Air, inst: Air.Inst.Index) Type {
         .is_non_err,
         .is_err_ptr,
         .is_non_err_ptr,
+        .is_named_enum_value,
+        .error_set_has_value,
         => return Type.bool,
 
         .const_ty => return Type.type,
@@ -1128,6 +1146,7 @@ pub fn typeOfIndex(air: Air, inst: Air.Inst.Index) Type {
         .popcount,
         .byte_swap,
         .bit_reverse,
+        .addrspace_cast,
         => return air.getRefType(datas[inst].ty_op.ty),
 
         .loop,
@@ -1164,6 +1183,7 @@ pub fn typeOfIndex(air: Air, inst: Air.Inst.Index) Type {
         .slice_len,
         .ret_addr,
         .frame_addr,
+        .save_err_return_trace_index,
         => return Type.usize,
 
         .wasm_memory_grow => return Type.i32,
