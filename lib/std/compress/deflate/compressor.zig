@@ -159,7 +159,7 @@ fn levels(compression: Compression) CompressionLevel {
 fn matchLen(a: []u8, b: []u8, max: u32) u32 {
     var bounded_a = a[0..max];
     var bounded_b = b[0..max];
-    for (bounded_a) |av, i| {
+    for (bounded_a, 0..) |av, i| {
         if (bounded_b[i] != av) {
             return @intCast(u32, i);
         }
@@ -312,14 +312,14 @@ pub fn Compressor(comptime WriterType: anytype) type {
 
                     // Iterate over slices instead of arrays to avoid copying
                     // the entire table onto the stack (https://golang.org/issue/18625).
-                    for (self.hash_prev) |v, i| {
+                    for (self.hash_prev, 0..) |v, i| {
                         if (v > delta) {
                             self.hash_prev[i] = @intCast(u32, v - delta);
                         } else {
                             self.hash_prev[i] = 0;
                         }
                     }
-                    for (self.hash_head) |v, i| {
+                    for (self.hash_head, 0..) |v, i| {
                         if (v > delta) {
                             self.hash_head[i] = @intCast(u32, v - delta);
                         } else {
@@ -391,7 +391,7 @@ pub fn Compressor(comptime WriterType: anytype) type {
                 var dst = self.hash_match[0..dst_size];
                 _ = self.bulk_hasher(to_check, dst);
                 var new_h: u32 = 0;
-                for (dst) |val, i| {
+                for (dst, 0..) |val, i| {
                     var di = i + index;
                     new_h = val;
                     var hh = &self.hash_head[new_h & hash_mask];
@@ -1079,7 +1079,7 @@ test "deflate" {
         try comp.close();
         comp.deinit();
 
-        try expect(mem.eql(u8, output.items, dt.out));
+        try testing.expectEqualSlices(u8, dt.out, output.items);
     }
 }
 
@@ -1102,9 +1102,9 @@ test "bulkHash4" {
             defer testing.allocator.free(dst);
 
             _ = bulkHash4(y, dst);
-            for (dst) |got, i| {
+            for (dst, 0..) |got, i| {
                 var want = hash4(y[i..]);
-                try expect(got == want);
+                try testing.expectEqual(want, got);
             }
         }
     }

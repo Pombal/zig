@@ -50,7 +50,7 @@ pub fn cast(comptime DestType: type, target: anytype) DestType {
         },
         .Union => |info| {
             inline for (info.fields) |field| {
-                if (field.field_type == SourceType) return @unionInit(DestType, field.name, target);
+                if (field.type == SourceType) return @unionInit(DestType, field.name, target);
             }
             @compileError("cast to union type '" ++ @typeName(DestType) ++ "' from type '" ++ @typeName(SourceType) ++ "' which is not present in union");
         },
@@ -74,8 +74,10 @@ fn castPtr(comptime DestType: type, target: anytype) DestType {
     const dest = ptrInfo(DestType);
     const source = ptrInfo(@TypeOf(target));
 
-    if (source.is_const and !dest.is_const or source.is_volatile and !dest.is_volatile)
-        return @intToPtr(DestType, @ptrToInt(target))
+    if (source.is_const and !dest.is_const)
+        return @constCast(target)
+    else if (source.is_volatile and !dest.is_volatile)
+        return @volatileCast(target)
     else if (@typeInfo(dest.child) == .Opaque)
         // dest.alignment would error out
         return @ptrCast(DestType, target)

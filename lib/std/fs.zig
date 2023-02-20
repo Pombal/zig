@@ -34,7 +34,7 @@ pub const Watch = @import("fs/watch.zig").Watch;
 /// fit into a UTF-8 encoded array of this length.
 /// The byte count includes room for a null sentinel byte.
 pub const MAX_PATH_BYTES = switch (builtin.os.tag) {
-    .linux, .macos, .ios, .freebsd, .netbsd, .dragonfly, .openbsd, .haiku, .solaris => os.PATH_MAX,
+    .linux, .macos, .ios, .freebsd, .openbsd, .netbsd, .dragonfly, .haiku, .solaris => os.PATH_MAX,
     // Each UTF-16LE character may be expanded to 3 UTF-8 bytes.
     // If it would require 4 UTF-8 bytes, then there would be a surrogate
     // pair in the UTF-16LE, and we (over)account 3 bytes for it that way.
@@ -54,10 +54,10 @@ pub const MAX_PATH_BYTES = switch (builtin.os.tag) {
 /// (depending on the platform) this assumption may not hold for every configuration.
 /// The byte count does not include a null sentinel byte.
 pub const MAX_NAME_BYTES = switch (builtin.os.tag) {
-    .linux, .macos, .ios, .freebsd, .dragonfly => os.NAME_MAX,
+    .linux, .macos, .ios, .freebsd, .openbsd, .netbsd, .dragonfly => os.NAME_MAX,
     // Haiku's NAME_MAX includes the null terminator, so subtract one.
     .haiku => os.NAME_MAX - 1,
-    .netbsd, .openbsd, .solaris => os.MAXNAMLEN,
+    .solaris => os.system.MAXNAMLEN,
     // Each UTF-16LE character may be expanded to 3 UTF-8 bytes.
     // If it would require 4 UTF-8 bytes, then there would be a surrogate
     // pair in the UTF-16LE, and we (over)account 3 bytes for it that way.
@@ -150,7 +150,6 @@ pub fn copyFileAbsolute(source_path: []const u8, dest_path: []const u8, args: Co
     return Dir.copyFile(my_cwd, source_path, my_cwd, dest_path, args);
 }
 
-/// TODO update this API to avoid a getrandom syscall for every operation.
 pub const AtomicFile = struct {
     file: File,
     // TODO either replace this with rand_buf or use []u16 on Windows
@@ -835,7 +834,7 @@ pub const IterableDir = struct {
                         self.end_index = self.index; // Force fd_readdir in the next loop.
                         continue :start_over;
                     }
-                    const name = mem.span(self.buf[name_index .. name_index + entry.d_namlen]);
+                    const name = self.buf[name_index .. name_index + entry.d_namlen];
 
                     const next_index = name_index + entry.d_namlen;
                     self.index = next_index;
@@ -1764,7 +1763,7 @@ pub const Dir = struct {
         var nt_name = w.UNICODE_STRING{
             .Length = path_len_bytes,
             .MaximumLength = path_len_bytes,
-            .Buffer = @intToPtr([*]u16, @ptrToInt(sub_path_w)),
+            .Buffer = @constCast(sub_path_w),
         };
         var attr = w.OBJECT_ATTRIBUTES{
             .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
@@ -1795,6 +1794,9 @@ pub const Dir = struct {
             .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
             .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
             .NOT_A_DIRECTORY => return error.NotDir,
+            // This can happen if the directory has 'List folder contents' permission set to 'Deny'
+            // and the directory is trying to be opened for iteration.
+            .ACCESS_DENIED => return error.AccessDenied,
             .INVALID_PARAMETER => unreachable,
             else => return w.unexpectedStatus(rc),
         }
@@ -2598,14 +2600,32 @@ pub const Dir = struct {
         return file.stat();
     }
 
-    pub const StatFileError = File.OpenError || StatError;
+    pub const StatFileError = File.OpenError || File.StatError || os.FStatAtError;
 
-    // TODO: improve this to use the fstatat syscall instead of making 2 syscalls here.
-    pub fn statFile(self: Dir, sub_path: []const u8) StatFileError!File.Stat {
-        var file = try self.openFile(sub_path, .{});
-        defer file.close();
-
-        return file.stat();
+    /// Returns metadata for a file inside the directory.
+    ///
+    /// On Windows, this requires three syscalls. On other operating systems, it
+    /// only takes one.
+    ///
+    /// Symlinks are followed.
+    ///
+    /// `sub_path` may be absolute, in which case `self` is ignored.
+    pub fn statFile(self: Dir, sub_path: []const u8) StatFileError!Stat {
+        switch (builtin.os.tag) {
+            .windows => {
+                var file = try self.openFile(sub_path, .{});
+                defer file.close();
+                return file.stat();
+            },
+            .wasi => {
+                const st = try os.fstatatWasi(self.fd, sub_path, os.wasi.LOOKUP_SYMLINK_FOLLOW);
+                return Stat.fromSystem(st);
+            },
+            else => {
+                const st = try os.fstatat(self.fd, sub_path, 0);
+                return Stat.fromSystem(st);
+            },
+        }
     }
 
     const Permissions = File.Permissions;
@@ -2641,15 +2661,15 @@ pub fn cwd() Dir {
     if (builtin.os.tag == .windows) {
         return Dir{ .fd = os.windows.peb().ProcessParameters.CurrentDirectory.Handle };
     } else if (builtin.os.tag == .wasi) {
-        if (@hasDecl(root, "wasi_cwd")) {
-            return root.wasi_cwd();
-        } else {
-            // Expect the first preopen to be current working directory.
-            return .{ .fd = 3 };
-        }
+        return std.options.wasiCwd();
     } else {
         return Dir{ .fd = os.AT.FDCWD };
     }
+}
+
+pub fn defaultWasiCwd() Dir {
+    // Expect the first preopen to be current working directory.
+    return .{ .fd = 3 };
 }
 
 /// Opens a directory at the given path. The directory is a system resource that remains
@@ -2948,14 +2968,14 @@ pub fn selfExePath(out_buffer: []u8) SelfExePathError![]u8 {
             var out_len: usize = out_buffer.len;
             try os.sysctl(&mib, out_buffer.ptr, &out_len, null, 0);
             // TODO could this slice from 0 to out_len instead?
-            return mem.sliceTo(std.meta.assumeSentinel(out_buffer.ptr, 0), 0);
+            return mem.sliceTo(out_buffer, 0);
         },
         .netbsd => {
             var mib = [4]c_int{ os.CTL.KERN, os.KERN.PROC_ARGS, -1, os.KERN.PROC_PATHNAME };
             var out_len: usize = out_buffer.len;
             try os.sysctl(&mib, out_buffer.ptr, &out_len, null, 0);
             // TODO could this slice from 0 to out_len instead?
-            return mem.sliceTo(std.meta.assumeSentinel(out_buffer.ptr, 0), 0);
+            return mem.sliceTo(out_buffer, 0);
         },
         .openbsd, .haiku => {
             // OpenBSD doesn't support getting the path of a running process, so try to guess it
@@ -3008,7 +3028,7 @@ pub fn selfExePath(out_buffer: []u8) SelfExePathError![]u8 {
 /// The result is UTF16LE-encoded.
 pub fn selfExePathW() [:0]const u16 {
     const image_path_name = &os.windows.peb().ProcessParameters.ImagePathName;
-    return mem.sliceTo(std.meta.assumeSentinel(image_path_name.Buffer, 0), 0);
+    return image_path_name.Buffer[0 .. image_path_name.Length / 2 :0];
 }
 
 /// `selfExeDirPath` except allocates the result on the heap.

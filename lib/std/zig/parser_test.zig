@@ -1,7 +1,29 @@
+// TODO: remove this after zig 0.11.0 is released
+test "zig fmt: transform old for loop syntax to new" {
+    try testTransform(
+        \\fn foo() void {
+        \\    for (a) |b, i| {
+        \\        _ = b; _ = i;
+        \\    }
+        \\}
+        \\
+    ,
+        \\fn foo() void {
+        \\    for (a, 0..) |b, i| {
+        \\        _ = b;
+        \\        _ = i;
+        \\    }
+        \\}
+        \\
+    );
+}
+
 test "zig fmt: tuple struct" {
     try testCanonical(
         \\const T = struct {
-        \\    comptime u32,
+        \\    /// doc comment on tuple field
+        \\    comptime comptime u32,
+        \\    /// another doc comment on tuple field
         \\    *u32 = 1,
         \\    // needs to be wrapped in parentheses to not be parsed as a function decl
         \\    (fn () void) align(1),
@@ -184,6 +206,15 @@ test "zig fmt: file ends in comment" {
     );
 }
 
+test "zig fmt: file ends in multi line comment" {
+    try testTransform(
+        \\     \\foobar
+    ,
+        \\\\foobar
+        \\
+    );
+}
+
 test "zig fmt: file ends in comment after var decl" {
     try testTransform(
         \\const x = 42;
@@ -210,6 +241,34 @@ test "zig fmt: top-level fields" {
         \\a: did_you_know,
         \\b: all_files_are,
         \\structs: ?x,
+        \\
+    );
+}
+
+test "zig fmt: top-level tuple function call type" {
+    try testCanonical(
+        \\foo()
+        \\
+    );
+}
+
+test "zig fmt: top-level enum missing 'const name ='" {
+    try testError(
+        \\enum(u32)
+        \\
+    , &[_]Error{.expected_token});
+}
+
+test "zig fmt: top-level bare asterisk+identifier" {
+    try testCanonical(
+        \\*x
+        \\
+    );
+}
+
+test "zig fmt: top-level bare asterisk+asterisk+identifier" {
+    try testCanonical(
+        \\**x
         \\
     );
 }
@@ -3418,11 +3477,11 @@ test "zig fmt: for" {
         \\    for (a) |*v|
         \\        continue;
         \\
-        \\    for (a) |v, i| {
+        \\    for (a, 0..) |v, i| {
         \\        continue;
         \\    }
         \\
-        \\    for (a) |v, i|
+        \\    for (a, 0..) |v, i|
         \\        continue;
         \\
         \\    for (a) |b| switch (b) {
@@ -3430,16 +3489,23 @@ test "zig fmt: for" {
         \\        d => {},
         \\    };
         \\
-        \\    const res = for (a) |v, i| {
+        \\    const res = for (a, 0..) |v, i| {
         \\        break v;
         \\    } else {
         \\        unreachable;
         \\    };
         \\
         \\    var num: usize = 0;
-        \\    inline for (a) |v, i| {
+        \\    inline for (a, 0..1) |v, i| {
         \\        num += v;
         \\        num += i;
+        \\    }
+        \\
+        \\    for (a, b) |
+        \\        long_name,
+        \\        another_long_name,
+        \\    | {
+        \\        continue;
         \\    }
         \\}
         \\
@@ -3457,6 +3523,26 @@ test "zig fmt: for" {
         \\        f(x)
         \\    else
         \\        continue;
+        \\}
+        \\
+    );
+
+    try testTransform(
+        \\test "fix for" {
+        \\    for (a, b, c,) |long, another, third,| {}
+        \\}
+        \\
+    ,
+        \\test "fix for" {
+        \\    for (
+        \\        a,
+        \\        b,
+        \\        c,
+        \\    ) |
+        \\        long,
+        \\        another,
+        \\        third,
+        \\    | {}
         \\}
         \\
     );
@@ -4210,6 +4296,30 @@ test "zig fmt: remove newlines surrounding doc comment within container decl" {
     );
 }
 
+test "zig fmt: comptime before comptime field" {
+    try testError(
+        \\const Foo = struct {
+        \\    a: i32,
+        \\    comptime comptime b: i32 = 1234,
+        \\};
+        \\
+    , &[_]Error{
+        .expected_comma_after_field,
+    });
+}
+
+test "zig fmt: invalid else branch statement" {
+    try testError(
+        \\/// This is a doc comment for a comptime block.
+        \\comptime {}
+        \\/// This is a doc comment for a test
+        \\test "This is my test" {}
+    , &[_]Error{
+        .comptime_doc_comment,
+        .test_doc_comment,
+    });
+}
+
 test "zig fmt: invalid else branch statement" {
     try testError(
         \\comptime {
@@ -4295,7 +4405,7 @@ test "zig fmt: hex literals with underscore separators" {
     try testTransform(
         \\pub fn orMask(a: [ 1_000 ]u64, b: [  1_000]  u64) [1_000]u64 {
         \\    var c: [1_000]u64 =  [1]u64{ 0xFFFF_FFFF_FFFF_FFFF}**1_000;
-        \\    for (c [ 1_0 .. ]) |_, i| {
+        \\    for (c [ 1_0 .. ], 0..) |_, i| {
         \\        c[i] = (a[i] | b[i]) & 0xCCAA_CCAA_CCAA_CCAA;
         \\    }
         \\    return c;
@@ -4305,7 +4415,7 @@ test "zig fmt: hex literals with underscore separators" {
     ,
         \\pub fn orMask(a: [1_000]u64, b: [1_000]u64) [1_000]u64 {
         \\    var c: [1_000]u64 = [1]u64{0xFFFF_FFFF_FFFF_FFFF} ** 1_000;
-        \\    for (c[1_0..]) |_, i| {
+        \\    for (c[1_0..], 0..) |_, i| {
         \\        c[i] = (a[i] | b[i]) & 0xCCAA_CCAA_CCAA_CCAA;
         \\    }
         \\    return c;
@@ -4817,10 +4927,10 @@ test "zig fmt: remove trailing whitespace after doc comment" {
 test "zig fmt: for loop with ptr payload and index" {
     try testCanonical(
         \\test {
-        \\    for (self.entries.items) |*item, i| {}
-        \\    for (self.entries.items) |*item, i|
+        \\    for (self.entries.items, 0..) |*item, i| {}
+        \\    for (self.entries.items, 0..) |*item, i|
         \\        a = b;
-        \\    for (self.entries.items) |*item, i| a = b;
+        \\    for (self.entries.items, 0..) |*item, i| a = b;
         \\}
         \\
     );
@@ -5184,6 +5294,18 @@ test "zig fmt: missing const/var before local variable" {
     });
 }
 
+test "zig fmt: missing const/var before local variable" {
+    try testError(
+        \\std = foo,
+        \\std = foo;
+        \\*u32 = foo;
+    , &.{
+        .expected_comma_after_field,
+        .var_const_decl,
+        .expected_comma_after_field,
+    });
+}
+
 test "zig fmt: while continue expr" {
     try testCanonical(
         \\test {
@@ -5396,7 +5518,7 @@ test "zig fmt: canonicalize symbols (primitive types)" {
         \\    _ = @"void": {
         \\        break :@"void";
         \\    };
-        \\    for ("hi") |@"u3", @"i4"| {
+        \\    for ("hi", 0..) |@"u3", @"i4"| {
         \\        _ = @"u3";
         \\        _ = @"i4";
         \\    }
@@ -5448,7 +5570,7 @@ test "zig fmt: canonicalize symbols (primitive types)" {
         \\    _ = void: {
         \\        break :void;
         \\    };
-        \\    for ("hi") |@"u3", @"i4"| {
+        \\    for ("hi", 0..) |@"u3", @"i4"| {
         \\        _ = @"u3";
         \\        _ = @"i4";
         \\    }
@@ -5483,6 +5605,35 @@ test "zig fmt: canonicalize symbols (keywords)" {
         \\    _ = @"return": {
         \\        break :@"return" 4;
         \\    };
+        \\}
+        \\
+    );
+}
+
+test "zig fmt: no space before newline before multiline string" {
+    try testCanonical(
+        \\const S = struct {
+        \\    text: []const u8,
+        \\    comment: []const u8,
+        \\};
+        \\
+        \\test {
+        \\    const s1 = .{
+        \\        .text =
+        \\        \\hello
+        \\        \\world
+        \\        ,
+        \\        .comment = "test",
+        \\    };
+        \\    _ = s1;
+        \\    const s2 = .{
+        \\        .comment = "test",
+        \\        .text =
+        \\        \\hello
+        \\        \\world
+        \\        ,
+        \\    };
+        \\    _ = s2;
         \\}
         \\
     );
@@ -5969,7 +6120,7 @@ var fixed_buffer_mem: [100 * 1024]u8 = undefined;
 fn testParse(source: [:0]const u8, allocator: mem.Allocator, anything_changed: *bool) ![]u8 {
     const stderr = io.getStdErr().writer();
 
-    var tree = try std.zig.parse(allocator, source);
+    var tree = try std.zig.Ast.parse(allocator, source, .zig);
     defer tree.deinit(allocator);
 
     for (tree.errors) |parse_error| {
@@ -6020,14 +6171,14 @@ fn testCanonical(source: [:0]const u8) !void {
 const Error = std.zig.Ast.Error.Tag;
 
 fn testError(source: [:0]const u8, expected_errors: []const Error) !void {
-    var tree = try std.zig.parse(std.testing.allocator, source);
+    var tree = try std.zig.Ast.parse(std.testing.allocator, source, .zig);
     defer tree.deinit(std.testing.allocator);
 
     std.testing.expectEqual(expected_errors.len, tree.errors.len) catch |err| {
         std.debug.print("errors found: {any}\n", .{tree.errors});
         return err;
     };
-    for (expected_errors) |expected, i| {
+    for (expected_errors, 0..) |expected, i| {
         try std.testing.expectEqual(expected, tree.errors[i].tag);
     }
 }

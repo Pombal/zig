@@ -18,7 +18,7 @@ test "best speed" {
     var abcabc = try testing.allocator.alloc(u8, 131_072);
     defer testing.allocator.free(abcabc);
 
-    for (abcabc) |_, i| {
+    for (abcabc, 0..) |_, i| {
         abcabc[i] = @intCast(u8, i % 128);
     }
 
@@ -85,8 +85,8 @@ test "best speed" {
                 var read = try decomp.reader().readAll(decompressed);
                 _ = decomp.close();
 
-                try expect(read == want.items.len);
-                try expect(mem.eql(u8, want.items, decompressed));
+                try testing.expectEqual(want.items.len, read);
+                try testing.expectEqualSlices(u8, want.items, decompressed);
             }
         }
     }
@@ -152,8 +152,8 @@ test "best speed max match offset" {
                 var read = try decomp.reader().readAll(decompressed);
                 _ = decomp.close();
 
-                try expect(read == src.len);
-                try expect(mem.eql(u8, decompressed, src));
+                try testing.expectEqual(src.len, read);
+                try testing.expectEqualSlices(u8, src, decompressed);
             }
         }
     }

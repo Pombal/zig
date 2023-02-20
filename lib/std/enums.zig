@@ -15,7 +15,7 @@ pub fn EnumFieldStruct(comptime E: type, comptime Data: type, comptime field_def
     for (std.meta.fields(E)) |field| {
         fields = fields ++ &[_]StructField{.{
             .name = field.name,
-            .field_type = Data,
+            .type = Data,
             .default_value = if (field_default) |d| @ptrCast(?*const anyopaque, &d) else null,
             .is_comptime = false,
             .alignment = if (@sizeOf(Data) > 0) @alignOf(Data) else 0,
@@ -35,7 +35,7 @@ pub fn EnumFieldStruct(comptime E: type, comptime Data: type, comptime field_def
 pub fn valuesFromFields(comptime E: type, comptime fields: []const EnumField) []const E {
     comptime {
         var result: [fields.len]E = undefined;
-        for (fields) |f, i| {
+        for (fields, 0..) |f, i| {
             result[i] = @field(E, f.name);
         }
         return &result;
@@ -878,7 +878,7 @@ pub fn IndexedSet(comptime I: type, comptime Ext: fn (type) type) type {
         /// index order.  Modifications to the set during iteration
         /// may or may not be observed by the iterator, but will
         /// not invalidate it.
-        pub fn iterator(self: *Self) Iterator {
+        pub fn iterator(self: *const Self) Iterator {
             return .{ .inner = self.bits.iterator(.{}) };
         }
 
@@ -968,6 +968,24 @@ test "pure EnumSet fns" {
     try testing.expect(full.differenceWith(empty).eql(full));
     try testing.expect(full.differenceWith(red).eql(black));
     try testing.expect(full.differenceWith(black).eql(red));
+}
+
+test "std.enums.EnumSet const iterator" {
+    const Direction = enum { up, down, left, right };
+    const diag_move = init: {
+        var move = EnumSet(Direction).initEmpty();
+        move.insert(.right);
+        move.insert(.up);
+        break :init move;
+    };
+
+    var result = EnumSet(Direction).initEmpty();
+    var it = diag_move.iterator();
+    while (it.next()) |dir| {
+        result.insert(dir);
+    }
+
+    try testing.expect(result.eql(diag_move));
 }
 
 /// A map from keys to values, using an index lookup.  Uses a
@@ -1313,7 +1331,7 @@ pub fn EnumIndexer(comptime E: type) type {
         pub const Key = E;
         pub const count = fields_len;
         pub fn indexOf(e: E) usize {
-            for (keys) |k, i| {
+            for (keys, 0..) |k, i| {
                 if (k == e) return i;
             }
             unreachable;

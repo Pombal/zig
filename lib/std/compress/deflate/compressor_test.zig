@@ -62,8 +62,8 @@ fn testSync(level: deflate.Compression, input: []const u8) !void {
             defer testing.allocator.free(decompressed);
 
             var read = try decomp.reader().readAll(decompressed); // read at least half
-            try expect(read == half_len);
-            try expect(mem.eql(u8, input[0..half], decompressed));
+            try testing.expectEqual(half_len, read);
+            try testing.expectEqualSlices(u8, input[0..half], decompressed);
         }
 
         // Write last half of the input and close()
@@ -79,13 +79,13 @@ fn testSync(level: deflate.Compression, input: []const u8) !void {
             defer testing.allocator.free(decompressed);
 
             var read = try decomp.reader().readAll(decompressed);
-            try expect(read == half_len);
-            try expect(mem.eql(u8, input[half..], decompressed));
+            try testing.expectEqual(half_len, read);
+            try testing.expectEqualSlices(u8, input[half..], decompressed);
 
             // Extra read
             var final: [10]u8 = undefined;
             read = try decomp.reader().readAll(&final);
-            try expect(read == 0); // expect ended stream to return 0 bytes
+            try testing.expectEqual(@as(usize, 0), read); // expect ended stream to return 0 bytes
 
             _ = decomp.close();
         }
@@ -105,7 +105,7 @@ fn testSync(level: deflate.Compression, input: []const u8) !void {
     _ = try decomp.reader().readAll(decompressed);
     _ = decomp.close();
 
-    try expect(mem.eql(u8, input, decompressed));
+    try testing.expectEqualSlices(u8, input, decompressed);
 }
 
 fn testToFromWithLevelAndLimit(level: deflate.Compression, input: []const u8, limit: u32) !void {
@@ -130,8 +130,8 @@ fn testToFromWithLevelAndLimit(level: deflate.Compression, input: []const u8, li
     defer testing.allocator.free(decompressed);
 
     var read: usize = try decomp.reader().readAll(decompressed);
-    try expect(read == input.len);
-    try expect(mem.eql(u8, input, decompressed));
+    try testing.expectEqual(input.len, read);
+    try testing.expectEqualSlices(u8, input, decompressed);
 
     if (false) {
         // TODO: this test has regressed
@@ -171,10 +171,8 @@ test "deflate/inflate" {
     var large_data_chunk = try testing.allocator.alloc(u8, 100_000);
     defer testing.allocator.free(large_data_chunk);
     // fill with random data
-    for (large_data_chunk) |_, i| {
-        var mul: u8 = @truncate(u8, i);
-        _ = @mulWithOverflow(u8, mul, mul, &mul);
-        large_data_chunk[i] = mul;
+    for (large_data_chunk, 0..) |_, i| {
+        large_data_chunk[i] = @truncate(u8, i) *% @truncate(u8, i);
     }
     try testToFromWithLimit(large_data_chunk, limits);
 }
@@ -207,7 +205,7 @@ test "very long sparse chunk" {
                 n -= cur - s.l;
                 cur = s.l;
             }
-            for (b[0..n]) |_, i| {
+            for (b[0..n], 0..) |_, i| {
                 if (s.cur + i >= s.l -| (1 << 16)) {
                     b[i] = 1;
                 } else {
@@ -237,7 +235,7 @@ test "very long sparse chunk" {
         read = try reader.read(&buf);
         written += try writer.write(buf[0..read]);
     }
-    try expect(written == 0x23e8);
+    try testing.expectEqual(@as(usize, 0x23e8), written);
 }
 
 test "compressor reset" {
@@ -287,7 +285,7 @@ fn testWriterReset(level: deflate.Compression, dict: ?[]const u8) !void {
     try filler.writeData(&comp);
     try comp.close();
 
-    try expect(mem.eql(u8, buf1.items, buf2.items));
+    try testing.expectEqualSlices(u8, buf1.items, buf2.items);
 }
 
 test "decompressor dictionary" {
@@ -327,7 +325,7 @@ test "decompressor dictionary" {
     defer decomp.deinit();
 
     _ = try decomp.reader().readAll(decompressed);
-    try expect(mem.eql(u8, decompressed, "hello again world"));
+    try testing.expectEqualSlices(u8, "hello again world", decompressed);
 }
 
 test "compressor dictionary" {
@@ -371,7 +369,7 @@ test "compressor dictionary" {
     try comp_d.writer().writeAll(text);
     try comp_d.close();
 
-    try expect(mem.eql(u8, compressed_nd.readableSlice(0), compressed_d.items));
+    try testing.expectEqualSlices(u8, compressed_d.items, compressed_nd.readableSlice(0));
 }
 
 // Update the hash for best_speed only if d.index < d.maxInsertIndex
@@ -394,18 +392,12 @@ test "Go non-regression test for 2508" {
 }
 
 test "deflate/inflate string" {
-    // Skip wasi because it does not support std.fs.openDirAbsolute()
-    if (builtin.os.tag == .wasi) return error.SkipZigTest;
-
-    const current_dir = try std.fs.openDirAbsolute(std.fs.path.dirname(@src().file).?, .{});
-    const testdata_dir = try current_dir.openDir("testdata", .{});
-
     const StringTest = struct {
         filename: []const u8,
         limit: [11]u32,
     };
 
-    var deflate_inflate_string_tests = [_]StringTest{
+    const deflate_inflate_string_tests = [_]StringTest{
         .{
             .filename = "compress-e.txt",
             .limit = [11]u32{
@@ -440,12 +432,8 @@ test "deflate/inflate string" {
         },
     };
 
-    for (deflate_inflate_string_tests) |t| {
-        const golden_file = try testdata_dir.openFile(t.filename, .{});
-        defer golden_file.close();
-        var golden = try golden_file.reader().readAllAlloc(testing.allocator, math.maxInt(usize));
-        defer testing.allocator.free(golden);
-
+    inline for (deflate_inflate_string_tests) |t| {
+        var golden = @embedFile("testdata/" ++ t.filename);
         try testToFromWithLimit(golden, t.limit);
     }
 }
@@ -463,7 +451,7 @@ test "inflate reset" {
     defer compressed_strings[0].deinit();
     defer compressed_strings[1].deinit();
 
-    for (strings) |s, i| {
+    for (strings, 0..) |s, i| {
         var comp = try compressor(
             testing.allocator,
             compressed_strings[i].writer(),
@@ -492,11 +480,8 @@ test "inflate reset" {
 
     _ = decomp.close();
 
-    try expect(strings[0].len == decompressed_0.len);
-    try expect(strings[1].len == decompressed_1.len);
-
-    try expect(mem.eql(u8, strings[0], decompressed_0));
-    try expect(mem.eql(u8, strings[1], decompressed_1));
+    try testing.expectEqualSlices(u8, strings[0], decompressed_0);
+    try testing.expectEqualSlices(u8, strings[1], decompressed_1);
 }
 
 test "inflate reset dictionary" {
@@ -513,7 +498,7 @@ test "inflate reset dictionary" {
     defer compressed_strings[0].deinit();
     defer compressed_strings[1].deinit();
 
-    for (strings) |s, i| {
+    for (strings, 0..) |s, i| {
         var comp = try compressor(
             testing.allocator,
             compressed_strings[i].writer(),
@@ -542,9 +527,6 @@ test "inflate reset dictionary" {
 
     _ = decomp.close();
 
-    try expect(strings[0].len == decompressed_0.len);
-    try expect(strings[1].len == decompressed_1.len);
-
-    try expect(mem.eql(u8, strings[0], decompressed_0));
-    try expect(mem.eql(u8, strings[1], decompressed_1));
+    try testing.expectEqualSlices(u8, strings[0], decompressed_0);
+    try testing.expectEqualSlices(u8, strings[1], decompressed_1);
 }

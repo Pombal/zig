@@ -1,4 +1,4 @@
-//! An set of array and slice types that bit-pack integer elements. A normal [12]u3
+//! A set of array and slice types that bit-pack integer elements. A normal [12]u3
 //! takes up 12 bytes of memory since u3's alignment is 1. PackedArray(u3, 12) only
 //! takes up 4 bytes of memory.
 
@@ -208,11 +208,14 @@ pub fn PackedIntArrayEndian(comptime Int: type, comptime endian: Endian, comptim
         /// The number of elements in the packed array.
         comptime len: usize = int_count,
 
+        /// The integer type of the packed array.
+        pub const Child = Int;
+
         /// Initialize a packed array using an unpacked array
         /// or, more likely, an array literal.
         pub fn init(ints: [int_count]Int) Self {
             var self = @as(Self, undefined);
-            for (ints) |int, i| self.set(i, int);
+            for (ints, 0..) |int, i| self.set(i, int);
             return self;
         }
 
@@ -282,6 +285,9 @@ pub fn PackedIntSliceEndian(comptime Int: type, comptime endian: Endian) type {
         bytes: []u8,
         bit_offset: u3,
         len: usize,
+
+        /// The integer type of the packed slice.
+        pub const Child = Int;
 
         /// Calculates the number of bytes required to store a desired count
         /// of `Int`s.

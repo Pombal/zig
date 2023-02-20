@@ -42,6 +42,7 @@ pub const uefi = @import("os/uefi.zig");
 pub const wasi = @import("os/wasi.zig");
 pub const windows = @import("os/windows.zig");
 pub const posix_spawn = @import("os/posix_spawn.zig");
+pub const ptrace = @import("os/ptrace.zig");
 
 comptime {
     assert(@import("std") == std); // std lib tests require --zig-lib-dir
@@ -549,7 +550,6 @@ pub fn abort() noreturn {
         exit(0); // TODO choose appropriate exit code
     }
     if (builtin.os.tag == .wasi) {
-        @breakpoint();
         exit(1);
     }
     if (builtin.os.tag == .cuda) {
@@ -639,6 +639,9 @@ pub const ReadError = error{
     ConnectionResetByPeer,
     ConnectionTimedOut,
     NotOpenForReading,
+
+    // Windows only
+    NetNameDeleted,
 
     /// This error occurs when no global event loop is configured,
     /// and reading from the file descriptor would block.
@@ -766,6 +769,7 @@ pub fn readv(fd: fd_t, iov: []const iovec) ReadError!usize {
             .ISDIR => return error.IsDir,
             .NOBUFS => return error.SystemResources,
             .NOMEM => return error.SystemResources,
+            .CONNRESET => return error.ConnectionResetByPeer,
             else => |err| return unexpectedErrno(err),
         }
     }
@@ -1943,19 +1947,7 @@ pub fn getenvW(key: [*:0]const u16) ?[:0]const u16 {
         while (ptr[i] != 0) : (i += 1) {}
         const this_value = ptr[value_start..i :0];
 
-        const key_string_bytes = @intCast(u16, key_slice.len * 2);
-        const key_string = windows.UNICODE_STRING{
-            .Length = key_string_bytes,
-            .MaximumLength = key_string_bytes,
-            .Buffer = @intToPtr([*]u16, @ptrToInt(key)),
-        };
-        const this_key_string_bytes = @intCast(u16, this_key.len * 2);
-        const this_key_string = windows.UNICODE_STRING{
-            .Length = this_key_string_bytes,
-            .MaximumLength = this_key_string_bytes,
-            .Buffer = this_key.ptr,
-        };
-        if (windows.ntdll.RtlEqualUnicodeString(&key_string, &this_key_string, windows.TRUE) == windows.TRUE) {
+        if (windows.eqlIgnoreCaseWTF16(key_slice, this_key)) {
             return this_value;
         }
 
@@ -1987,7 +1979,7 @@ pub fn getcwd(out_buffer: []u8) GetCwdError![]u8 {
         break :blk errno(system.getcwd(out_buffer.ptr, out_buffer.len));
     };
     switch (err) {
-        .SUCCESS => return mem.sliceTo(std.meta.assumeSentinel(out_buffer.ptr, 0), 0),
+        .SUCCESS => return mem.sliceTo(out_buffer, 0),
         .FAULT => unreachable,
         .INVAL => unreachable,
         .NOENT => return error.CurrentWorkingDirectoryUnlinked,
@@ -2424,6 +2416,9 @@ pub fn unlinkatW(dirfd: fd_t, sub_path_w: []const u16, flags: u32) UnlinkatError
 pub const RenameError = error{
     /// In WASI, this error may occur when the file descriptor does
     /// not hold the required rights to rename a resource by path relative to it.
+    ///
+    /// On Windows, this error may be returned instead of PathAlreadyExists when
+    /// renaming a directory over an existing directory.
     AccessDenied,
     FileBusy,
     DiskQuota,
@@ -2707,6 +2702,8 @@ pub fn mkdiratZ(dir_fd: fd_t, sub_dir_path: [*:0]const u8, mode: u32) MakeDirErr
         .NOSPC => return error.NoSpaceLeft,
         .NOTDIR => return error.NotDir,
         .ROFS => return error.ReadOnlyFileSystem,
+        // dragonfly: when dir_fd is unlinked from filesystem
+        .NOTCONN => return error.FileNotFound,
         else => |err| return unexpectedErrno(err),
     }
 }
@@ -4231,12 +4228,30 @@ pub const MProtectError = error{
 /// `memory.len` must be page-aligned.
 pub fn mprotect(memory: []align(mem.page_size) u8, protection: u32) MProtectError!void {
     assert(mem.isAligned(memory.len, mem.page_size));
-    switch (errno(system.mprotect(memory.ptr, memory.len, protection))) {
-        .SUCCESS => return,
-        .INVAL => unreachable,
-        .ACCES => return error.AccessDenied,
-        .NOMEM => return error.OutOfMemory,
-        else => |err| return unexpectedErrno(err),
+    if (builtin.os.tag == .windows) {
+        const win_prot: windows.DWORD = switch (@truncate(u3, protection)) {
+            0b000 => windows.PAGE_NOACCESS,
+            0b001 => windows.PAGE_READONLY,
+            0b010 => unreachable, // +w -r not allowed
+            0b011 => windows.PAGE_READWRITE,
+            0b100 => windows.PAGE_EXECUTE,
+            0b101 => windows.PAGE_EXECUTE_READ,
+            0b110 => unreachable, // +w -r not allowed
+            0b111 => windows.PAGE_EXECUTE_READWRITE,
+        };
+        var old: windows.DWORD = undefined;
+        windows.VirtualProtect(memory.ptr, memory.len, win_prot, &old) catch |err| switch (err) {
+            error.InvalidAddress => return error.AccessDenied,
+            error.Unexpected => return error.Unexpected,
+        };
+    } else {
+        switch (errno(system.mprotect(memory.ptr, memory.len, protection))) {
+            .SUCCESS => return,
+            .INVAL => unreachable,
+            .ACCES => return error.AccessDenied,
+            .NOMEM => return error.OutOfMemory,
+            else => |err| return unexpectedErrno(err),
+        }
     }
 }
 
@@ -4498,7 +4513,7 @@ pub fn faccessatW(dirfd: fd_t, sub_path_w: [*:0]const u16, mode: u32, flags: u32
     var nt_name = windows.UNICODE_STRING{
         .Length = path_len_bytes,
         .MaximumLength = path_len_bytes,
-        .Buffer = @intToPtr([*]u16, @ptrToInt(sub_path_w)),
+        .Buffer = @constCast(sub_path_w),
     };
     var attr = windows.OBJECT_ATTRIBUTES{
         .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
@@ -5109,6 +5124,7 @@ pub fn getFdPath(fd: fd_t, out_buffer: *[MAX_PATH_BYTES]u8) RealPathError![]u8 {
             switch (errno(system.fcntl(fd, F.GETPATH, out_buffer))) {
                 .SUCCESS => {},
                 .BADF => return error.FileNotFound,
+                .NOSPC => return error.NameTooLong,
                 // TODO man pages for fcntl on macOS don't really tell you what
                 // errno values to expect when command is F.GETPATH...
                 else => |err| return unexpectedErrno(err),
@@ -5117,10 +5133,10 @@ pub fn getFdPath(fd: fd_t, out_buffer: *[MAX_PATH_BYTES]u8) RealPathError![]u8 {
             return out_buffer[0..len];
         },
         .linux => {
-            var procfs_buf: ["/proc/self/fd/-2147483648".len:0]u8 = undefined;
-            const proc_path = std.fmt.bufPrint(procfs_buf[0..], "/proc/self/fd/{d}\x00", .{fd}) catch unreachable;
+            var procfs_buf: ["/proc/self/fd/-2147483648\x00".len]u8 = undefined;
+            const proc_path = std.fmt.bufPrintZ(procfs_buf[0..], "/proc/self/fd/{d}", .{fd}) catch unreachable;
 
-            const target = readlinkZ(std.meta.assumeSentinel(proc_path.ptr, 0), out_buffer) catch |err| {
+            const target = readlinkZ(proc_path, out_buffer) catch |err| {
                 switch (err) {
                     error.UnsupportedReparsePointType => unreachable, // Windows only,
                     error.NotLink => unreachable,
@@ -5130,7 +5146,7 @@ pub fn getFdPath(fd: fd_t, out_buffer: *[MAX_PATH_BYTES]u8) RealPathError![]u8 {
             return target;
         },
         .solaris => {
-            var procfs_buf: ["/proc/self/path/-2147483648".len:0]u8 = undefined;
+            var procfs_buf: ["/proc/self/path/-2147483648\x00".len]u8 = undefined;
             const proc_path = std.fmt.bufPrintZ(procfs_buf[0..], "/proc/self/path/{d}", .{fd}) catch unreachable;
 
             const target = readlinkZ(proc_path, out_buffer) catch |err| switch (err) {
@@ -5141,19 +5157,85 @@ pub fn getFdPath(fd: fd_t, out_buffer: *[MAX_PATH_BYTES]u8) RealPathError![]u8 {
             return target;
         },
         .freebsd => {
-            comptime if (builtin.os.version_range.semver.max.order(.{ .major = 13, .minor = 0 }) == .lt)
-                @compileError("querying for canonical path of a handle is unsupported on FreeBSD 12 and below");
-
-            var kfile: system.kinfo_file = undefined;
-            kfile.structsize = system.KINFO_FILE_SIZE;
-            switch (errno(system.fcntl(fd, system.F.KINFO, @ptrToInt(&kfile)))) {
+            if (comptime builtin.os.version_range.semver.max.order(.{ .major = 13, .minor = 0 }) == .gt) {
+                var kfile: system.kinfo_file = undefined;
+                kfile.structsize = system.KINFO_FILE_SIZE;
+                switch (errno(system.fcntl(fd, system.F.KINFO, @ptrToInt(&kfile)))) {
+                    .SUCCESS => {},
+                    .BADF => return error.FileNotFound,
+                    else => |err| return unexpectedErrno(err),
+                }
+                const len = mem.indexOfScalar(u8, &kfile.path, 0) orelse MAX_PATH_BYTES;
+                if (len == 0) return error.NameTooLong;
+                mem.copy(u8, out_buffer, kfile.path[0..len]);
+                return out_buffer[0..len];
+            } else {
+                // This fallback implementation reimplements libutil's `kinfo_getfile()`.
+                // The motivation is to avoid linking -lutil when building zig or general
+                // user executables.
+                var mib = [4]c_int{ CTL.KERN, KERN.PROC, KERN.PROC_FILEDESC, system.getpid() };
+                var len: usize = undefined;
+                sysctl(&mib, null, &len, null, 0) catch |err| switch (err) {
+                    error.PermissionDenied => unreachable,
+                    error.SystemResources => return error.SystemResources,
+                    error.NameTooLong => unreachable,
+                    error.UnknownName => unreachable,
+                    else => return error.Unexpected,
+                };
+                len = len * 4 / 3;
+                const buf = std.heap.c_allocator.alloc(u8, len) catch return error.SystemResources;
+                defer std.heap.c_allocator.free(buf);
+                len = buf.len;
+                sysctl(&mib, &buf[0], &len, null, 0) catch |err| switch (err) {
+                    error.PermissionDenied => unreachable,
+                    error.SystemResources => return error.SystemResources,
+                    error.NameTooLong => unreachable,
+                    error.UnknownName => unreachable,
+                    else => return error.Unexpected,
+                };
+                var i: usize = 0;
+                while (i < len) {
+                    const kf: *align(1) system.kinfo_file = @ptrCast(*align(1) system.kinfo_file, &buf[i]);
+                    if (kf.fd == fd) {
+                        len = mem.indexOfScalar(u8, &kf.path, 0) orelse MAX_PATH_BYTES;
+                        if (len == 0) return error.NameTooLong;
+                        mem.copy(u8, out_buffer, kf.path[0..len]);
+                        return out_buffer[0..len];
+                    }
+                    i += @intCast(usize, kf.structsize);
+                }
+                return error.InvalidHandle;
+            }
+        },
+        .dragonfly => {
+            if (comptime builtin.os.version_range.semver.max.order(.{ .major = 6, .minor = 0 }) == .lt) {
+                @compileError("querying for canonical path of a handle is unsupported on this host");
+            }
+            @memset(out_buffer, 0, MAX_PATH_BYTES);
+            switch (errno(system.fcntl(fd, F.GETPATH, out_buffer))) {
                 .SUCCESS => {},
                 .BADF => return error.FileNotFound,
+                .RANGE => return error.NameTooLong,
                 else => |err| return unexpectedErrno(err),
             }
-
-            const len = mem.indexOfScalar(u8, &kfile.path, 0) orelse MAX_PATH_BYTES;
-            mem.copy(u8, out_buffer, kfile.path[0..len]);
+            const len = mem.indexOfScalar(u8, out_buffer[0..], @as(u8, 0)) orelse MAX_PATH_BYTES;
+            return out_buffer[0..len];
+        },
+        .netbsd => {
+            if (comptime builtin.os.version_range.semver.max.order(.{ .major = 10, .minor = 0 }) == .lt) {
+                @compileError("querying for canonical path of a handle is unsupported on this host");
+            }
+            @memset(out_buffer, 0, MAX_PATH_BYTES);
+            switch (errno(system.fcntl(fd, F.GETPATH, out_buffer))) {
+                .SUCCESS => {},
+                .ACCES => return error.AccessDenied,
+                .BADF => return error.FileNotFound,
+                .NOENT => return error.FileNotFound,
+                .NOMEM => return error.SystemResources,
+                .RANGE => return error.NameTooLong,
+                else => |err| return unexpectedErrno(err),
+            }
+            const len = mem.indexOfScalar(u8, out_buffer[0..], @as(u8, 0)) orelse MAX_PATH_BYTES;
             return out_buffer[0..len];
         },
         else => @compileError("querying for canonical path of a handle is unsupported on this host"),
@@ -5481,7 +5563,7 @@ pub const GetHostNameError = error{PermissionDenied} || UnexpectedError;
 pub fn gethostname(name_buffer: *[HOST_NAME_MAX]u8) GetHostNameError![]u8 {
     if (builtin.link_libc) {
         switch (errno(system.gethostname(name_buffer, name_buffer.len))) {
-            .SUCCESS => return mem.sliceTo(std.meta.assumeSentinel(name_buffer, 0), 0),
+            .SUCCESS => return mem.sliceTo(name_buffer, 0),
             .FAULT => unreachable,
             .NAMETOOLONG => unreachable, // HOST_NAME_MAX prevents this
             .PERM => return error.PermissionDenied,
@@ -5490,7 +5572,7 @@ pub fn gethostname(name_buffer: *[HOST_NAME_MAX]u8) GetHostNameError![]u8 {
     }
     if (builtin.os.tag == .linux) {
         const uts = uname();
-        const hostname = mem.sliceTo(std.meta.assumeSentinel(&uts.nodename, 0), 0);
+        const hostname = mem.sliceTo(&uts.nodename, 0);
         mem.copy(u8, name_buffer, hostname);
         return name_buffer[0..hostname.len];
     }
@@ -5627,11 +5709,11 @@ pub fn sendmsg(
     /// The file descriptor of the sending socket.
     sockfd: socket_t,
     /// Message header and iovecs
-    msg: msghdr_const,
+    msg: *const msghdr_const,
     flags: u32,
 ) SendMsgError!usize {
     while (true) {
-        const rc = system.sendmsg(sockfd, @ptrCast(*const std.x.os.Socket.Message, &msg), @intCast(c_int, flags));
+        const rc = system.sendmsg(sockfd, msg, flags);
         if (builtin.os.tag == .windows) {
             if (rc == windows.ws2_32.SOCKET_ERROR) {
                 switch (windows.ws2_32.WSAGetLastError()) {
@@ -5946,7 +6028,7 @@ pub fn sendfile(
                     .BADF => unreachable, // Always a race condition.
                     .FAULT => unreachable, // Segmentation fault.
                     .OVERFLOW => unreachable, // We avoid passing too large of a `count`.
-                    .NOTCONN => unreachable, // `out_fd` is an unconnected socket.
+                    .NOTCONN => return error.BrokenPipe, // `out_fd` is an unconnected socket
 
                     .INVAL, .NOSYS => {
                         // EINVAL could be any of the following situations:
@@ -6014,7 +6096,7 @@ pub fn sendfile(
 
                     .BADF => unreachable, // Always a race condition.
                     .FAULT => unreachable, // Segmentation fault.
-                    .NOTCONN => unreachable, // `out_fd` is an unconnected socket.
+                    .NOTCONN => return error.BrokenPipe, // `out_fd` is an unconnected socket
 
                     .INVAL, .OPNOTSUPP, .NOTSOCK, .NOSYS => {
                         // EINVAL could be any of the following situations:
@@ -6096,7 +6178,7 @@ pub fn sendfile(
                     .BADF => unreachable, // Always a race condition.
                     .FAULT => unreachable, // Segmentation fault.
                     .INVAL => unreachable,
-                    .NOTCONN => unreachable, // `out_fd` is an unconnected socket.
+                    .NOTCONN => return error.BrokenPipe, // `out_fd` is an unconnected socket
 
                     .OPNOTSUPP, .NOTSOCK, .NOSYS => break :sf,
 
@@ -6390,7 +6472,7 @@ pub fn recvfrom(
                 .BADF => unreachable, // always a race condition
                 .FAULT => unreachable,
                 .INVAL => unreachable,
-                .NOTCONN => unreachable,
+                .NOTCONN => return error.SocketNotConnected,
                 .NOTSOCK => unreachable,
                 .INTR => continue,
                 .AGAIN => return error.WouldBlock,
@@ -6539,6 +6621,8 @@ pub fn memfd_createZ(name: [*:0]const u8, flags: u32) MemFdCreateError!fd_t {
             }
         },
         .freebsd => {
+            if (comptime builtin.os.version_range.semver.max.order(.{ .major = 13, .minor = 0 }) == .lt)
+                @compileError("memfd_create is unavailable on FreeBSD < 13.0");
             const rc = system.memfd_create(name, flags);
             switch (errno(rc)) {
                 .SUCCESS => return rc,
@@ -6971,4 +7055,22 @@ pub fn timerfd_gettime(fd: i32) TimerFdGetError!linux.itimerspec {
         .INVAL => unreachable,
         else => |err| return unexpectedErrno(err),
     };
+}
+
+pub const have_sigpipe_support = @hasDecl(@This(), "SIG") and @hasDecl(SIG, "PIPE");
+
+fn noopSigHandler(_: c_int) callconv(.C) void {}
+
+pub fn maybeIgnoreSigpipe() void {
+    if (have_sigpipe_support and !std.options.keep_sigpipe) {
+        const act = Sigaction{
+            // We set handler to a noop function instead of SIG.IGN so we don't leak our
+            // signal disposition to a child process
+            .handler = .{ .handler = noopSigHandler },
+            .mask = empty_sigset,
+            .flags = 0,
+        };
+        sigaction(SIG.PIPE, &act, null) catch |err|
+            std.debug.panic("failed to install noop SIGPIPE handler with '{s}'", .{@errorName(err)});
+    }
 }

@@ -75,7 +75,6 @@ const P = packed struct {
 };
 
 test "@offsetOf" {
-    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     // Packed structs have fixed memory layout
@@ -287,4 +286,18 @@ test "runtime instructions inside typeof in comptime only scope" {
         };
         try expect(@TypeOf((T{}).b) == i8);
     }
+}
+
+test "@sizeOf optional of previously unresolved union" {
+    const Node = union { a: usize };
+    try expect(@sizeOf(?Node) == @sizeOf(Node) + @alignOf(Node));
+}
+
+test "@offsetOf zero-bit field" {
+    const S = packed struct {
+        a: u32,
+        b: u0,
+        c: u32,
+    };
+    try expect(@offsetOf(S, "b") == @offsetOf(S, "c"));
 }

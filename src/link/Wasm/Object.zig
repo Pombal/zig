@@ -882,7 +882,7 @@ pub fn parseIntoAtoms(object: *Object, gpa: Allocator, object_index: u16, wasm_b
         list.deinit();
     } else symbol_for_segment.deinit();
 
-    for (object.symtable) |symbol, symbol_index| {
+    for (object.symtable, 0..) |symbol, symbol_index| {
         switch (symbol.tag) {
             .function, .data, .section => if (!symbol.isUndefined()) {
                 const gop = try symbol_for_segment.getOrPut(.{ .kind = symbol.tag, .index = symbol.index });
@@ -896,19 +896,14 @@ pub fn parseIntoAtoms(object: *Object, gpa: Allocator, object_index: u16, wasm_b
         }
     }
 
-    for (object.relocatable_data) |relocatable_data, index| {
+    for (object.relocatable_data, 0..) |relocatable_data, index| {
         const final_index = (try wasm_bin.getMatchingSegment(object_index, @intCast(u32, index))) orelse {
             continue; // found unknown section, so skip parsing into atom as we do not know how to handle it.
         };
 
-        const atom = try gpa.create(Atom);
+        const atom_index = @intCast(Atom.Index, wasm_bin.managed_atoms.items.len);
+        const atom = try wasm_bin.managed_atoms.addOne(gpa);
         atom.* = Atom.empty;
-        errdefer {
-            atom.deinit(gpa);
-            gpa.destroy(atom);
-        }
-
-        try wasm_bin.managed_atoms.append(gpa, atom);
         atom.file = object_index;
         atom.size = relocatable_data.size;
         atom.alignment = relocatable_data.getAlignment(object);
@@ -923,7 +918,7 @@ pub fn parseIntoAtoms(object: *Object, gpa: Allocator, object_index: u16, wasm_b
                 try atom.relocs.append(gpa, reloc);
 
                 if (relocation.isTableIndex()) {
-                    try wasm_bin.function_table.putNoClobber(gpa, .{
+                    try wasm_bin.function_table.put(gpa, .{
                         .file = object_index,
                         .index = relocation.index,
                     }, 0);
@@ -938,17 +933,17 @@ pub fn parseIntoAtoms(object: *Object, gpa: Allocator, object_index: u16, wasm_b
             .index = relocatable_data.getIndex(),
         })) |symbols| {
             atom.sym_index = symbols.pop();
+            try wasm_bin.symbol_atom.putNoClobber(gpa, atom.symbolLoc(), atom_index);
 
             // symbols referencing the same atom will be added as alias
             // or as 'parent' when they are global.
             while (symbols.popOrNull()) |idx| {
+                try wasm_bin.symbol_atom.putNoClobber(gpa, .{ .file = atom.file, .index = idx }, atom_index);
                 const alias_symbol = object.symtable[idx];
-                const symbol = object.symtable[atom.sym_index];
-                if (alias_symbol.isGlobal() and symbol.isLocal()) {
+                if (alias_symbol.isGlobal()) {
                     atom.sym_index = idx;
                 }
             }
-            try wasm_bin.symbol_atom.putNoClobber(gpa, atom.symbolLoc(), atom);
         }
 
         const segment: *Wasm.Segment = &wasm_bin.segments.items[final_index];
@@ -956,7 +951,7 @@ pub fn parseIntoAtoms(object: *Object, gpa: Allocator, object_index: u16, wasm_b
             segment.alignment = std.math.max(segment.alignment, atom.alignment);
         }
 
-        try wasm_bin.appendAtomAtIndex(final_index, atom);
+        try wasm_bin.appendAtomAtIndex(final_index, atom_index);
         log.debug("Parsed into atom: '{s}' at segment index {d}", .{ object.string_table.get(object.symtable[atom.sym_index].name), final_index });
     }
 }

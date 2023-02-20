@@ -176,7 +176,9 @@ pub fn print(
 
                     var i: u32 = 0;
                     while (i < max_len) : (i += 1) {
-                        buf[i] = std.math.cast(u8, val.fieldValue(ty, i).toUnsignedInt(target)) orelse break :str;
+                        const elem = val.fieldValue(ty, i);
+                        if (elem.isUndef()) break :str;
+                        buf[i] = std.math.cast(u8, elem.toUnsignedInt(target)) orelse break :str;
                     }
 
                     const truncated = if (len > max_string_len) " (truncated)" else "";
@@ -225,9 +227,7 @@ pub fn print(
         .one => return writer.writeAll("1"),
         .void_value => return writer.writeAll("{}"),
         .unreachable_value => return writer.writeAll("unreachable"),
-        .the_only_possible_value => {
-            val = ty.onePossibleValue().?;
-        },
+        .the_only_possible_value => return writer.writeAll("0"),
         .bool_true => return writer.writeAll("true"),
         .bool_false => return writer.writeAll("false"),
         .ty => return val.castTag(.ty).?.data.print(writer, mod),
@@ -392,6 +392,7 @@ pub fn print(
                 while (i < max_len) : (i += 1) {
                     var elem_buf: Value.ElemValueBuffer = undefined;
                     const elem_val = payload.ptr.elemValueBuffer(mod, i, &elem_buf);
+                    if (elem_val.isUndef()) break :str;
                     buf[i] = std.math.cast(u8, elem_val.toUnsignedInt(target)) orelse break :str;
                 }
 

@@ -85,6 +85,9 @@ pub const Context = opaque {
 
     pub const createBuilder = LLVMCreateBuilderInContext;
     extern fn LLVMCreateBuilderInContext(C: *Context) *Builder;
+
+    pub const setOptBisectLimit = ZigLLVMSetOptBisectLimit;
+    extern fn ZigLLVMSetOptBisectLimit(C: *Context, limit: c_int) void;
 };
 
 pub const Value = opaque {
@@ -286,9 +289,6 @@ pub const Type = opaque {
 
     pub const getUndef = LLVMGetUndef;
     extern fn LLVMGetUndef(Ty: *Type) *Value;
-
-    pub const pointerType = LLVMPointerType;
-    extern fn LLVMPointerType(ElementType: *Type, AddressSpace: c_uint) *Type;
 
     pub const arrayType = LLVMArrayType;
     extern fn LLVMArrayType(ElementType: *Type, ElementCount: c_uint) *Type;
@@ -965,6 +965,9 @@ pub const Builder = opaque {
 
     pub const buildAllocaInAddressSpace = ZigLLVMBuildAllocaInAddressSpace;
     extern fn ZigLLVMBuildAllocaInAddressSpace(B: *Builder, Ty: *Type, AddressSpace: c_uint, Name: [*:0]const u8) *Value;
+
+    pub const buildVAArg = LLVMBuildVAArg;
+    extern fn LLVMBuildVAArg(*Builder, List: *Value, Ty: *Type, Name: [*:0]const u8) *Value;
 };
 
 pub const MDString = opaque {
@@ -1527,8 +1530,12 @@ pub const address_space = struct {
 
     // See llvm/lib/Target/AVR/AVR.h
     pub const avr = struct {
-        pub const data_memory: c_uint = 0;
-        pub const program_memory: c_uint = 1;
+        pub const flash: c_uint = 1;
+        pub const flash1: c_uint = 2;
+        pub const flash2: c_uint = 3;
+        pub const flash3: c_uint = 4;
+        pub const flash4: c_uint = 5;
+        pub const flash5: c_uint = 6;
     };
 
     // See llvm/lib/Target/NVPTX/NVPTX.h

@@ -219,16 +219,23 @@ pub fn updateDecl(self: *C, module: *Module, decl_index: Module.Decl.Index) !voi
     code.shrinkAndFree(module.gpa, code.items.len);
 }
 
-pub fn updateDeclLineNumber(self: *C, module: *Module, decl: *Module.Decl) !void {
+pub fn updateDeclLineNumber(self: *C, module: *Module, decl_index: Module.Decl.Index) !void {
     // The C backend does not have the ability to fix line numbers without re-generating
     // the entire Decl.
     _ = self;
     _ = module;
-    _ = decl;
+    _ = decl_index;
 }
 
 pub fn flush(self: *C, comp: *Compilation, prog_node: *std.Progress.Node) !void {
     return self.flushModule(comp, prog_node);
+}
+
+fn abiDefine(comp: *Compilation) ?[]const u8 {
+    return switch (comp.getTarget().abi) {
+        .msvc => "#define ZIG_TARGET_ABI_MSVC\n",
+        else => null,
+    };
 }
 
 pub fn flushModule(self: *C, comp: *Compilation, prog_node: *std.Progress.Node) !void {
@@ -248,9 +255,14 @@ pub fn flushModule(self: *C, comp: *Compilation, prog_node: *std.Progress.Node) 
     var f: Flush = .{};
     defer f.deinit(gpa);
 
-    // Covers zig.h, typedef, and asm.
-    try f.all_buffers.ensureUnusedCapacity(gpa, 2);
+    const abi_define = abiDefine(comp);
 
+    // Covers defines, zig.h, typedef, and asm.
+    var buf_count: usize = 2;
+    if (abi_define != null) buf_count += 1;
+    try f.all_buffers.ensureUnusedCapacity(gpa, buf_count);
+
+    if (abi_define) |buf| f.appendBufAssumeCapacity(buf);
     f.appendBufAssumeCapacity(zig_h);
 
     const typedef_index = f.all_buffers.items.len;

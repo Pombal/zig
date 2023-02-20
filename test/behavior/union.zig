@@ -413,7 +413,6 @@ test "tagged union with no payloads" {
 }
 
 test "union with only 1 field casted to its enum type" {
-    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const Literal = union(enum) {
@@ -454,7 +453,7 @@ test "global union with single field is correctly initialized" {
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     glbl = Foo1{
-        .f = @typeInfo(Foo1).Union.fields[0].field_type{ .x = 123 },
+        .f = @typeInfo(Foo1).Union.fields[0].type{ .x = 123 },
     };
     try expect(glbl.f.x == 123);
 }
@@ -563,7 +562,6 @@ const Baz = enum { A, B, C, D };
 
 test "tagged union type" {
     if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
-    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const foo1 = TaggedFoo{ .One = 13 };
@@ -697,7 +695,6 @@ const PartialInstWithPayload = union(enum) {
 };
 
 test "union with only 1 field casted to its enum type which has enum value specified" {
-    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     const Literal = union(enum) {
@@ -1464,4 +1461,46 @@ test "Namespace-like union" {
     };
     var a: DepType.Version.Git = .tag;
     try expect(a.frozen());
+}
+
+test "union int tag type is properly managed" {
+    const Bar = union(enum(u2)) {
+        x: bool,
+        y: u8,
+        z: u8,
+    };
+    try expect(@sizeOf(Bar) + 1 == 3);
+}
+
+test "no dependency loop when function pointer in union returns the union" {
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+
+    const U = union(enum) {
+        const U = @This();
+        a: u8,
+        b: *const fn (x: U) void,
+        c: *const fn (x: U) U,
+        d: *const fn (x: u8) U,
+        e: *const fn (x: *U) void,
+        f: *const fn (x: *U) U,
+        fn foo(x: u8) U {
+            return .{ .a = x };
+        }
+    };
+    var b: U = .{ .d = U.foo };
+    try expect(b.d(2).a == 2);
+}
+
+test "union reassignment can use previous value" {
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+
+    const U = union {
+        a: u32,
+        b: u32,
+    };
+    var a = U{ .a = 32 };
+    a = U{ .b = a.a };
+    try expect(a.b == 32);
 }

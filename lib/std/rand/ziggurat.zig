@@ -83,13 +83,13 @@ fn ZigTableGen(
     tables.x[0] = v / f(r);
     tables.x[1] = r;
 
-    for (tables.x[2..256]) |*entry, i| {
+    for (tables.x[2..256], 0..) |*entry, i| {
         const last = tables.x[2 + i - 1];
         entry.* = f_inv(v / last + f(last));
     }
     tables.x[256] = 0;
 
-    for (tables.f[0..]) |*entry, i| {
+    for (tables.f[0..], 0..) |*entry, i| {
         entry.* = f(tables.x[i]);
     }
 
@@ -127,11 +127,7 @@ fn norm_zero_case(random: Random, u: f64) f64 {
     }
 }
 
-const please_windows_dont_oom = builtin.os.tag == .windows;
-
 test "normal dist sanity" {
-    if (please_windows_dont_oom) return error.SkipZigTest;
-
     var prng = std.rand.DefaultPrng.init(0);
     const random = prng.random();
 
@@ -160,9 +156,7 @@ fn exp_zero_case(random: Random, _: f64) f64 {
     return exp_r - @log(random.float(f64));
 }
 
-test "exp dist sanity" {
-    if (please_windows_dont_oom) return error.SkipZigTest;
-
+test "exp dist smoke test" {
     var prng = std.rand.DefaultPrng.init(0);
     const random = prng.random();
 
@@ -172,8 +166,6 @@ test "exp dist sanity" {
     }
 }
 
-test "table gen" {
-    if (please_windows_dont_oom) return error.SkipZigTest;
-
+test {
     _ = NormDist;
 }

@@ -535,7 +535,7 @@ pub const RegisterList = struct {
     const Self = @This();
 
     fn getIndexForReg(registers: []const Register, reg: Register) BitSet.MaskInt {
-        for (registers) |cpreg, i| {
+        for (registers, 0..) |cpreg, i| {
             if (reg.id() == cpreg.id()) return @intCast(u32, i);
         }
         unreachable; // register not in input register list!
@@ -612,7 +612,7 @@ pub fn extraData(mir: Mir, comptime T: type, index: usize) struct { data: T, end
     var i: usize = index;
     var result: T = undefined;
     inline for (fields) |field| {
-        @field(result, field.name) = switch (field.field_type) {
+        @field(result, field.name) = switch (field.type) {
             u32 => mir.extra[i],
             i32 => @bitCast(i32, mir.extra[i]),
             else => @compileError("bad field type"),

@@ -1,15 +1,15 @@
 const std = @import("std");
-const Builder = std.build.Builder;
 
-pub fn build(b: *Builder) void {
-    const mode = b.standardReleaseOptions();
-
+pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Test");
     test_step.dependOn(b.getInstallStep());
 
-    const lib = b.addSharedLibrary("lib", "lib.zig", .unversioned);
-    lib.setBuildMode(mode);
-    lib.setTarget(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const lib = b.addSharedLibrary(.{
+        .name = "lib",
+        .root_source_file = .{ .path = "lib.zig" },
+        .target = .{ .cpu_arch = .wasm32, .os_tag = .freestanding },
+        .optimize = b.standardOptimizeOption(.{}),
+    });
     lib.use_llvm = false;
     lib.use_lld = false;
     lib.strip = false;
@@ -26,8 +26,7 @@ pub fn build(b: *Builder) void {
     check_lib.checkNext("name memory"); // as per linker specification
 
     // since we are importing memory, ensure it's not exported
-    check_lib.checkStart("Section export");
-    check_lib.checkNext("entries 1"); // we're exporting function 'foo' so only 1 entry
+    check_lib.checkNotPresent("Section export");
 
     // validate the name of the stack pointer
     check_lib.checkStart("Section custom");

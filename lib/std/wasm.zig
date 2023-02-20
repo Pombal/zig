@@ -215,7 +215,9 @@ test "Wasm - opcodes" {
 }
 
 /// Opcodes that require a prefix `0xFC`
-pub const PrefixedOpcode = enum(u8) {
+/// Each opcode represents a varuint32, meaning
+/// they are encoded as leb128 in binary.
+pub const PrefixedOpcode = enum(u32) {
     i32_trunc_sat_f32_s = 0x00,
     i32_trunc_sat_f32_u = 0x01,
     i32_trunc_sat_f64_s = 0x02,
@@ -634,7 +636,7 @@ pub const Type = struct {
         if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
         _ = opt;
         try writer.writeByte('(');
-        for (self.params) |param, i| {
+        for (self.params, 0..) |param, i| {
             try writer.print("{s}", .{@tagName(param)});
             if (i + 1 != self.params.len) {
                 try writer.writeAll(", ");
@@ -644,7 +646,7 @@ pub const Type = struct {
         if (self.returns.len == 0) {
             try writer.writeAll("nil");
         } else {
-            for (self.returns) |return_ty, i| {
+            for (self.returns, 0..) |return_ty, i| {
                 try writer.print("{s}", .{@tagName(return_ty)});
                 if (i + 1 != self.returns.len) {
                     try writer.writeAll(", ");

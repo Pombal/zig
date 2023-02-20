@@ -293,6 +293,10 @@ pub fn getEnvMap(allocator: Allocator) !EnvMap {
             return os.unexpectedErrno(environ_sizes_get_ret);
         }
 
+        if (environ_count == 0) {
+            return result;
+        }
+
         var environ = try allocator.alloc([*:0]u8, environ_count);
         defer allocator.free(environ);
         var environ_buf = try allocator.alloc(u8, environ_buf_size);
@@ -307,7 +311,7 @@ pub fn getEnvMap(allocator: Allocator) !EnvMap {
             const pair = mem.sliceTo(env, 0);
             var parts = mem.split(u8, pair, "=");
             const key = parts.first();
-            const value = parts.next().?;
+            const value = parts.rest();
             try result.put(key, value);
         }
         return result;
@@ -369,6 +373,11 @@ pub fn getEnvVarOwned(allocator: Allocator, key: []const u8) GetEnvVarOwnedError
             error.UnexpectedSecondSurrogateHalf => return error.InvalidUtf8,
             else => |e| return e,
         };
+    } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
+        var envmap = getEnvMap(allocator) catch return error.OutOfMemory;
+        defer envmap.deinit();
+        const val = envmap.get(key) orelse return error.EnvironmentVariableNotFound;
+        return allocator.dupe(u8, val);
     } else {
         const result = os.getenv(key) orelse return error.EnvironmentVariableNotFound;
         return allocator.dupe(u8, result);
@@ -379,6 +388,8 @@ pub fn hasEnvVarConstant(comptime key: []const u8) bool {
     if (builtin.os.tag == .windows) {
         const key_w = comptime std.unicode.utf8ToUtf16LeStringLiteral(key);
         return std.os.getenvW(key_w) != null;
+    } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
+        @compileError("hasEnvVarConstant is not supported for WASI without libc");
     } else {
         return os.getenv(key) != null;
     }
@@ -390,6 +401,10 @@ pub fn hasEnvVar(allocator: Allocator, key: []const u8) error{OutOfMemory}!bool 
         const key_w = try std.unicode.utf8ToUtf16LeWithNull(stack_alloc.get(), key);
         defer stack_alloc.allocator.free(key_w);
         return std.os.getenvW(key_w) != null;
+    } else if (builtin.os.tag == .wasi and !builtin.link_libc) {
+        var envmap = getEnvMap(allocator) catch return error.OutOfMemory;
+        defer envmap.deinit();
+        return envmap.getPtr(key) != null;
     } else {
         return os.getenv(key) != null;
     }
@@ -455,6 +470,10 @@ pub const ArgIteratorWasi = struct {
         switch (w.args_sizes_get(&count, &buf_size)) {
             .SUCCESS => {},
             else => |err| return os.unexpectedErrno(err),
+        }
+
+        if (count == 0) {
+            return &[_][:0]u8{};
         }
 
         var argv = try allocator.alloc([*:0]u8, count);
@@ -855,7 +874,7 @@ pub fn argsAlloc(allocator: Allocator) ![][:0]u8 {
     mem.copy(u8, result_contents, contents_slice);
 
     var contents_index: usize = 0;
-    for (slice_sizes) |len, i| {
+    for (slice_sizes, 0..) |len, i| {
         const new_index = contents_index + len;
         result_slice_list[i] = result_contents[contents_index..new_index :0];
         contents_index = new_index + 1;
@@ -1023,8 +1042,16 @@ pub fn posixGetUserInfo(name: []const u8) !UserInfo {
                             '0'...'9' => byte - '0',
                             else => return error.CorruptPasswordFile,
                         };
-                        if (@mulWithOverflow(u32, uid, 10, &uid)) return error.CorruptPasswordFile;
-                        if (@addWithOverflow(u32, uid, digit, &uid)) return error.CorruptPasswordFile;
+                        {
+                            const ov = @mulWithOverflow(uid, 10);
+                            if (ov[1] != 0) return error.CorruptPasswordFile;
+                            uid = ov[0];
+                        }
+                        {
+                            const ov = @addWithOverflow(uid, digit);
+                            if (ov[1] != 0) return error.CorruptPasswordFile;
+                            uid = ov[0];
+                        }
                     },
                 },
                 .ReadGroupId => switch (byte) {
@@ -1039,8 +1066,16 @@ pub fn posixGetUserInfo(name: []const u8) !UserInfo {
                             '0'...'9' => byte - '0',
                             else => return error.CorruptPasswordFile,
                         };
-                        if (@mulWithOverflow(u32, gid, 10, &gid)) return error.CorruptPasswordFile;
-                        if (@addWithOverflow(u32, gid, digit, &gid)) return error.CorruptPasswordFile;
+                        {
+                            const ov = @mulWithOverflow(gid, 10);
+                            if (ov[1] != 0) return error.CorruptPasswordFile;
+                            gid = ov[0];
+                        }
+                        {
+                            const ov = @addWithOverflow(gid, digit);
+                            if (ov[1] != 0) return error.CorruptPasswordFile;
+                            gid = ov[0];
+                        }
                     },
                 },
             }
@@ -1113,7 +1148,7 @@ pub fn execve(
     const arena = arena_allocator.allocator();
 
     const argv_buf = try arena.allocSentinel(?[*:0]u8, argv.len, null);
-    for (argv) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
+    for (argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
 
     const envp = m: {
         if (env_map) |m| {

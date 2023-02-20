@@ -19,11 +19,10 @@ test "compare void with void compile time known" {
 }
 
 test "iterate over a void slice" {
-    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest;
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
     var j: usize = 0;
-    for (times(10)) |_, i| {
+    for (times(10), 0..) |_, i| {
         try expect(i == j);
         j += 1;
     }

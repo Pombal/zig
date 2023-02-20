@@ -8,7 +8,7 @@ const log = std.log.scoped(.mingw);
 const builtin = @import("builtin");
 const Compilation = @import("Compilation.zig");
 const build_options = @import("build_options");
-const Cache = @import("Cache.zig");
+const Cache = std.Build.Cache;
 
 pub const CRTFile = enum {
     crt2_o,
@@ -72,7 +72,7 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
 
         .mingw32_lib => {
             var c_source_files: [mingw32_lib_deps.len]Compilation.CSourceFile = undefined;
-            for (mingw32_lib_deps) |dep, i| {
+            for (mingw32_lib_deps, 0..) |dep, i| {
                 var args = std.ArrayList([]const u8).init(arena);
                 try args.appendSlice(&[_][]const u8{
                     "-DHAVE_CONFIG_H",
@@ -106,6 +106,7 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
         .msvcrt_os_lib => {
             const extra_flags = try arena.dupe([]const u8, &[_][]const u8{
                 "-DHAVE_CONFIG_H",
+                "-D__LIBMSVCRT__",
                 "-D__LIBMSVCRT_OS__",
 
                 "-I",
@@ -235,7 +236,7 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 }),
             });
             var c_source_files: [uuid_src.len]Compilation.CSourceFile = undefined;
-            for (uuid_src) |dep, i| {
+            for (uuid_src, 0..) |dep, i| {
                 c_source_files[i] = .{
                     .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{
                         "libc", "mingw", "libsrc", dep,
@@ -543,6 +544,7 @@ const msvcrt_common_src = [_][]const u8{
     "stdio" ++ path.sep_str ++ "acrt_iob_func.c",
     "stdio" ++ path.sep_str ++ "snprintf_alias.c",
     "stdio" ++ path.sep_str ++ "vsnprintf_alias.c",
+    "stdio" ++ path.sep_str ++ "_vscprintf.c",
     "misc" ++ path.sep_str ++ "_configthreadlocale.c",
     "misc" ++ path.sep_str ++ "_get_current_locale.c",
     "misc" ++ path.sep_str ++ "invalid_parameter_handler.c",

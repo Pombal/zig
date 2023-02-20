@@ -61,7 +61,7 @@ pub const DevicePathProtocol = extern struct {
         // The same as new.getPath(), but not const as we're filling it in.
         var ptr = @ptrCast([*:0]align(1) u16, @ptrCast([*]u8, new) + @sizeOf(MediaDevicePath.FilePathDevicePath));
 
-        for (path) |s, i|
+        for (path, 0..) |s, i|
             ptr[i] = s;
 
         ptr[path.len] = 0;
@@ -81,7 +81,7 @@ pub const DevicePathProtocol = extern struct {
             // Got the associated union type for self.type, now
             // we need to initialize it and its subtype
             if (self.type == enum_value) {
-                var subtype = self.initSubtype(ufield.field_type);
+                var subtype = self.initSubtype(ufield.type);
 
                 if (subtype) |sb| {
                     // e.g. return .{ .Hardware = .{ .Pci = @ptrCast(...) } }
@@ -103,7 +103,7 @@ pub const DevicePathProtocol = extern struct {
 
             if (self.subtype == tag_val) {
                 // e.g. expr = .{ .Pci = @ptrCast(...) }
-                return @unionInit(TUnion, subtype.name, @ptrCast(subtype.field_type, self));
+                return @unionInit(TUnion, subtype.name, @ptrCast(subtype.type, self));
             }
         }
 

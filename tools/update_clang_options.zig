@@ -492,6 +492,18 @@ const known_options = [_]KnownOpt{
         .name = "compress-debug-sections=",
         .ident = "compress_debug_sections",
     },
+    .{
+        .name = "install_name",
+        .ident = "install_name",
+    },
+    .{
+        .name = "undefined",
+        .ident = "undefined",
+    },
+    .{
+        .name = "x",
+        .ident = "x",
+    },
 };
 
 const blacklisted_options = [_][]const u8{};
@@ -561,7 +573,7 @@ pub fn main() anyerror!void {
         const Feature = @field(cpu_targets, decl.name).Feature;
         const all_features = @field(cpu_targets, decl.name).all_features;
 
-        for (all_features) |feat, i| {
+        for (all_features, 0..) |feat, i| {
             const llvm_name = feat.llvm_name orelse continue;
             const zig_feat = @intToEnum(Feature, i);
             const zig_name = @tagName(zig_feat);

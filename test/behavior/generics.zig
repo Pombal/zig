@@ -273,7 +273,6 @@ test "generic function instantiation turns into comptime call" {
             var enumFields: [1]std.builtin.Type.EnumField = .{.{ .name = "A", .value = 0 }};
             return @Type(.{
                 .Enum = .{
-                    .layout = .Auto,
                     .tag_type = u0,
                     .fields = &enumFields,
                     .decls = &.{},
@@ -326,7 +325,7 @@ test "generic function instantiation non-duplicates" {
     const S = struct {
         fn copy(comptime T: type, dest: []T, source: []const T) void {
             @export(foo, .{ .name = "test_generic_instantiation_non_dupe" });
-            for (source) |s, i| dest[i] = s;
+            for (source, 0..) |s, i| dest[i] = s;
         }
 
         fn foo() callconv(.C) void {}

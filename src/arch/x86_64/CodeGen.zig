@@ -16,7 +16,7 @@ const Compilation = @import("../../Compilation.zig");
 const DebugInfoOutput = codegen.DebugInfoOutput;
 const DW = std.dwarf;
 const ErrorMsg = Module.ErrorMsg;
-const FnResult = codegen.FnResult;
+const Result = codegen.Result;
 const GenerateSymbolError = codegen.GenerateSymbolError;
 const Emit = @import("Emit.zig");
 const Liveness = @import("../../Liveness.zig");
@@ -186,7 +186,7 @@ const Branch = struct {
         _ = options;
         comptime assert(unused_format_string.len == 0);
         try writer.writeAll("Branch {\n");
-        for (ctx.insts) |inst, i| {
+        for (ctx.insts, 0..) |inst, i| {
             const mcv = ctx.mcvs[i];
             try writer.print("  %{d} => {}\n", .{ inst, mcv });
         }
@@ -257,7 +257,7 @@ pub fn generate(
     liveness: Liveness,
     code: *std.ArrayList(u8),
     debug_output: DebugInfoOutput,
-) GenerateSymbolError!FnResult {
+) GenerateSymbolError!Result {
     if (build_options.skip_non_native and builtin.cpu.arch != bin_file.options.target.cpu.arch) {
         @panic("Attempted to compile for architecture that was disabled by build configuration");
     }
@@ -305,8 +305,8 @@ pub fn generate(
     defer if (builtin.mode == .Debug) function.mir_to_air_map.deinit();
 
     var call_info = function.resolveCallingConventionValues(fn_type) catch |err| switch (err) {
-        error.CodegenFail => return FnResult{ .fail = function.err_msg.? },
-        error.OutOfRegisters => return FnResult{
+        error.CodegenFail => return Result{ .fail = function.err_msg.? },
+        error.OutOfRegisters => return Result{
             .fail = try ErrorMsg.create(bin_file.allocator, src_loc, "CodeGen ran out of registers. This is a bug in the Zig compiler.", .{}),
         },
         else => |e| return e,
@@ -319,8 +319,8 @@ pub fn generate(
     function.max_end_stack = call_info.stack_byte_count;
 
     function.gen() catch |err| switch (err) {
-        error.CodegenFail => return FnResult{ .fail = function.err_msg.? },
-        error.OutOfRegisters => return FnResult{
+        error.CodegenFail => return Result{ .fail = function.err_msg.? },
+        error.OutOfRegisters => return Result{
             .fail = try ErrorMsg.create(bin_file.allocator, src_loc, "CodeGen ran out of registers. This is a bug in the Zig compiler.", .{}),
         },
         else => |e| return e,
@@ -345,14 +345,14 @@ pub fn generate(
     };
     defer emit.deinit();
     emit.lowerMir() catch |err| switch (err) {
-        error.EmitFail => return FnResult{ .fail = emit.err_msg.? },
+        error.EmitFail => return Result{ .fail = emit.err_msg.? },
         else => |e| return e,
     };
 
     if (function.err_msg) |em| {
-        return FnResult{ .fail = em };
+        return Result{ .fail = em };
     } else {
-        return FnResult{ .appended = {} };
+        return Result.ok;
     }
 }
 
@@ -374,7 +374,7 @@ pub fn addExtraAssumeCapacity(self: *Self, extra: anytype) u32 {
     const fields = std.meta.fields(@TypeOf(extra));
     const result = @intCast(u32, self.mir_extra.items.len);
     inline for (fields) |field| {
-        self.mir_extra.appendAssumeCapacity(switch (field.field_type) {
+        self.mir_extra.appendAssumeCapacity(switch (field.type) {
             u32 => @field(extra, field.name),
             i32 => @bitCast(u32, @field(extra, field.name)),
             else => @compileError("bad field type"),
@@ -785,6 +785,12 @@ fn genBody(self: *Self, body: []const Air.Inst.Index) InnerError!void {
 
             .is_named_enum_value => return self.fail("TODO implement is_named_enum_value", .{}),
             .error_set_has_value => return self.fail("TODO implement error_set_has_value", .{}),
+            .vector_store_elem => return self.fail("TODO implement vector_store_elem", .{}),
+
+            .c_va_arg => return self.fail("TODO implement c_va_arg", .{}),
+            .c_va_copy => return self.fail("TODO implement c_va_copy", .{}),
+            .c_va_end => return self.fail("TODO implement c_va_end", .{}),
+            .c_va_start => return self.fail("TODO implement c_va_start", .{}),
 
             .wasm_memory_size => unreachable,
             .wasm_memory_grow => unreachable,
@@ -2662,12 +2668,13 @@ fn loadMemPtrIntoRegister(self: *Self, reg: Register, ptr_ty: Type, ptr: MCValue
     switch (ptr) {
         .linker_load => |load_struct| {
             const abi_size = @intCast(u32, ptr_ty.abiSize(self.target.*));
-            const mod = self.bin_file.options.module.?;
-            const fn_owner_decl = mod.declPtr(self.mod_fn.owner_decl);
-            const atom_index = if (self.bin_file.tag == link.File.MachO.base_tag)
-                fn_owner_decl.link.macho.sym_index
-            else
-                fn_owner_decl.link.coff.sym_index;
+            const atom_index = if (self.bin_file.cast(link.File.MachO)) |macho_file| blk: {
+                const atom = try macho_file.getOrCreateAtomForDecl(self.mod_fn.owner_decl);
+                break :blk macho_file.getAtom(atom).getSymbolIndex().?;
+            } else if (self.bin_file.cast(link.File.Coff)) |coff_file| blk: {
+                const atom = try coff_file.getOrCreateAtomForDecl(self.mod_fn.owner_decl);
+                break :blk coff_file.getAtom(atom).getSymbolIndex().?;
+            } else unreachable;
             const flags: u2 = switch (load_struct.type) {
                 .got => 0b00,
                 .direct => 0b01,
@@ -3793,7 +3800,8 @@ fn airArg(self: *Self, inst: Air.Inst.Index) !void {
 
     const ty = self.air.typeOfIndex(inst);
     const mcv = self.args[arg_index];
-    const name = self.mod_fn.getParamName(self.bin_file.options.module.?, arg_index);
+    const src_index = self.air.instructions.items(.data)[inst].arg.src_index;
+    const name = self.mod_fn.getParamName(self.bin_file.options.module.?, src_index);
 
     if (self.liveness.isUnused(inst))
         return self.finishAirBookkeeping();
@@ -3828,7 +3836,7 @@ fn genArgDbgInfo(self: Self, ty: Type, name: [:0]const u8, mcv: MCValue) !void {
                 },
                 else => unreachable, // not a valid function parameter
             };
-            try dw.genArgDbgInfo(name, ty, self.bin_file.tag, self.mod_fn.owner_decl, loc);
+            try dw.genArgDbgInfo(name, ty, self.mod_fn.owner_decl, loc);
         },
         .plan9 => {},
         .none => {},
@@ -3868,7 +3876,7 @@ fn genVarDbgInfo(
                     break :blk .nop;
                 },
             };
-            try dw.genVarDbgInfo(name, ty, self.bin_file.tag, self.mod_fn.owner_decl, is_ptr, loc);
+            try dw.genVarDbgInfo(name, ty, self.mod_fn.owner_decl, is_ptr, loc);
         },
         .plan9 => {},
         .none => {},
@@ -3943,7 +3951,7 @@ fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallModifier
     };
     defer if (ret_reg_lock) |lock| self.register_manager.unlockReg(lock);
 
-    for (args) |arg, arg_i| {
+    for (args, 0..) |arg, arg_i| {
         const mc_arg = info.args[arg_i];
         const arg_ty = self.air.typeOf(arg);
         const arg_mcv = try self.resolveInst(args[arg_i]);
@@ -3985,49 +3993,26 @@ fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallModifier
     // Due to incremental compilation, how function calls are generated depends
     // on linking.
     const mod = self.bin_file.options.module.?;
-    if (self.bin_file.cast(link.File.Elf)) |elf_file| {
-        if (self.air.value(callee)) |func_value| {
-            if (func_value.castTag(.function)) |func_payload| {
-                const func = func_payload.data;
-                const ptr_bits = self.target.cpu.arch.ptrBitWidth();
-                const ptr_bytes: u64 = @divExact(ptr_bits, 8);
-                const fn_owner_decl = mod.declPtr(func.owner_decl);
-                const got_addr = blk: {
-                    const got = &elf_file.program_headers.items[elf_file.phdr_got_index.?];
-                    break :blk @intCast(u32, got.p_vaddr + fn_owner_decl.link.elf.offset_table_index * ptr_bytes);
-                };
+    if (self.air.value(callee)) |func_value| {
+        if (func_value.castTag(.function)) |func_payload| {
+            const func = func_payload.data;
+
+            if (self.bin_file.cast(link.File.Elf)) |elf_file| {
+                const atom_index = try elf_file.getOrCreateAtomForDecl(func.owner_decl);
+                const atom = elf_file.getAtom(atom_index);
+                const got_addr = @intCast(u32, atom.getOffsetTableAddress(elf_file));
                 _ = try self.addInst(.{
                     .tag = .call,
                     .ops = Mir.Inst.Ops.encode(.{ .flags = 0b01 }),
-                    .data = .{ .imm = @truncate(u32, got_addr) },
+                    .data = .{ .imm = got_addr },
                 });
-            } else if (func_value.castTag(.extern_fn)) |_| {
-                return self.fail("TODO implement calling extern functions", .{});
-            } else {
-                return self.fail("TODO implement calling bitcasted functions", .{});
-            }
-        } else {
-            assert(ty.zigTypeTag() == .Pointer);
-            const mcv = try self.resolveInst(callee);
-            try self.genSetReg(Type.initTag(.usize), .rax, mcv);
-            _ = try self.addInst(.{
-                .tag = .call,
-                .ops = Mir.Inst.Ops.encode(.{
-                    .reg1 = .rax,
-                    .flags = 0b01,
-                }),
-                .data = undefined,
-            });
-        }
-    } else if (self.bin_file.cast(link.File.Coff)) |coff_file| {
-        if (self.air.value(callee)) |func_value| {
-            if (func_value.castTag(.function)) |func_payload| {
-                const func = func_payload.data;
-                const fn_owner_decl = mod.declPtr(func.owner_decl);
+            } else if (self.bin_file.cast(link.File.Coff)) |coff_file| {
+                const atom_index = try coff_file.getOrCreateAtomForDecl(func.owner_decl);
+                const sym_index = coff_file.getAtom(atom_index).getSymbolIndex().?;
                 try self.genSetReg(Type.initTag(.usize), .rax, .{
                     .linker_load = .{
                         .type = .got,
-                        .sym_index = fn_owner_decl.link.coff.sym_index,
+                        .sym_index = sym_index,
                     },
                 });
                 _ = try self.addInst(.{
@@ -4038,15 +4023,48 @@ fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallModifier
                     }),
                     .data = undefined,
                 });
-            } else if (func_value.castTag(.extern_fn)) |func_payload| {
-                const extern_fn = func_payload.data;
-                const decl_name = mod.declPtr(extern_fn.owner_decl).name;
-                if (extern_fn.lib_name) |lib_name| {
-                    log.debug("TODO enforce that '{s}' is expected in '{s}' library", .{
-                        decl_name,
-                        lib_name,
-                    });
-                }
+            } else if (self.bin_file.cast(link.File.MachO)) |macho_file| {
+                const atom_index = try macho_file.getOrCreateAtomForDecl(func.owner_decl);
+                const sym_index = macho_file.getAtom(atom_index).getSymbolIndex().?;
+                try self.genSetReg(Type.initTag(.usize), .rax, .{
+                    .linker_load = .{
+                        .type = .got,
+                        .sym_index = sym_index,
+                    },
+                });
+                _ = try self.addInst(.{
+                    .tag = .call,
+                    .ops = Mir.Inst.Ops.encode(.{
+                        .reg1 = .rax,
+                        .flags = 0b01,
+                    }),
+                    .data = undefined,
+                });
+            } else if (self.bin_file.cast(link.File.Plan9)) |p9| {
+                const decl_block_index = try p9.seeDecl(func.owner_decl);
+                const decl_block = p9.getDeclBlock(decl_block_index);
+                const ptr_bits = self.target.cpu.arch.ptrBitWidth();
+                const ptr_bytes: u64 = @divExact(ptr_bits, 8);
+                const got_addr = p9.bases.data;
+                const got_index = decl_block.got_index.?;
+                const fn_got_addr = got_addr + got_index * ptr_bytes;
+                _ = try self.addInst(.{
+                    .tag = .call,
+                    .ops = Mir.Inst.Ops.encode(.{ .flags = 0b01 }),
+                    .data = .{ .imm = @intCast(u32, fn_got_addr) },
+                });
+            } else unreachable;
+        } else if (func_value.castTag(.extern_fn)) |func_payload| {
+            const extern_fn = func_payload.data;
+            const decl_name = mod.declPtr(extern_fn.owner_decl).name;
+            if (extern_fn.lib_name) |lib_name| {
+                log.debug("TODO enforce that '{s}' is expected in '{s}' library", .{
+                    decl_name,
+                    lib_name,
+                });
+            }
+
+            if (self.bin_file.cast(link.File.Coff)) |coff_file| {
                 const sym_index = try coff_file.getGlobalSymbol(mem.sliceTo(decl_name, 0));
                 try self.genSetReg(Type.initTag(.usize), .rax, .{
                     .linker_load = .{
@@ -4062,108 +4080,37 @@ fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallModifier
                     }),
                     .data = undefined,
                 });
-            } else {
-                return self.fail("TODO implement calling bitcasted functions", .{});
-            }
-        } else {
-            assert(ty.zigTypeTag() == .Pointer);
-            const mcv = try self.resolveInst(callee);
-            try self.genSetReg(Type.initTag(.usize), .rax, mcv);
-            _ = try self.addInst(.{
-                .tag = .call,
-                .ops = Mir.Inst.Ops.encode(.{
-                    .reg1 = .rax,
-                    .flags = 0b01,
-                }),
-                .data = undefined,
-            });
-        }
-    } else if (self.bin_file.cast(link.File.MachO)) |macho_file| {
-        if (self.air.value(callee)) |func_value| {
-            if (func_value.castTag(.function)) |func_payload| {
-                const func = func_payload.data;
-                const fn_owner_decl = mod.declPtr(func.owner_decl);
-                const sym_index = fn_owner_decl.link.macho.sym_index;
-                try self.genSetReg(Type.initTag(.usize), .rax, .{
-                    .linker_load = .{
-                        .type = .got,
-                        .sym_index = sym_index,
-                    },
-                });
-                // callq *%rax
-                _ = try self.addInst(.{
-                    .tag = .call,
-                    .ops = Mir.Inst.Ops.encode(.{
-                        .reg1 = .rax,
-                        .flags = 0b01,
-                    }),
-                    .data = undefined,
-                });
-            } else if (func_value.castTag(.extern_fn)) |func_payload| {
-                const extern_fn = func_payload.data;
-                const decl_name = mod.declPtr(extern_fn.owner_decl).name;
-                if (extern_fn.lib_name) |lib_name| {
-                    log.debug("TODO enforce that '{s}' is expected in '{s}' library", .{
-                        decl_name,
-                        lib_name,
-                    });
-                }
+            } else if (self.bin_file.cast(link.File.MachO)) |macho_file| {
                 const sym_index = try macho_file.getGlobalSymbol(mem.sliceTo(decl_name, 0));
+                const atom = try macho_file.getOrCreateAtomForDecl(self.mod_fn.owner_decl);
+                const atom_index = macho_file.getAtom(atom).getSymbolIndex().?;
                 _ = try self.addInst(.{
                     .tag = .call_extern,
                     .ops = undefined,
-                    .data = .{
-                        .relocation = .{
-                            .atom_index = mod.declPtr(self.mod_fn.owner_decl).link.macho.sym_index,
-                            .sym_index = sym_index,
-                        },
-                    },
+                    .data = .{ .relocation = .{
+                        .atom_index = atom_index,
+                        .sym_index = sym_index,
+                    } },
                 });
             } else {
-                return self.fail("TODO implement calling bitcasted functions", .{});
+                return self.fail("TODO implement calling extern functions", .{});
             }
         } else {
-            assert(ty.zigTypeTag() == .Pointer);
-            const mcv = try self.resolveInst(callee);
-            try self.genSetReg(Type.initTag(.usize), .rax, mcv);
-            _ = try self.addInst(.{
-                .tag = .call,
-                .ops = Mir.Inst.Ops.encode(.{
-                    .reg1 = .rax,
-                    .flags = 0b01,
-                }),
-                .data = undefined,
-            });
+            return self.fail("TODO implement calling bitcasted functions", .{});
         }
-    } else if (self.bin_file.cast(link.File.Plan9)) |p9| {
-        if (self.air.value(callee)) |func_value| {
-            if (func_value.castTag(.function)) |func_payload| {
-                try p9.seeDecl(func_payload.data.owner_decl);
-                const ptr_bits = self.target.cpu.arch.ptrBitWidth();
-                const ptr_bytes: u64 = @divExact(ptr_bits, 8);
-                const got_addr = p9.bases.data;
-                const got_index = mod.declPtr(func_payload.data.owner_decl).link.plan9.got_index.?;
-                const fn_got_addr = got_addr + got_index * ptr_bytes;
-                _ = try self.addInst(.{
-                    .tag = .call,
-                    .ops = Mir.Inst.Ops.encode(.{ .flags = 0b01 }),
-                    .data = .{ .imm = @intCast(u32, fn_got_addr) },
-                });
-            } else return self.fail("TODO implement calling extern fn on plan9", .{});
-        } else {
-            assert(ty.zigTypeTag() == .Pointer);
-            const mcv = try self.resolveInst(callee);
-            try self.genSetReg(Type.initTag(.usize), .rax, mcv);
-            _ = try self.addInst(.{
-                .tag = .call,
-                .ops = Mir.Inst.Ops.encode(.{
-                    .reg1 = .rax,
-                    .flags = 0b01,
-                }),
-                .data = undefined,
-            });
-        }
-    } else unreachable;
+    } else {
+        assert(ty.zigTypeTag() == .Pointer);
+        const mcv = try self.resolveInst(callee);
+        try self.genSetReg(Type.initTag(.usize), .rax, mcv);
+        _ = try self.addInst(.{
+            .tag = .call,
+            .ops = Mir.Inst.Ops.encode(.{
+                .reg1 = .rax,
+                .flags = 0b01,
+            }),
+            .data = undefined,
+        });
+    }
 
     if (info.stack_byte_count > 0) {
         // Readjust the stack
@@ -4965,7 +4912,7 @@ fn airSwitch(self: *Self, inst: Air.Inst.Index) !void {
         var relocs = try self.gpa.alloc(u32, items.len);
         defer self.gpa.free(relocs);
 
-        for (items) |item, item_i| {
+        for (items, 0..) |item, item_i| {
             const item_mcv = try self.resolveInst(item);
             relocs[item_i] = try self.genCondSwitchMir(condition_ty, condition, item_mcv);
         }
@@ -5027,7 +4974,7 @@ fn airSwitch(self: *Self, inst: Air.Inst.Index) !void {
     for (self.branch_stack.items) |bs| {
         log.debug("{}", .{bs.fmtDebug()});
     }
-    for (branch_stack.items) |bs, i| {
+    for (branch_stack.items, 0..) |bs, i| {
         log.debug("Case-{d} branch: {}", .{ i, bs.fmtDebug() });
     }
 
@@ -5052,7 +4999,7 @@ fn canonicaliseBranches(self: *Self, parent_branch: *Branch, canon_branch: *Bran
     const target_keys = target_slice.items(.key);
     const target_values = target_slice.items(.value);
 
-    for (target_keys) |target_key, target_idx| {
+    for (target_keys, 0..) |target_key, target_idx| {
         const target_value = target_values[target_idx];
         const canon_mcv = if (canon_branch.inst_table.fetchSwapRemove(target_key)) |canon_entry| blk: {
             // The instruction's MCValue is overridden in both branches.
@@ -5085,7 +5032,7 @@ fn canonicaliseBranches(self: *Self, parent_branch: *Branch, canon_branch: *Bran
     const canon_slice = canon_branch.inst_table.entries.slice();
     const canon_keys = canon_slice.items(.key);
     const canon_values = canon_slice.items(.value);
-    for (canon_keys) |canon_key, canon_idx| {
+    for (canon_keys, 0..) |canon_key, canon_idx| {
         const canon_value = canon_values[canon_idx];
         // We already deleted the items from this table that matched the target_branch.
         // So these are all instructions that are only overridden in the canon branch.
@@ -6624,7 +6571,7 @@ fn airAggregateInit(self: *Self, inst: Air.Inst.Index) !void {
         switch (result_ty.zigTypeTag()) {
             .Struct => {
                 const stack_offset = @intCast(i32, try self.allocMem(inst, abi_size, abi_align));
-                for (elements) |elem, elem_i| {
+                for (elements, 0..) |elem, elem_i| {
                     if (result_ty.structFieldValueComptime(elem_i) != null) continue; // comptime elem
 
                     const elem_ty = result_ty.structFieldType(elem_i);
@@ -6639,7 +6586,7 @@ fn airAggregateInit(self: *Self, inst: Air.Inst.Index) !void {
                 const elem_ty = result_ty.childType();
                 const elem_size = @intCast(u32, elem_ty.abiSize(self.target.*));
 
-                for (elements) |elem, elem_i| {
+                for (elements, 0..) |elem, elem_i| {
                     const elem_mcv = try self.resolveInst(elem);
                     const elem_off = @intCast(i32, elem_size * elem_i);
                     try self.genSetStack(elem_ty, stack_offset - elem_off, elem_mcv, .{});
@@ -6774,24 +6721,27 @@ fn lowerDeclRef(self: *Self, tv: TypedValue, decl_index: Module.Decl.Index) Inne
     module.markDeclAlive(decl);
 
     if (self.bin_file.cast(link.File.Elf)) |elf_file| {
-        const got = &elf_file.program_headers.items[elf_file.phdr_got_index.?];
-        const got_addr = got.p_vaddr + decl.link.elf.offset_table_index * ptr_bytes;
-        return MCValue{ .memory = got_addr };
-    } else if (self.bin_file.cast(link.File.MachO)) |_| {
-        assert(decl.link.macho.sym_index != 0);
+        const atom_index = try elf_file.getOrCreateAtomForDecl(decl_index);
+        const atom = elf_file.getAtom(atom_index);
+        return MCValue{ .memory = atom.getOffsetTableAddress(elf_file) };
+    } else if (self.bin_file.cast(link.File.MachO)) |macho_file| {
+        const atom_index = try macho_file.getOrCreateAtomForDecl(decl_index);
+        const sym_index = macho_file.getAtom(atom_index).getSymbolIndex().?;
         return MCValue{ .linker_load = .{
             .type = .got,
-            .sym_index = decl.link.macho.sym_index,
+            .sym_index = sym_index,
         } };
-    } else if (self.bin_file.cast(link.File.Coff)) |_| {
-        assert(decl.link.coff.sym_index != 0);
+    } else if (self.bin_file.cast(link.File.Coff)) |coff_file| {
+        const atom_index = try coff_file.getOrCreateAtomForDecl(decl_index);
+        const sym_index = coff_file.getAtom(atom_index).getSymbolIndex().?;
         return MCValue{ .linker_load = .{
             .type = .got,
-            .sym_index = decl.link.coff.sym_index,
+            .sym_index = sym_index,
         } };
     } else if (self.bin_file.cast(link.File.Plan9)) |p9| {
-        try p9.seeDecl(decl_index);
-        const got_addr = p9.bases.data + decl.link.plan9.got_index.? * ptr_bytes;
+        const decl_block_index = try p9.seeDecl(decl_index);
+        const decl_block = p9.getDeclBlock(decl_block_index);
+        const got_addr = p9.bases.data + decl_block.got_index.? * ptr_bytes;
         return MCValue{ .memory = got_addr };
     } else {
         return self.fail("TODO codegen non-ELF const Decl pointer", .{});
@@ -6804,8 +6754,7 @@ fn lowerUnnamedConst(self: *Self, tv: TypedValue) InnerError!MCValue {
         return self.fail("lowering unnamed constant failed: {s}", .{@errorName(err)});
     };
     if (self.bin_file.cast(link.File.Elf)) |elf_file| {
-        const vaddr = elf_file.local_symbols.items[local_sym_index].st_value;
-        return MCValue{ .memory = vaddr };
+        return MCValue{ .memory = elf_file.getSymbol(local_sym_index).st_value };
     } else if (self.bin_file.cast(link.File.MachO)) |_| {
         return MCValue{ .linker_load = .{
             .type = .direct,
@@ -7014,7 +6963,7 @@ fn resolveCallingConventionValues(self: *Self, fn_ty: Type) !CallMCValues {
                 else => 0,
             };
 
-            for (param_types) |ty, i| {
+            for (param_types, 0..) |ty, i| {
                 assert(ty.hasRuntimeBits());
 
                 const classes: []const abi.Class = switch (self.target.os.tag) {
@@ -7090,7 +7039,7 @@ fn resolveCallingConventionValues(self: *Self, fn_ty: Type) !CallMCValues {
                 else => 0,
             };
 
-            for (param_types) |ty, i| {
+            for (param_types, 0..) |ty, i| {
                 if (!ty.hasRuntimeBits()) {
                     result.args[i] = .{ .none = {} };
                     continue;

@@ -10,7 +10,7 @@ const wasi_libc = @import("wasi_libc.zig");
 
 const Air = @import("Air.zig");
 const Allocator = std.mem.Allocator;
-const Cache = @import("Cache.zig");
+const Cache = std.Build.Cache;
 const Compilation = @import("Compilation.zig");
 const LibCInstallation = @import("libc_installation.zig").LibCInstallation;
 const Liveness = @import("Liveness.zig");
@@ -24,6 +24,8 @@ pub const SystemLib = struct {
     needed: bool = false,
     weak: bool = false,
 };
+
+pub const SortSection = enum { name, alignment };
 
 pub const CacheMode = enum { incremental, whole };
 
@@ -121,6 +123,8 @@ pub const Options = struct {
     z_nocopyreloc: bool,
     z_now: bool,
     z_relro: bool,
+    z_common_page_size: ?u64,
+    z_max_page_size: ?u64,
     tsaware: bool,
     nxcompat: bool,
     dynamicbase: bool,
@@ -128,6 +132,7 @@ pub const Options = struct {
     compress_debug_sections: CompressDebugSections,
     bind_global_refs_locally: bool,
     import_memory: bool,
+    import_symbols: bool,
     import_table: bool,
     export_table: bool,
     initial_memory: ?u64,
@@ -156,6 +161,7 @@ pub const Options = struct {
     disable_lld_caching: bool,
     is_test: bool,
     hash_style: HashStyle,
+    sort_section: ?SortSection,
     major_subsystem_version: ?u32,
     minor_subsystem_version: ?u32,
     gc_sections: ?bool = null,
@@ -168,6 +174,7 @@ pub const Options = struct {
     print_gc_sections: bool,
     print_icf_sections: bool,
     print_map: bool,
+    opt_bisect_limit: i32,
 
     objects: []Compilation.LinkObject,
     framework_dirs: []const []const u8,
@@ -217,13 +224,25 @@ pub const Options = struct {
     /// (Darwin) remove dylibs that are unreachable by the entry point or exported symbols
     dead_strip_dylibs: bool = false,
 
+    /// (Windows) PDB source path prefix to instruct the linker how to resolve relative
+    /// paths when consolidating CodeView streams into a single PDB file.
+    pdb_source_path: ?[]const u8 = null,
+
+    /// (Windows) PDB output path
+    pdb_out_path: ?[]const u8 = null,
+
+    /// (Windows) .def file to specify when linking
+    module_definition_file: ?[]const u8 = null,
+
     pub fn effectiveOutputMode(options: Options) std.builtin.OutputMode {
         return if (options.use_lld) .Obj else options.output_mode;
     }
 
     pub fn move(self: *Options) Options {
         const copied_state = self.*;
+        self.frameworks = .{};
         self.system_libs = .{};
+        self.force_undefined_symbols = .{};
         return copied_state;
     }
 };
@@ -244,39 +263,6 @@ pub const File = struct {
     /// Prevents other processes from clobbering files in the output directory
     /// of this linking operation.
     lock: ?Cache.Lock = null,
-
-    pub const LinkBlock = union {
-        elf: Elf.TextBlock,
-        coff: Coff.Atom,
-        macho: MachO.Atom,
-        plan9: Plan9.DeclBlock,
-        c: void,
-        wasm: Wasm.DeclBlock,
-        spirv: void,
-        nvptx: void,
-    };
-
-    pub const LinkFn = union {
-        elf: Dwarf.SrcFn,
-        coff: Coff.SrcFn,
-        macho: Dwarf.SrcFn,
-        plan9: void,
-        c: void,
-        wasm: Wasm.FnData,
-        spirv: SpirV.FnData,
-        nvptx: void,
-    };
-
-    pub const Export = union {
-        elf: Elf.Export,
-        coff: Coff.Export,
-        macho: MachO.Export,
-        plan9: Plan9.Export,
-        c: void,
-        wasm: Wasm.Export,
-        spirv: void,
-        nvptx: void,
-    };
 
     /// Attempts incremental linking, if the file already exists. If
     /// incremental linking fails, falls back to truncating the file and
@@ -473,6 +459,7 @@ pub const File = struct {
         NameTooLong,
         CurrentWorkingDirectoryUnlinked,
         LockViolation,
+        NetNameDeleted,
     };
 
     /// Called from within the CodeGen to lower a local variable instantion as an unnamed
@@ -516,8 +503,7 @@ pub const File = struct {
         }
     }
 
-    /// May be called before or after updateDeclExports but must be called
-    /// after allocateDeclIndexes for any given Decl.
+    /// May be called before or after updateDeclExports for any given Decl.
     pub fn updateDecl(base: *File, module: *Module, decl_index: Module.Decl.Index) UpdateDeclError!void {
         const decl = module.declPtr(decl_index);
         log.debug("updateDecl {*} ({s}), type={}", .{ decl, decl.name, decl.ty.fmtDebug() });
@@ -540,8 +526,7 @@ pub const File = struct {
         }
     }
 
-    /// May be called before or after updateDeclExports but must be called
-    /// after allocateDeclIndexes for any given Decl.
+    /// May be called before or after updateDeclExports for any given Decl.
     pub fn updateFunc(base: *File, module: *Module, func: *Module.Fn, air: Air, liveness: Liveness) UpdateDeclError!void {
         const owner_decl = module.declPtr(func.owner_decl);
         log.debug("updateFunc {*} ({s}), type={}", .{
@@ -565,45 +550,24 @@ pub const File = struct {
         }
     }
 
-    pub fn updateDeclLineNumber(base: *File, module: *Module, decl: *Module.Decl) UpdateDeclError!void {
+    pub fn updateDeclLineNumber(base: *File, module: *Module, decl_index: Module.Decl.Index) UpdateDeclError!void {
+        const decl = module.declPtr(decl_index);
         log.debug("updateDeclLineNumber {*} ({s}), line={}", .{
             decl, decl.name, decl.src_line + 1,
         });
         assert(decl.has_tv);
         if (build_options.only_c) {
             assert(base.tag == .c);
-            return @fieldParentPtr(C, "base", base).updateDeclLineNumber(module, decl);
+            return @fieldParentPtr(C, "base", base).updateDeclLineNumber(module, decl_index);
         }
         switch (base.tag) {
-            .coff => return @fieldParentPtr(Coff, "base", base).updateDeclLineNumber(module, decl),
-            .elf => return @fieldParentPtr(Elf, "base", base).updateDeclLineNumber(module, decl),
-            .macho => return @fieldParentPtr(MachO, "base", base).updateDeclLineNumber(module, decl),
-            .c => return @fieldParentPtr(C, "base", base).updateDeclLineNumber(module, decl),
-            .wasm => return @fieldParentPtr(Wasm, "base", base).updateDeclLineNumber(module, decl),
-            .plan9 => return @fieldParentPtr(Plan9, "base", base).updateDeclLineNumber(module, decl),
+            .coff => return @fieldParentPtr(Coff, "base", base).updateDeclLineNumber(module, decl_index),
+            .elf => return @fieldParentPtr(Elf, "base", base).updateDeclLineNumber(module, decl_index),
+            .macho => return @fieldParentPtr(MachO, "base", base).updateDeclLineNumber(module, decl_index),
+            .c => return @fieldParentPtr(C, "base", base).updateDeclLineNumber(module, decl_index),
+            .wasm => return @fieldParentPtr(Wasm, "base", base).updateDeclLineNumber(module, decl_index),
+            .plan9 => return @fieldParentPtr(Plan9, "base", base).updateDeclLineNumber(module, decl_index),
             .spirv, .nvptx => {},
-        }
-    }
-
-    /// Must be called before any call to updateDecl or updateDeclExports for
-    /// any given Decl.
-    /// TODO we're transitioning to deleting this function and instead having
-    /// each linker backend notice the first time updateDecl or updateFunc is called, or
-    /// a callee referenced from AIR.
-    pub fn allocateDeclIndexes(base: *File, decl_index: Module.Decl.Index) error{OutOfMemory}!void {
-        const decl = base.options.module.?.declPtr(decl_index);
-        log.debug("allocateDeclIndexes {*} ({s})", .{ decl, decl.name });
-        if (build_options.only_c) {
-            assert(base.tag == .c);
-            return;
-        }
-        switch (base.tag) {
-            .coff => return @fieldParentPtr(Coff, "base", base).allocateDeclIndexes(decl_index),
-            .elf => return @fieldParentPtr(Elf, "base", base).allocateDeclIndexes(decl_index),
-            .macho => return @fieldParentPtr(MachO, "base", base).allocateDeclIndexes(decl_index),
-            .wasm => return @fieldParentPtr(Wasm, "base", base).allocateDeclIndexes(decl_index),
-            .plan9 => return @fieldParentPtr(Plan9, "base", base).allocateDeclIndexes(decl_index),
-            .c, .spirv, .nvptx => {},
         }
     }
 
@@ -624,7 +588,9 @@ pub const File = struct {
         base.releaseLock();
         if (base.file) |f| f.close();
         if (base.intermediary_basename) |sub_path| base.allocator.free(sub_path);
+        base.options.frameworks.deinit(base.allocator);
         base.options.system_libs.deinit(base.allocator);
+        base.options.force_undefined_symbols.deinit(base.allocator);
         switch (base.tag) {
             .coff => {
                 if (build_options.only_c) unreachable;
@@ -679,6 +645,7 @@ pub const File = struct {
     /// TODO audit this error set. most of these should be collapsed into one error,
     /// and ErrorFlags should be updated to convey the meaning to the user.
     pub const FlushError = error{
+        BadDwarfCfi,
         CacheUnavailable,
         CurrentWorkingDirectoryUnlinked,
         DivisionByZero,
@@ -698,6 +665,7 @@ pub const File = struct {
         InvalidFeatureSet,
         InvalidFormat,
         InvalidIndex,
+        InvalidInitFunc,
         InvalidMagicByte,
         InvalidWasmVersion,
         LLDCrashed,
@@ -718,6 +686,8 @@ pub const File = struct {
         MissingEndForExpression,
         /// TODO: this should be removed from the error set in favor of using ErrorFlags
         MissingMainEntrypoint,
+        /// TODO: this should be removed from the error set in favor of using ErrorFlags
+        MissingSection,
         MissingSymbol,
         MissingTableSymbols,
         ModuleNameMismatch,
@@ -851,8 +821,7 @@ pub const File = struct {
         AnalysisFail,
     };
 
-    /// May be called before or after updateDecl, but must be called after
-    /// allocateDeclIndexes for any given Decl.
+    /// May be called before or after updateDecl for any given Decl.
     pub fn updateDeclExports(
         base: *File,
         module: *Module,
@@ -888,6 +857,8 @@ pub const File = struct {
     /// The linker is passed information about the containing atom, `parent_atom_index`, and offset within it's
     /// memory buffer, `offset`, so that it can make a note of potential relocation sites, should the
     /// `Decl`'s address was not yet resolved, or the containing atom gets moved in virtual memory.
+    /// May be called before or after updateFunc/updateDecl therefore it is up to the linker to allocate
+    /// the block/atom.
     pub fn getDeclVAddr(base: *File, decl_index: Module.Decl.Index, reloc_info: RelocInfo) !u64 {
         if (build_options.only_c) unreachable;
         switch (base.tag) {

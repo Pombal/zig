@@ -664,7 +664,7 @@ pub const TestContext = struct {
             errors: []const []const u8,
         ) void {
             var array = self.updates.allocator.alloc(ErrorMsg, errors.len) catch @panic("out of memory");
-            for (errors) |err_msg_line, i| {
+            for (errors, 0..) |err_msg_line, i| {
                 if (std.mem.startsWith(u8, err_msg_line, "error: ")) {
                     array[i] = .{
                         .plain = .{
@@ -1497,6 +1497,7 @@ pub const TestContext = struct {
         var main_pkg: Package = .{
             .root_src_directory = .{ .path = tmp_dir_path, .handle = tmp.dir },
             .root_src_path = tmp_src_path,
+            .name = "root",
         };
         defer main_pkg.table.deinit(allocator);
 
@@ -1557,7 +1558,7 @@ pub const TestContext = struct {
         });
         defer comp.destroy();
 
-        update: for (case.updates.items) |update, update_index| {
+        update: for (case.updates.items, 0..) |update, update_index| {
             var update_node = root_node.start(update.name, 3);
             update_node.activate();
             defer update_node.end();
@@ -1630,7 +1631,7 @@ pub const TestContext = struct {
                     defer notes_to_check.deinit();
 
                     for (actual_errors.list) |actual_error| {
-                        for (case_error_list) |case_msg, i| {
+                        for (case_error_list, 0..) |case_msg, i| {
                             if (handled_errors[i]) continue;
 
                             const ex_tag: std.meta.Tag(@TypeOf(case_msg)) = case_msg;
@@ -1701,7 +1702,7 @@ pub const TestContext = struct {
                         }
                     }
                     while (notes_to_check.popOrNull()) |note| {
-                        for (case_error_list) |case_msg, i| {
+                        for (case_error_list, 0..) |case_msg, i| {
                             const ex_tag: std.meta.Tag(@TypeOf(case_msg)) = case_msg;
                             switch (note.*) {
                                 .src => |actual_msg| {
@@ -1723,7 +1724,8 @@ pub const TestContext = struct {
                                         (case_msg.src.column == std.math.maxInt(u32) or
                                         actual_msg.column == case_msg.src.column) and
                                         std.mem.eql(u8, expected_msg, actual_msg.msg) and
-                                        case_msg.src.kind == .note)
+                                        case_msg.src.kind == .note and
+                                        actual_msg.count == case_msg.src.count)
                                     {
                                         handled_errors[i] = true;
                                         break;
@@ -1733,7 +1735,8 @@ pub const TestContext = struct {
                                     if (ex_tag != .plain) continue;
 
                                     if (std.mem.eql(u8, case_msg.plain.msg, plain.msg) and
-                                        case_msg.plain.kind == .note)
+                                        case_msg.plain.kind == .note and
+                                        case_msg.plain.count == plain.count)
                                     {
                                         handled_errors[i] = true;
                                         break;
@@ -1749,7 +1752,7 @@ pub const TestContext = struct {
                         }
                     }
 
-                    for (handled_errors) |handled, i| {
+                    for (handled_errors, 0..) |handled, i| {
                         if (!handled) {
                             print(
                                 "\nExpected error not found:\n{s}\n{}\n{s}",

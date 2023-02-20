@@ -34,7 +34,7 @@ pub fn buildStaticLib(comp: *Compilation) !void {
         .basename = basename,
     };
     var c_source_files: [unwind_src_list.len]Compilation.CSourceFile = undefined;
-    for (unwind_src_list) |unwind_src, i| {
+    for (unwind_src_list, 0..) |unwind_src, i| {
         var cflags = std.ArrayList([]const u8).init(arena);
 
         switch (Compilation.classifyFileExt(unwind_src)) {
@@ -48,7 +48,7 @@ pub fn buildStaticLib(comp: *Compilation) !void {
                     try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libcxx", "include" }),
                 });
             },
-            .assembly => {},
+            .assembly_with_cpp => {},
             else => unreachable, // You can see the entire list of files just above.
         }
         try cflags.append("-I");

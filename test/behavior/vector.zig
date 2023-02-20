@@ -181,6 +181,12 @@ test "tuple to vector" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
+    if (builtin.zig_backend == .stage2_llvm and builtin.cpu.arch == .aarch64) {
+        // Regressed with LLVM 14:
+        // https://github.com/ziglang/zig/issues/12012
+        return error.SkipZigTest;
+    }
+
     const S = struct {
         fn doTheTest() !void {
             const Vec3 = @Vector(3, i32);
@@ -450,20 +456,20 @@ test "vector division operators" {
         fn doTheTestDiv(comptime T: type, x: @Vector(4, T), y: @Vector(4, T)) !void {
             if (!comptime std.meta.trait.isSignedInt(T)) {
                 const d0 = x / y;
-                for (@as([4]T, d0)) |v, i| {
+                for (@as([4]T, d0), 0..) |v, i| {
                     try expect(x[i] / y[i] == v);
                 }
             }
             const d1 = @divExact(x, y);
-            for (@as([4]T, d1)) |v, i| {
+            for (@as([4]T, d1), 0..) |v, i| {
                 try expect(@divExact(x[i], y[i]) == v);
             }
             const d2 = @divFloor(x, y);
-            for (@as([4]T, d2)) |v, i| {
+            for (@as([4]T, d2), 0..) |v, i| {
                 try expect(@divFloor(x[i], y[i]) == v);
             }
             const d3 = @divTrunc(x, y);
-            for (@as([4]T, d3)) |v, i| {
+            for (@as([4]T, d3), 0..) |v, i| {
                 try expect(@divTrunc(x[i], y[i]) == v);
             }
         }
@@ -471,16 +477,16 @@ test "vector division operators" {
         fn doTheTestMod(comptime T: type, x: @Vector(4, T), y: @Vector(4, T)) !void {
             if ((!comptime std.meta.trait.isSignedInt(T)) and @typeInfo(T) != .Float) {
                 const r0 = x % y;
-                for (@as([4]T, r0)) |v, i| {
+                for (@as([4]T, r0), 0..) |v, i| {
                     try expect(x[i] % y[i] == v);
                 }
             }
             const r1 = @mod(x, y);
-            for (@as([4]T, r1)) |v, i| {
+            for (@as([4]T, r1), 0..) |v, i| {
                 try expect(@mod(x[i], y[i]) == v);
             }
             const r2 = @rem(x, y);
-            for (@as([4]T, r2)) |v, i| {
+            for (@as([4]T, r2), 0..) |v, i| {
                 try expect(@rem(x[i], y[i]) == v);
             }
         }
@@ -532,7 +538,7 @@ test "vector bitwise not operator" {
     const S = struct {
         fn doTheTestNot(comptime T: type, x: @Vector(4, T)) !void {
             var y = ~x;
-            for (@as([4]T, y)) |v, i| {
+            for (@as([4]T, y), 0..) |v, i| {
                 try expect(~x[i] == v);
             }
         }
@@ -571,11 +577,11 @@ test "vector shift operators" {
             var yv = @as(@Vector(N, TY), y);
 
             var z0 = xv >> yv;
-            for (@as([N]TX, z0)) |v, i| {
+            for (@as([N]TX, z0), 0..) |v, i| {
                 try expect(x[i] >> y[i] == v);
             }
             var z1 = xv << yv;
-            for (@as([N]TX, z1)) |v, i| {
+            for (@as([N]TX, z1), 0..) |v, i| {
                 try expect(x[i] << y[i] == v);
             }
         }
@@ -588,7 +594,7 @@ test "vector shift operators" {
             var yv = @as(@Vector(N, TY), y);
 
             var z = if (dir == .Left) @shlExact(xv, yv) else @shrExact(xv, yv);
-            for (@as([N]TX, z)) |v, i| {
+            for (@as([N]TX, z), 0..) |v, i| {
                 const check = if (dir == .Left) x[i] << y[i] else x[i] >> y[i];
                 try expect(check == v);
             }
@@ -963,35 +969,31 @@ test "@addWithOverflow" {
     const S = struct {
         fn doTheTest() !void {
             {
-                var result: @Vector(4, u8) = undefined;
                 var lhs = @Vector(4, u8){ 250, 250, 250, 250 };
                 var rhs = @Vector(4, u8){ 0, 5, 6, 10 };
-                var overflow = @addWithOverflow(@Vector(4, u8), lhs, rhs, &result);
-                var expected: @Vector(4, bool) = .{ false, false, true, true };
+                var overflow = @addWithOverflow(lhs, rhs)[1];
+                var expected: @Vector(4, u1) = .{ 0, 0, 1, 1 };
                 try expectEqual(expected, overflow);
             }
             {
-                var result: @Vector(4, i8) = undefined;
                 var lhs = @Vector(4, i8){ -125, -125, 125, 125 };
                 var rhs = @Vector(4, i8){ -3, -4, 2, 3 };
-                var overflow = @addWithOverflow(@Vector(4, i8), lhs, rhs, &result);
-                var expected: @Vector(4, bool) = .{ false, true, false, true };
+                var overflow = @addWithOverflow(lhs, rhs)[1];
+                var expected: @Vector(4, u1) = .{ 0, 1, 0, 1 };
                 try expectEqual(expected, overflow);
             }
             {
-                var result: @Vector(4, u1) = undefined;
                 var lhs = @Vector(4, u1){ 0, 0, 1, 1 };
                 var rhs = @Vector(4, u1){ 0, 1, 0, 1 };
-                var overflow = @addWithOverflow(@Vector(4, u1), lhs, rhs, &result);
-                var expected: @Vector(4, bool) = .{ false, false, false, true };
+                var overflow = @addWithOverflow(lhs, rhs)[1];
+                var expected: @Vector(4, u1) = .{ 0, 0, 0, 1 };
                 try expectEqual(expected, overflow);
             }
             {
-                var result: @Vector(4, u0) = undefined;
                 var lhs = @Vector(4, u0){ 0, 0, 0, 0 };
                 var rhs = @Vector(4, u0){ 0, 0, 0, 0 };
-                var overflow = @addWithOverflow(@Vector(4, u0), lhs, rhs, &result);
-                var expected: @Vector(4, bool) = .{ false, false, false, false };
+                var overflow = @addWithOverflow(lhs, rhs)[1];
+                var expected: @Vector(4, u1) = .{ 0, 0, 0, 0 };
                 try expectEqual(expected, overflow);
             }
         }
@@ -1010,19 +1012,17 @@ test "@subWithOverflow" {
     const S = struct {
         fn doTheTest() !void {
             {
-                var result: @Vector(2, u8) = undefined;
                 var lhs = @Vector(2, u8){ 5, 5 };
                 var rhs = @Vector(2, u8){ 5, 6 };
-                var overflow = @subWithOverflow(@Vector(2, u8), lhs, rhs, &result);
-                var expected: @Vector(2, bool) = .{ false, true };
+                var overflow = @subWithOverflow(lhs, rhs)[1];
+                var expected: @Vector(2, u1) = .{ 0, 1 };
                 try expectEqual(expected, overflow);
             }
             {
-                var result: @Vector(4, i8) = undefined;
                 var lhs = @Vector(4, i8){ -120, -120, 120, 120 };
                 var rhs = @Vector(4, i8){ 8, 9, -7, -8 };
-                var overflow = @subWithOverflow(@Vector(4, i8), lhs, rhs, &result);
-                var expected: @Vector(4, bool) = .{ false, true, false, true };
+                var overflow = @subWithOverflow(lhs, rhs)[1];
+                var expected: @Vector(4, u1) = .{ 0, 1, 0, 1 };
                 try expectEqual(expected, overflow);
             }
         }
@@ -1040,11 +1040,10 @@ test "@mulWithOverflow" {
 
     const S = struct {
         fn doTheTest() !void {
-            var result: @Vector(4, u8) = undefined;
             var lhs = @Vector(4, u8){ 10, 10, 10, 10 };
             var rhs = @Vector(4, u8){ 25, 26, 0, 30 };
-            var overflow = @mulWithOverflow(@Vector(4, u8), lhs, rhs, &result);
-            var expected: @Vector(4, bool) = .{ false, true, false, true };
+            var overflow = @mulWithOverflow(lhs, rhs)[1];
+            var expected: @Vector(4, u1) = .{ 0, 1, 0, 1 };
             try expectEqual(expected, overflow);
         }
     };
@@ -1062,11 +1061,10 @@ test "@shlWithOverflow" {
 
     const S = struct {
         fn doTheTest() !void {
-            var result: @Vector(4, u8) = undefined;
             var lhs = @Vector(4, u8){ 0, 1, 8, 255 };
             var rhs = @Vector(4, u3){ 7, 7, 7, 7 };
-            var overflow = @shlWithOverflow(@Vector(4, u8), lhs, rhs, &result);
-            var expected: @Vector(4, bool) = .{ false, false, true, true };
+            var overflow = @shlWithOverflow(lhs, rhs)[1];
+            var expected: @Vector(4, u1) = .{ 0, 0, 1, 1 };
             try expectEqual(expected, overflow);
         }
     };
@@ -1136,8 +1134,19 @@ test "byte vector initialized in inline function" {
 }
 
 test "byte vector initialized in inline function" {
-    // TODO https://github.com/ziglang/zig/issues/13279
-    if (true) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
+
+    if (comptime builtin.zig_backend == .stage2_llvm and builtin.cpu.arch == .x86_64 and
+        builtin.cpu.features.isEnabled(@enumToInt(std.Target.x86.Feature.avx512f)))
+    {
+        // TODO https://github.com/ziglang/zig/issues/13279
+        return error.SkipZigTest;
+    }
 
     const S = struct {
         fn boolx4(e0: bool, e1: bool, e2: bool, e3: bool) @Vector(4, bool) {
@@ -1233,4 +1242,58 @@ test "array operands to shuffle are coerced to vectors" {
     var a = [5]u32{ 3, 5, 7, 9, 0 };
     var b = @shuffle(u32, a, @splat(5, @as(u24, 0)), mask);
     try expectEqual([_]u32{ 0, 3, 5, 7, 9 }, b);
+}
+
+test "load packed vector element" {
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+
+    var x: @Vector(2, u15) = .{ 1, 4 };
+    try expect((&x[0]).* == 1);
+    try expect((&x[1]).* == 4);
+}
+
+test "store packed vector element" {
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+
+    var v = @Vector(4, u1){ 1, 1, 1, 1 };
+    try expectEqual(@Vector(4, u1){ 1, 1, 1, 1 }, v);
+    v[0] = 0;
+    try expectEqual(@Vector(4, u1){ 0, 1, 1, 1 }, v);
+}
+
+test "store to vector in slice" {
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_wasm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+
+    var v = [_]@Vector(3, f32){
+        .{ 1, 1, 1 },
+        .{ 0, 0, 0 },
+    };
+    var s: []@Vector(3, f32) = &v;
+    var i: usize = 1;
+    s[i] = s[0];
+    try expectEqual(v[1], v[0]);
+}
+
+test "addition of vectors represented as strings" {
+    if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest; // TODO
+
+    const V = @Vector(3, u8);
+    const foo: V = "foo".*;
+    const bar: V = @typeName(u32).*;
+    try expectEqual(V{ 219, 162, 161 }, foo + bar);
 }

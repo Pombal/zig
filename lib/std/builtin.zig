@@ -51,7 +51,7 @@ pub const StackTrace = struct {
         const debug_info = std.debug.getSelfDebugInfo() catch |err| {
             return writer.print("\nUnable to print stack trace: Unable to open debug info: {s}\n", .{@errorName(err)});
         };
-        const tty_config = std.debug.detectTTYConfig();
+        const tty_config = std.debug.detectTTYConfig(std.io.getStdErr());
         try writer.writeAll("\n");
         std.debug.writeStackTrace(self, writer, arena.allocator(), debug_info, tty_config) catch |err| {
             try writer.print("Unable to print stack trace: {s}\n", .{@errorName(err)});
@@ -131,12 +131,15 @@ pub const CodeModel = enum {
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
-pub const Mode = enum {
+pub const OptimizeMode = enum {
     Debug,
     ReleaseSafe,
     ReleaseFast,
     ReleaseSmall,
 };
+
+/// Deprecated; use OptimizeMode.
+pub const Mode = OptimizeMode;
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
@@ -174,6 +177,14 @@ pub const AddressSpace = enum {
     param,
     shared,
     local,
+
+    // AVR address spaces.
+    flash,
+    flash1,
+    flash2,
+    flash3,
+    flash4,
+    flash5,
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -220,15 +231,13 @@ pub const Type = union(enum) {
     /// therefore must be kept in sync with the compiler implementation.
     pub const Int = struct {
         signedness: Signedness,
-        /// TODO make this u16 instead of comptime_int
-        bits: comptime_int,
+        bits: u16,
     };
 
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const Float = struct {
-        /// TODO make this u16 instead of comptime_int
-        bits: comptime_int,
+        bits: u16,
     };
 
     /// This data structure is used by the Zig language code generation and
@@ -282,8 +291,7 @@ pub const Type = union(enum) {
     /// therefore must be kept in sync with the compiler implementation.
     pub const StructField = struct {
         name: []const u8,
-        /// TODO rename to `type`
-        field_type: type,
+        type: type,
         default_value: ?*const anyopaque,
         is_comptime: bool,
         alignment: comptime_int,
@@ -333,8 +341,6 @@ pub const Type = union(enum) {
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const Enum = struct {
-        /// TODO enums should no longer have this field in type info.
-        layout: ContainerLayout,
         tag_type: type,
         fields: []const EnumField,
         decls: []const Declaration,
@@ -345,7 +351,7 @@ pub const Type = union(enum) {
     /// therefore must be kept in sync with the compiler implementation.
     pub const UnionField = struct {
         name: []const u8,
-        field_type: type,
+        type: type,
         alignment: comptime_int,
     };
 
@@ -369,14 +375,14 @@ pub const Type = union(enum) {
         is_var_args: bool,
         /// TODO change the language spec to make this not optional.
         return_type: ?type,
-        args: []const Param,
+        params: []const Param,
 
         /// This data structure is used by the Zig language code generation and
         /// therefore must be kept in sync with the compiler implementation.
         pub const Param = struct {
             is_generic: bool,
             is_noalias: bool,
-            arg_type: ?type,
+            type: ?type,
         };
     };
 
@@ -623,6 +629,87 @@ pub const CallModifier = enum {
     /// Evaluates the call at compile-time. If the call cannot be completed at
     /// compile-time, a compile error is emitted instead.
     compile_time,
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const VaListAarch64 = extern struct {
+    __stack: *anyopaque,
+    __gr_top: *anyopaque,
+    __vr_top: *anyopaque,
+    __gr_offs: c_int,
+    __vr_offs: c_int,
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const VaListHexagon = extern struct {
+    __gpr: c_long,
+    __fpr: c_long,
+    __overflow_arg_area: *anyopaque,
+    __reg_save_area: *anyopaque,
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const VaListPowerPc = extern struct {
+    gpr: u8,
+    fpr: u8,
+    reserved: c_ushort,
+    overflow_arg_area: *anyopaque,
+    reg_save_area: *anyopaque,
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const VaListS390x = extern struct {
+    __current_saved_reg_area_pointer: *anyopaque,
+    __saved_reg_area_end_pointer: *anyopaque,
+    __overflow_area_pointer: *anyopaque,
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const VaListX86_64 = extern struct {
+    gp_offset: c_uint,
+    fp_offset: c_uint,
+    overflow_arg_area: *anyopaque,
+    reg_save_area: *anyopaque,
+};
+
+/// This data structure is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const VaList = switch (builtin.cpu.arch) {
+    .aarch64 => switch (builtin.os.tag) {
+        .windows => *u8,
+        .ios, .macos, .tvos, .watchos => *u8,
+        else => @compileError("disabled due to miscompilations"), // VaListAarch64,
+    },
+    .arm => switch (builtin.os.tag) {
+        .ios, .macos, .tvos, .watchos => *u8,
+        else => *anyopaque,
+    },
+    .amdgcn => *u8,
+    .avr => *anyopaque,
+    .bpfel, .bpfeb => *anyopaque,
+    .hexagon => if (builtin.target.isMusl()) VaListHexagon else *u8,
+    .mips, .mipsel, .mips64, .mips64el => *anyopaque,
+    .riscv32, .riscv64 => *anyopaque,
+    .powerpc, .powerpcle => switch (builtin.os.tag) {
+        .ios, .macos, .tvos, .watchos, .aix => *u8,
+        else => VaListPowerPc,
+    },
+    .powerpc64, .powerpc64le => *u8,
+    .sparc, .sparcel, .sparc64 => *anyopaque,
+    .spirv32, .spirv64 => *anyopaque,
+    .s390x => VaListS390x,
+    .wasm32, .wasm64 => *anyopaque,
+    .x86 => *u8,
+    .x86_64 => switch (builtin.os.tag) {
+        .windows => @compileError("disabled due to miscompilations"), // *u8,
+        else => VaListX86_64,
+    },
+    else => @compileError("VaList not supported for this target yet"),
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -888,6 +975,7 @@ pub const panic_messages = struct {
     pub const unwrap_error = "attempt to unwrap error";
     pub const index_out_of_bounds = "index out of bounds";
     pub const start_index_greater_than_end = "start index is larger than end index";
+    pub const for_len_mismatch = "for loop over objects with non-equal lengths";
 };
 
 pub noinline fn returnError(st: *StackTrace) void {
