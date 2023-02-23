@@ -569,6 +569,7 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/clang_options_data.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/c.zig"
+    "${CMAKE_SOURCE_DIR}/src/codegen/c/type.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/llvm.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/llvm/bindings.zig"
     "${CMAKE_SOURCE_DIR}/src/glibc.zig"
@@ -748,7 +749,8 @@ set(BUILD_ZIG2_ARGS
   build-exe src/main.zig -ofmt=c -lc
   -OReleaseSmall
   --name zig2 -femit-bin="${ZIG2_C_SOURCE}"
-  --pkg-begin build_options "${ZIG_CONFIG_ZIG_OUT}" --pkg-end
+  --mod "build_options::${ZIG_CONFIG_ZIG_OUT}"
+  --deps build_options
   -target "${HOST_TARGET_TRIPLE}"
 )
  
@@ -765,7 +767,8 @@ set(BUILD_COMPILER_RT_ARGS
   build-obj lib/compiler_rt.zig -ofmt=c
   -OReleaseSmall
   --name compiler_rt -femit-bin="${ZIG_COMPILER_RT_C_SOURCE}"
-  --pkg-begin build_options "${ZIG_CONFIG_ZIG_OUT}" --pkg-end
+  --mod "build_options::${ZIG_CONFIG_ZIG_OUT}"
+  --deps build_options
   -target "${HOST_TARGET_TRIPLE}"
 )
  
@@ -782,7 +785,7 @@ set_target_properties(zig2 PROPERTIES
   COMPILE_FLAGS ${ZIG2_COMPILE_FLAGS}
   LINK_FLAGS ${ZIG2_LINK_FLAGS}
 )
-target_include_directories(zig2 PUBLIC "${CMAKE_SOURCE_DIR}/lib")
+target_include_directories(zig2 PUBLIC "${CMAKE_SOURCE_DIR}/stage1")
 target_link_libraries(zig2 LINK_PUBLIC zigcpp)
 
 if(MSVC)
